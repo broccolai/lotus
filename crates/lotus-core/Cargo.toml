@@ -1,0 +1,17 @@
+[package]
+name = "lotus-core"
+version = "0.8.0"
+description = "Platform-independent models and behavior for Lotus"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+atomic-write-file.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

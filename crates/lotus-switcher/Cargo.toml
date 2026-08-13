@@ -1,0 +1,15 @@
+[package]
+name = "lotus-switcher"
+version = "0.8.0"
+description = "Platform-neutral Lotus application switcher behavior and layout"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lotus-core.workspace = true
+lotus-ui.workspace = true
+
+[lints]
+workspace = true

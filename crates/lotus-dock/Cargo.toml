@@ -1,0 +1,16 @@
+[package]
+name = "lotus-dock"
+version = "0.8.0"
+description = "Dock and taskbar feature for Lotus"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lotus-core.workspace = true
+lotus-ui.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

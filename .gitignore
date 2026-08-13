@@ -1,0 +1,46 @@
+# Build output
+/target/
+/artifacts/
+/Lotus.zip
+bin/
+obj/
+*.pdb
+
+# Local toolchains and package caches
+/.cargo-home/
+/.rustup-home/
+/.dotnet/
+/.dotnet-home/
+/.nuget/
+/.tools/
+
+# Local application data
+/.appdata/
+/.lotus-data/
+*.log
+*.dmp
+
+# IDE and operating-system files
+/.vs/
+/.vscode/
+/.idea/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets
+.env
+.env.*
+
+# Local coding-assistant context
+/AGENTS.md
+/lotusinfo.txt
+/.agents/
+/.ai/
+/.claude/
+/.codex/
+/.cursor/
+CLAUDE.md
+GEMINI.md
+*.prompt.md

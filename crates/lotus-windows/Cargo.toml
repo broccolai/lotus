@@ -1,0 +1,30 @@
+[package]
+name = "lotus-windows"
+version = "0.8.0"
+description = "Safe native Windows capabilities for Lotus"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+atomic-write-file.workspace = true
+lotus-core.workspace = true
+lotus-dock.workspace = true
+lotus-search.workspace = true
+lotus-settings.workspace = true
+lotus-switcher.workspace = true
+lotus-ui.workspace = true
+lotus-update.workspace = true
+image.workspace = true
+resvg.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tiny-skia.workspace = true
+windows.workspace = true
+windows-core.workspace = true
+windows-registry.workspace = true
+windows-result.workspace = true
+
+[lints]
+workspace = true

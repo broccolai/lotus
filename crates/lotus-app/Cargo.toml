@@ -1,0 +1,36 @@
+[package]
+name = "lotus-app"
+version = "0.8.0"
+description = "Lotus process lifecycle and feature composition"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "lotus"
+path = "src/main.rs"
+
+[dependencies]
+lotus-core.workspace = true
+lotus-dock.workspace = true
+lotus-search.workspace = true
+lotus-settings.workspace = true
+lotus-switcher.workspace = true
+lotus-ui.workspace = true
+lotus-windows.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+winresource.workspace = true
+
+[package.metadata.winresource]
+ProductName = "Lotus"
+FileDescription = "Native Windows dock"
+CompanyName = "broccolai"
+InternalName = "Lotus"
+OriginalFilename = "lotus.exe"
+LegalCopyright = "Copyright © 2026 Lotus contributors"
+
+[lints]
+workspace = true

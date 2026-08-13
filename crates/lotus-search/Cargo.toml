@@ -1,0 +1,16 @@
+[package]
+name = "lotus-search"
+version = "0.8.0"
+description = "Application search feature for Lotus"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+atomic-write-file.workspace = true
+lotus-core.workspace = true
+lotus-ui.workspace = true
+
+[lints]
+workspace = true

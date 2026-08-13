@@ -1,0 +1,43 @@
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Direction {
+    Forward,
+    Reverse,
+}
+
+pub struct SwitcherSession<T> {
+    items: Vec<T>,
+    selected: usize,
+}
+
+impl<T> SwitcherSession<T> {
+    pub fn begin(items: Vec<T>, direction: Direction) -> Option<Self> {
+        if items.is_empty() {
+            return None;
+        }
+        let selected = match direction {
+            Direction::Forward if items.len() > 1 => 1,
+            Direction::Forward => 0,
+            Direction::Reverse => items.len() - 1,
+        };
+        Some(Self { items, selected })
+    }
+
+    pub fn cycle(&mut self, direction: Direction) {
+        self.selected = match direction {
+            Direction::Forward => (self.selected + 1) % self.items.len(),
+            Direction::Reverse => self.selected.checked_sub(1).unwrap_or(self.items.len() - 1),
+        };
+    }
+
+    pub const fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    pub fn selected(&self) -> &T {
+        &self.items[self.selected]
+    }
+
+    pub fn items(&self) -> &[T] {
+        &self.items
+    }
+}

@@ -1,0 +1,59 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+      - name: verify version
+        shell: powershell
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object name -eq "lotus-app").version
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "tag $env:GITHUB_REF_NAME does not match lotus-app version $version"
+          }
+          "LOTUS_VERSION=$version" >> $env:GITHUB_ENV
+      - name: build
+        shell: cmd
+        run: scripts\cargo.cmd build --release --locked -p lotus-app
+      - name: package
+        shell: powershell
+        run: |
+          $archive = "lotus-v$env:LOTUS_VERSION-windows-x86_64.zip"
+          $stage = Join-Path $env:RUNNER_TEMP "lotus"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item target\release\lotus.exe, LICENSE, THIRD_PARTY_NOTICES.md, README.md -Destination $stage
+          Compress-Archive -Path "$stage\*" -DestinationPath $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content "$archive.sha256" -Encoding ascii
+          "LOTUS_ARCHIVE=$archive" >> $env:GITHUB_ENV
+      - name: publish
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            $env:LOTUS_ARCHIVE `
+            "$env:LOTUS_ARCHIVE.sha256" `
+            --verify-tag `
+            --title "lotus $env:GITHUB_REF_NAME" `
+            --generate-notes

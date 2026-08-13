@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install ripgrep
+        shell: powershell
+        run: choco install ripgrep --yes --no-progress
+      - name: Check Lotus
+        shell: cmd
+        run: scripts\check-rust.cmd
