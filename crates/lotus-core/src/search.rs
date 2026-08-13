@@ -49,16 +49,23 @@ impl SearchUsage {
         {
             self.entries.swap_remove(index);
         }
-        self.entries.push(SearchUsageEntry { target, launches: 1, last_used: self.sequence });
+        self.entries.push(SearchUsageEntry {
+            target,
+            launches: 1,
+            last_used: self.sequence,
+        });
         true
     }
 
     fn rank(&self, launch_target: &str) -> UsageRank {
         let target = normalize_target(launch_target);
-        self.entries.iter().find(|entry| entry.target == target).map_or(
-            UsageRank::default(),
-            |entry| UsageRank { launches: entry.launches, last_used: entry.last_used },
-        )
+        self.entries
+            .iter()
+            .find(|entry| entry.target == target)
+            .map_or(UsageRank::default(), |entry| UsageRank {
+                launches: entry.launches,
+                last_used: entry.last_used,
+            })
     }
 }
 
@@ -134,12 +141,18 @@ impl SearchCatalog {
             }
 
             let normalized_name = normalize(&entry.name);
-            if normalized_name.is_empty() || !seen_names.insert(identity_key(&normalized_name)) {
+            if normalized_name.is_empty()
+                || !seen_names.insert(identity_key(&normalized_name))
+            {
                 continue;
             }
 
             let ordinal = catalog.len();
-            catalog.push(CatalogEntry { entry, normalized_name, ordinal });
+            catalog.push(CatalogEntry {
+                entry,
+                normalized_name,
+                ordinal,
+            });
         }
 
         Self { entries: catalog }
@@ -163,7 +176,8 @@ impl SearchCatalog {
                 if normalized_query.is_empty() && candidate.entry.hidden_until_search {
                     return None;
                 }
-                score(&candidate.normalized_name, &normalized_query).map(|score| (candidate, score))
+                score(&candidate.normalized_name, &normalized_query)
+                    .map(|score| (candidate, score))
             })
             .collect::<Vec<_>>();
 
@@ -193,7 +207,11 @@ impl SearchCatalog {
                 .then_with(|| left.entry.launch_target.cmp(&right.entry.launch_target))
         });
 
-        ranked.into_iter().take(limit).map(|(candidate, _)| &candidate.entry).collect()
+        ranked
+            .into_iter()
+            .take(limit)
+            .map(|(candidate, _)| &candidate.entry)
+            .collect()
     }
 
     pub fn len(&self) -> usize {
@@ -224,7 +242,10 @@ struct MatchScore {
 
 fn score(candidate: &str, query: &str) -> Option<MatchScore> {
     if query.is_empty() {
-        return Some(MatchScore { quality: 0, penalty: 0 });
+        return Some(MatchScore {
+            quality: 0,
+            penalty: 0,
+        });
     }
 
     let candidate_chars = candidate.chars().collect::<Vec<_>>();
@@ -242,19 +263,31 @@ fn score(candidate: &str, query: &str) -> Option<MatchScore> {
 
 fn score_token(candidate: &[char], token: &[char]) -> Option<MatchScore> {
     if candidate == token {
-        return Some(MatchScore { quality: 1_400, penalty: 0 });
+        return Some(MatchScore {
+            quality: 1_400,
+            penalty: 0,
+        });
     }
 
     if candidate.starts_with(token) {
-        return Some(MatchScore { quality: 1_200, penalty: 0 });
+        return Some(MatchScore {
+            quality: 1_200,
+            penalty: 0,
+        });
     }
 
     if let Some(index) = find_slice(candidate, token, true) {
-        return Some(MatchScore { quality: 1_000, penalty: as_score_index(index) });
+        return Some(MatchScore {
+            quality: 1_000,
+            penalty: as_score_index(index),
+        });
     }
 
     if let Some(index) = find_slice(candidate, token, false) {
-        return Some(MatchScore { quality: 800, penalty: as_score_index(index) });
+        return Some(MatchScore {
+            quality: 800,
+            penalty: as_score_index(index),
+        });
     }
 
     let mut candidate_index = 0;
@@ -267,25 +300,35 @@ fn score_token(candidate: &[char], token: &[char]) -> Option<MatchScore> {
         candidate_index += relative_match + 1;
     }
 
-    Some(MatchScore { quality: 500, penalty: as_score_index(gap_penalty) })
+    Some(MatchScore {
+        quality: 500,
+        penalty: as_score_index(gap_penalty),
+    })
 }
 
-fn find_slice(candidate: &[char], token: &[char], require_word_start: bool) -> Option<usize> {
+fn find_slice(
+    candidate: &[char],
+    token: &[char],
+    require_word_start: bool,
+) -> Option<usize> {
     if token.is_empty() || token.len() > candidate.len() {
         return None;
     }
 
-    candidate.windows(token.len()).enumerate().find_map(|(index, window)| {
-        if window != token {
-            return None;
-        }
+    candidate
+        .windows(token.len())
+        .enumerate()
+        .find_map(|(index, window)| {
+            if window != token {
+                return None;
+            }
 
-        if require_word_start {
-            (index > 0 && candidate[index - 1] == ' ').then_some(index - 1)
-        } else {
-            Some(index)
-        }
-    })
+            if require_word_start {
+                (index > 0 && candidate[index - 1] == ' ').then_some(index - 1)
+            } else {
+                Some(index)
+            }
+        })
 }
 
 fn as_score_index(index: usize) -> i32 {
@@ -312,7 +355,10 @@ fn normalize(value: &str) -> String {
 }
 
 fn identity_key(normalized_name: &str) -> String {
-    normalized_name.chars().filter(|character| *character != ' ').collect()
+    normalized_name
+        .chars()
+        .filter(|character| *character != ' ')
+        .collect()
 }
 
 fn normalize_target(value: &str) -> String {
@@ -331,7 +377,12 @@ mod tests {
         ]);
 
         assert_eq!(catalog.search("", 8)[0].name, "Calculator");
-        assert!(catalog.search("", 8).iter().all(|entry| entry.name != "ChatGPT"));
+        assert!(
+            catalog
+                .search("", 8)
+                .iter()
+                .all(|entry| entry.name != "ChatGPT")
+        );
         assert_eq!(catalog.search("chat", 8)[0].name, "ChatGPT");
         assert_eq!(catalog.search("gpt", 8)[0].name, "ChatGPT");
     }

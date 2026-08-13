@@ -1,5 +1,6 @@
-use crate::search::{ApplicationEntry, SearchCatalog, SearchUsage};
 use std::ops::Range;
+
+use crate::search::{ApplicationEntry, SearchCatalog, SearchUsage};
 
 pub const DEFAULT_VISIBLE_RESULT_LIMIT: usize = 5;
 
@@ -54,7 +55,10 @@ impl LauncherModel {
     }
 
     pub fn with_usage(result_limit: usize, usage: SearchUsage) -> Self {
-        Self { usage, ..Self::new(result_limit) }
+        Self {
+            usage,
+            ..Self::new(result_limit)
+        }
     }
 
     pub fn reset(&mut self, catalog: SearchCatalog) {
@@ -90,12 +94,16 @@ impl LauncherModel {
 
     pub fn query_selection(&self) -> Option<Range<usize>> {
         self.selection_anchor.and_then(|anchor| {
-            (anchor != self.cursor).then_some(anchor.min(self.cursor)..anchor.max(self.cursor))
+            (anchor != self.cursor)
+                .then_some(anchor.min(self.cursor)..anchor.max(self.cursor))
         })
     }
 
     pub fn results(&self) -> &[ApplicationEntry] {
-        let end = self.visible_start.saturating_add(self.result_limit).min(self.results.len());
+        let end = self
+            .visible_start
+            .saturating_add(self.result_limit)
+            .min(self.results.len());
         &self.results[self.visible_start.min(end)..end]
     }
 
@@ -203,7 +211,8 @@ impl LauncherModel {
         } else if selected < self.visible_start {
             self.visible_start = selected;
         } else if selected >= self.visible_start.saturating_add(self.result_limit) {
-            self.visible_start = selected.saturating_add(1).saturating_sub(self.result_limit);
+            self.visible_start =
+                selected.saturating_add(1).saturating_sub(self.result_limit);
         }
     }
 
@@ -267,5 +276,7 @@ impl LauncherModel {
 }
 
 fn character_byte_index(text: &str, character_index: usize) -> usize {
-    text.char_indices().nth(character_index).map_or(text.len(), |(index, _)| index)
+    text.char_indices()
+        .nth(character_index)
+        .map_or(text.len(), |(index, _)| index)
 }

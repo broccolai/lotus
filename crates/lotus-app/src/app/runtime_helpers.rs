@@ -1,9 +1,10 @@
 use super::{
-    AltTabController, AltTabEvent, AppError, CompositionSurfaceState, DeviceState, DockHitTarget,
-    DockRuntime, DockScene, DockWindow, LauncherCompositionSurfaceState, LauncherRuntime,
-    ModelCursorMove, PointerEvent, QueryEdit, RestartError, SearchEdit, SearchEvent, SurfaceError,
-    SurfaceSize, SwitcherRuntime, WindowCursorMove, WindowTracker, WindowsKeyController,
-    WindowsKeyEvent, launch_target, local_time_24h, read_text,
+    AltTabController, AltTabEvent, AppError, CompositionSurfaceState, DeviceState,
+    DockHitTarget, DockRuntime, DockScene, DockWindow, LauncherCompositionSurfaceState,
+    LauncherRuntime, ModelCursorMove, PointerEvent, QueryEdit, RestartError, SearchEdit,
+    SearchEvent, SurfaceError, SurfaceSize, SwitcherRuntime, WindowCursorMove,
+    WindowTracker, WindowsKeyController, WindowsKeyEvent, launch_target, local_time_24h,
+    read_text,
 };
 
 pub(super) fn restart_current_process() -> Result<(), RestartError> {
@@ -63,7 +64,10 @@ pub(super) fn handle_alt_tab_events(
 ) -> Result<(), AppError> {
     for event in controller.drain_events() {
         match event {
-            AltTabEvent::Begin { direction, foreground } => {
+            AltTabEvent::Begin {
+                direction,
+                foreground,
+            } => {
                 switcher.begin(
                     direction,
                     foreground,
@@ -155,7 +159,8 @@ pub(super) fn render_and_schedule(
     scene: &DockScene,
     launcher_needs_animation: bool,
 ) -> Result<(), AppError> {
-    let needs_animation = render_surface(graphics, surface, scene)? || launcher_needs_animation;
+    let needs_animation =
+        render_surface(graphics, surface, scene)? || launcher_needs_animation;
     dock.set_animation_active(needs_animation)?;
     Ok(())
 }

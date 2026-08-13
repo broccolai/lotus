@@ -37,8 +37,13 @@ pub enum SettingsPage {
 }
 
 impl SettingsPage {
-    pub const ALL: [Self; 5] =
-        [Self::General, Self::Appearance, Self::Taskbar, Self::Search, Self::About];
+    pub const ALL: [Self; 5] = [
+        Self::General,
+        Self::Appearance,
+        Self::Taskbar,
+        Self::Search,
+        Self::About,
+    ];
 
     pub const fn title(self) -> &'static str {
         match self {
@@ -185,7 +190,10 @@ impl SettingsLayout {
     }
 
     pub fn bounds(&self, control: SettingsControl) -> Option<SettingsRect> {
-        self.controls.iter().find(|entry| entry.control == control).map(|entry| entry.bounds)
+        self.controls
+            .iter()
+            .find(|entry| entry.control == control)
+            .map(|entry| entry.bounds)
     }
 }
 
@@ -250,7 +258,9 @@ impl SettingsScene {
     }
 
     pub fn set_dpi(&mut self, dpi: u32) -> bool {
-        let Some(dpi) = NonZeroU32::new(dpi) else { return false };
+        let Some(dpi) = NonZeroU32::new(dpi) else {
+            return false;
+        };
         if self.dpi == dpi {
             return false;
         }
@@ -316,7 +326,12 @@ impl SettingsScene {
         }
         controls.push(SettingsControlLayout {
             control: SettingsControl::Navigate(SettingsPage::About),
-            bounds: self.rect(NAV_LEFT_DIP, HEIGHT_DIP - 115, NAV_WIDTH_DIP, NAV_HEIGHT_DIP),
+            bounds: self.rect(
+                NAV_LEFT_DIP,
+                HEIGHT_DIP - 115,
+                NAV_WIDTH_DIP,
+                NAV_HEIGHT_DIP,
+            ),
         });
         controls.push(SettingsControlLayout {
             control: SettingsControl::CheckForUpdates,
@@ -340,8 +355,13 @@ impl SettingsScene {
         controls.push(SettingsControlLayout {
             control: SettingsControl::Revert,
             bounds: self.rect(
-                WIDTH_DIP - CONTENT_RIGHT_DIP - APPLY_WIDTH_DIP - ACTION_GAP_DIP - REVERT_WIDTH_DIP,
-                HEIGHT_DIP - FOOTER_HEIGHT_DIP + (FOOTER_HEIGHT_DIP - ACTION_HEIGHT_DIP) / 2,
+                WIDTH_DIP
+                    - CONTENT_RIGHT_DIP
+                    - APPLY_WIDTH_DIP
+                    - ACTION_GAP_DIP
+                    - REVERT_WIDTH_DIP,
+                HEIGHT_DIP - FOOTER_HEIGHT_DIP
+                    + (FOOTER_HEIGHT_DIP - ACTION_HEIGHT_DIP) / 2,
                 REVERT_WIDTH_DIP,
                 ACTION_HEIGHT_DIP,
             ),
@@ -350,7 +370,8 @@ impl SettingsScene {
             control: SettingsControl::Apply,
             bounds: self.rect(
                 WIDTH_DIP - CONTENT_RIGHT_DIP - APPLY_WIDTH_DIP,
-                HEIGHT_DIP - FOOTER_HEIGHT_DIP + (FOOTER_HEIGHT_DIP - ACTION_HEIGHT_DIP) / 2,
+                HEIGHT_DIP - FOOTER_HEIGHT_DIP
+                    + (FOOTER_HEIGHT_DIP - ACTION_HEIGHT_DIP) / 2,
                 APPLY_WIDTH_DIP,
                 ACTION_HEIGHT_DIP,
             ),
@@ -381,7 +402,9 @@ impl SettingsScene {
     }
 
     pub fn pointer_activate(&mut self, x: u32, y: u32) -> SettingsAction {
-        let Some(control) = self.layout().hit_test(x, y) else { return SettingsAction::None };
+        let Some(control) = self.layout().hit_test(x, y) else {
+            return SettingsAction::None;
+        };
         self.focused = Some(control);
         self.focus_visible = false;
         if matches!(
@@ -390,7 +413,10 @@ impl SettingsScene {
                 | SettingsControl::AccentPreset
                 | SettingsControl::NotificationBadgeStyle
         ) {
-            let bounds = self.layout().bounds(control).expect("active control has layout bounds");
+            let bounds = self
+                .layout()
+                .bounds(control)
+                .expect("active control has layout bounds");
             return self.set_picker_from_pointer(control, bounds, x);
         }
         if let SettingsControl::Slider(slider) = control {
@@ -446,14 +472,19 @@ impl SettingsScene {
         .then_some(slider)
     }
 
-    pub fn set_slider_from_pointer(&mut self, slider: SettingsSlider, x: u32) -> SettingsAction {
+    pub fn set_slider_from_pointer(
+        &mut self,
+        slider: SettingsSlider,
+        x: u32,
+    ) -> SettingsAction {
         let Some(bounds) = self.layout().bounds(SettingsControl::Slider(slider)) else {
             return SettingsAction::None;
         };
         let (track_left, track_width) = self.slider_track(bounds);
         let offset = x.saturating_sub(track_left).min(track_width);
         let (minimum, maximum) = slider.range();
-        let value = minimum.saturating_add(offset.saturating_mul(maximum - minimum) / track_width);
+        let value =
+            minimum.saturating_add(offset.saturating_mul(maximum - minimum) / track_width);
         self.set_slider(slider, value);
         SettingsAction::Changed
     }
@@ -465,22 +496,37 @@ impl SettingsScene {
         }
         if matches!(
             key,
-            SettingsKey::Tab | SettingsKey::ReverseTab | SettingsKey::Up | SettingsKey::Down
+            SettingsKey::Tab
+                | SettingsKey::ReverseTab
+                | SettingsKey::Up
+                | SettingsKey::Down
         ) {
             self.move_focus(matches!(key, SettingsKey::ReverseTab | SettingsKey::Up));
             return SettingsAction::None;
         }
-        let Some(focused) = self.focused else { return SettingsAction::None };
+        let Some(focused) = self.focused else {
+            return SettingsAction::None;
+        };
         match (key, focused) {
             (SettingsKey::Activate, control) => self.activate(control),
-            (SettingsKey::Left, SettingsControl::Slider(slider)) => self.adjust_slider(slider, -1),
-            (SettingsKey::Right, SettingsControl::Slider(slider)) => self.adjust_slider(slider, 1),
-            (SettingsKey::Left, SettingsControl::SurfacePreset) => self.cycle_surface_preset(true),
+            (SettingsKey::Left, SettingsControl::Slider(slider)) => {
+                self.adjust_slider(slider, -1)
+            }
+            (SettingsKey::Right, SettingsControl::Slider(slider)) => {
+                self.adjust_slider(slider, 1)
+            }
+            (SettingsKey::Left, SettingsControl::SurfacePreset) => {
+                self.cycle_surface_preset(true)
+            }
             (SettingsKey::Right, SettingsControl::SurfacePreset) => {
                 self.cycle_surface_preset(false)
             }
-            (SettingsKey::Left, SettingsControl::AccentPreset) => self.cycle_accent_preset(true),
-            (SettingsKey::Right, SettingsControl::AccentPreset) => self.cycle_accent_preset(false),
+            (SettingsKey::Left, SettingsControl::AccentPreset) => {
+                self.cycle_accent_preset(true)
+            }
+            (SettingsKey::Right, SettingsControl::AccentPreset) => {
+                self.cycle_accent_preset(false)
+            }
             (SettingsKey::Left, SettingsControl::NotificationBadgeStyle) => {
                 self.cycle_notification_badge_style(true)
             }
@@ -583,8 +629,10 @@ impl SettingsScene {
             .controls
             .into_iter()
             .filter(|entry| {
-                !matches!(entry.control, SettingsControl::Apply | SettingsControl::Revert)
-                    || self.is_dirty()
+                !matches!(
+                    entry.control,
+                    SettingsControl::Apply | SettingsControl::Revert
+                ) || self.is_dirty()
             })
             .map(|entry| entry.control)
             .collect();
@@ -592,8 +640,9 @@ impl SettingsScene {
             self.focused = None;
             return;
         }
-        let current =
-            self.focused.and_then(|value| focusable.iter().position(|item| *item == value));
+        let current = self
+            .focused
+            .and_then(|value| focusable.iter().position(|item| *item == value));
         let next = match (current, reverse) {
             (Some(0) | None, true) => focusable.len() - 1,
             (Some(index), true) => index - 1,
@@ -618,14 +667,16 @@ impl SettingsScene {
         let offset = x.saturating_sub(left).min(width.saturating_sub(1));
         match control {
             SettingsControl::SurfacePreset => {
-                let index = usize::try_from(offset.saturating_mul(4) / width).unwrap_or_default();
+                let index =
+                    usize::try_from(offset.saturating_mul(4) / width).unwrap_or_default();
                 let Some(preset) = SurfacePreset::ALL.get(index) else {
                     return SettingsAction::ChooseBackgroundColor;
                 };
                 preset.color().clone_into(&mut self.draft.background_color);
             }
             SettingsControl::AccentPreset => {
-                let index = usize::try_from(offset.saturating_mul(6) / width).unwrap_or_default();
+                let index =
+                    usize::try_from(offset.saturating_mul(6) / width).unwrap_or_default();
                 let Some(preset) = AccentPreset::ALL.get(index) else {
                     return SettingsAction::ChooseAccentColor;
                 };
@@ -637,8 +688,11 @@ impl SettingsScene {
                     NotificationBadgeStyle::Dot,
                     NotificationBadgeStyle::Count,
                 ];
-                let index = usize::try_from(offset.saturating_mul(3) / width).unwrap_or_default();
-                let Some(style) = styles.get(index) else { return SettingsAction::None };
+                let index =
+                    usize::try_from(offset.saturating_mul(3) / width).unwrap_or_default();
+                let Some(style) = styles.get(index) else {
+                    return SettingsAction::None;
+                };
                 self.draft.notification_badge_style = *style;
             }
             _ => return SettingsAction::None,
@@ -648,19 +702,27 @@ impl SettingsScene {
 
     fn cycle_surface_preset(&mut self, reverse: bool) -> SettingsAction {
         let current = SurfacePreset::selected(&self.draft)
-            .and_then(|selected| SurfacePreset::ALL.iter().position(|item| *item == selected))
+            .and_then(|selected| {
+                SurfacePreset::ALL.iter().position(|item| *item == selected)
+            })
             .unwrap_or_default();
         let next = cycle_index(current, SurfacePreset::ALL.len(), reverse);
-        SurfacePreset::ALL[next].color().clone_into(&mut self.draft.background_color);
+        SurfacePreset::ALL[next]
+            .color()
+            .clone_into(&mut self.draft.background_color);
         SettingsAction::Changed
     }
 
     fn cycle_accent_preset(&mut self, reverse: bool) -> SettingsAction {
         let current = AccentPreset::selected(&self.draft)
-            .and_then(|selected| AccentPreset::ALL.iter().position(|item| *item == selected))
+            .and_then(|selected| {
+                AccentPreset::ALL.iter().position(|item| *item == selected)
+            })
             .unwrap_or_default();
         let next = cycle_index(current, AccentPreset::ALL.len(), reverse);
-        AccentPreset::ALL[next].color().clone_into(&mut self.draft.accent_color);
+        AccentPreset::ALL[next]
+            .color()
+            .clone_into(&mut self.draft.accent_color);
         SettingsAction::Changed
     }
 
@@ -674,28 +736,39 @@ impl SettingsScene {
             .iter()
             .position(|style| *style == self.draft.notification_badge_style)
             .unwrap_or_default();
-        self.draft.notification_badge_style = styles[cycle_index(current, styles.len(), reverse)];
+        self.draft.notification_badge_style =
+            styles[cycle_index(current, styles.len(), reverse)];
         SettingsAction::Changed
     }
 
     fn adjust_slider(&mut self, slider: SettingsSlider, delta: i32) -> SettingsAction {
         let (minimum, maximum) = slider.range();
         let value = self.slider_value(slider);
-        let value = if delta < 0 { value.saturating_sub(1) } else { value.saturating_add(1) }
-            .clamp(minimum, maximum);
+        let value = if delta < 0 {
+            value.saturating_sub(1)
+        } else {
+            value.saturating_add(1)
+        }
+        .clamp(minimum, maximum);
         self.set_slider(slider, value);
         SettingsAction::Changed
     }
 
     pub fn toggle(&self, toggle: SettingsToggle) -> bool {
         match toggle {
-            SettingsToggle::ShowUnpinnedRunningApps => self.draft.show_unpinned_running_apps,
+            SettingsToggle::ShowUnpinnedRunningApps => {
+                self.draft.show_unpinned_running_apps
+            }
             SettingsToggle::ShowDesktopButton => self.draft.show_desktop_button,
             SettingsToggle::StartWithWindows => self.draft.start_with_windows,
             SettingsToggle::ReplaceWindowsTaskbar => self.draft.replace_windows_taskbar,
-            SettingsToggle::ExclusiveTaskbarReplacement => self.draft.exclusive_taskbar_replacement,
+            SettingsToggle::ExclusiveTaskbarReplacement => {
+                self.draft.exclusive_taskbar_replacement
+            }
             SettingsToggle::HideWhenFullscreen => self.draft.hide_when_fullscreen,
-            SettingsToggle::SearchOpenWithWindowsKey => self.draft.search_open_with_windows_key,
+            SettingsToggle::SearchOpenWithWindowsKey => {
+                self.draft.search_open_with_windows_key
+            }
             SettingsToggle::AltTabEnabled => self.draft.alt_tab_enabled,
         }
     }
@@ -707,7 +780,9 @@ impl SettingsScene {
             }
             SettingsToggle::ShowDesktopButton => self.draft.show_desktop_button = value,
             SettingsToggle::StartWithWindows => self.draft.start_with_windows = value,
-            SettingsToggle::ReplaceWindowsTaskbar => self.draft.replace_windows_taskbar = value,
+            SettingsToggle::ReplaceWindowsTaskbar => {
+                self.draft.replace_windows_taskbar = value;
+            }
             SettingsToggle::ExclusiveTaskbarReplacement => {
                 self.draft.exclusive_taskbar_replacement = value;
             }
@@ -780,11 +855,13 @@ impl SettingsScene {
 
     pub fn control_column(&self, bounds: SettingsRect) -> SettingsRect {
         SettingsRect {
-            left: bounds.left.saturating_add(self.scale(CONTROL_COLUMN_LEFT_DIP)),
+            left: bounds
+                .left
+                .saturating_add(self.scale(CONTROL_COLUMN_LEFT_DIP)),
             top: bounds.top.saturating_add(self.scale(6)),
-            width: bounds
-                .width
-                .saturating_sub(self.scale(CONTROL_COLUMN_LEFT_DIP + CONTROL_COLUMN_RIGHT_DIP)),
+            width: bounds.width.saturating_sub(
+                self.scale(CONTROL_COLUMN_LEFT_DIP + CONTROL_COLUMN_RIGHT_DIP),
+            ),
             height: bounds.height.saturating_sub(self.scale(12)),
         }
     }
@@ -799,7 +876,9 @@ impl SettingsScene {
         let column = self.control_column(bounds);
         let width = self.scale(CONTROL_VALUE_WIDTH_DIP);
         SettingsRect {
-            left: column.left.saturating_add(column.width.saturating_sub(width)),
+            left: column
+                .left
+                .saturating_add(column.width.saturating_sub(width)),
             top: column.top,
             width,
             height: column.height,
@@ -820,5 +899,9 @@ fn u32_index(value: usize) -> u32 {
 }
 
 fn cycle_index(current: usize, length: usize, reverse: bool) -> usize {
-    if reverse { current.checked_sub(1).unwrap_or(length - 1) } else { (current + 1) % length }
+    if reverse {
+        current.checked_sub(1).unwrap_or(length - 1)
+    } else {
+        (current + 1) % length
+    }
 }

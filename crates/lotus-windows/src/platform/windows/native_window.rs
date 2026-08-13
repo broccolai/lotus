@@ -60,8 +60,9 @@ pub struct NativeWindow<State> {
 
 impl<State> NativeWindow<State> {
     pub fn create(specification: WindowCreation, mut state: Box<State>) -> Result<Self> {
-        let state_pointer =
-            std::ptr::from_mut(state.as_mut()).cast::<std::ffi::c_void>().cast_const();
+        let state_pointer = std::ptr::from_mut(state.as_mut())
+            .cast::<std::ffi::c_void>()
+            .cast_const();
         // SAFETY: The caller supplies a registered class. `state_pointer` points into the Box this
         // guard takes ownership of, so it remains stable until after the owned HWND is destroyed.
         let hwnd = unsafe {

@@ -1,19 +1,20 @@
+use lotus_settings::scene::SettingsPointerStyle;
+use lotus_windows::interaction::{NativeMessage, PointerCursor};
+
 use super::{
-    AppError, AuxiliaryWindows, CompositionSurfaceState, ContextMenuAction, ContextMenuEvent,
-    DeviceState, DockContextRequest, DockHitTarget, DockRuntime, DockWindow, MenuDirection,
-    PointerEvent, RuntimePolicy, SceneSettingsKey, SelectionDirection, SettingsAction,
-    SettingsEvent, SettingsRuntime, SettingsUpdateActivity, SurfaceSize, UpdateResult,
-    UpdateStatus, WindowEvent, WindowSettingsKey, WindowTracker, WindowTrackerEvent,
-    apply_fullscreen_visibility, confirm_install_update, confirm_shutdown, handle_alt_tab_events,
-    handle_pointer_event, handle_search_event, handle_windows_key_events, is_alt_tab_wake,
-    is_installed, is_search_catalog_wake, is_taskbar_badge_wake, is_update_wake,
-    is_windows_key_wake, launch_current_installer, launch_installer, launch_target, next_message,
+    AppError, AuxiliaryWindows, CompositionSurfaceState, ContextMenuAction,
+    ContextMenuEvent, DeviceState, DockContextRequest, DockHitTarget, DockRuntime,
+    DockWindow, MenuDirection, PointerEvent, RuntimePolicy, SceneSettingsKey,
+    SelectionDirection, SettingsAction, SettingsEvent, SettingsRuntime,
+    SettingsUpdateActivity, SurfaceSize, UpdateResult, UpdateStatus, WindowEvent,
+    WindowSettingsKey, WindowTracker, WindowTrackerEvent, apply_fullscreen_visibility,
+    confirm_install_update, confirm_shutdown, handle_alt_tab_events, handle_pointer_event,
+    handle_search_event, handle_windows_key_events, is_alt_tab_wake, is_installed,
+    is_search_catalog_wake, is_taskbar_badge_wake, is_update_wake, is_windows_key_wake,
+    launch_current_installer, launch_installer, launch_target, next_message,
     render_and_schedule, render_surface, request_exit, resize_dock, resize_surface,
     restart_current_process, show_error, show_information, startup_registration,
 };
-use lotus_settings::scene::SettingsPointerStyle;
-use lotus_windows::interaction::NativeMessage;
-use lotus_windows::interaction::PointerCursor;
 
 pub(super) fn run_message_loop(
     runtime: &RuntimePolicy<'_>,
@@ -68,20 +69,37 @@ fn process_message(
                 auxiliary.launcher.needs_animation(),
             )?;
         }
-        apply_fullscreen_visibility(dock, window_tracker, dock_model, &mut auxiliary.launcher)?;
+        apply_fullscreen_visibility(
+            dock,
+            window_tracker,
+            dock_model,
+            &mut auxiliary.launcher,
+        )?;
     }
-    let windows_key_wake = runtime.windows_key.is_some_and(|_| is_windows_key_wake(message.id()));
-    let alt_tab_wake = runtime.alt_tab.is_some_and(|_| is_alt_tab_wake(message.id()));
+    let windows_key_wake = runtime
+        .windows_key
+        .is_some_and(|_| is_windows_key_wake(message.id()));
+    let alt_tab_wake = runtime
+        .alt_tab
+        .is_some_and(|_| is_alt_tab_wake(message.id()));
     let search_catalog_wake = is_search_catalog_wake(message.id());
     let update_wake = is_update_wake(message.id());
-    let badge_wake = runtime.taskbar_badges.is_some() && is_taskbar_badge_wake(message.id());
+    let badge_wake =
+        runtime.taskbar_badges.is_some() && is_taskbar_badge_wake(message.id());
     message.dispatch();
     let events = dock.drain_events().collect::<Vec<_>>();
     for event in events {
         handle_window_event(event, dock, graphics, surface, dock_model, auxiliary)?;
     }
     for event in auxiliary.launcher.drain_events() {
-        handle_search_event(event, dock, graphics, surface, dock_model, &mut auxiliary.launcher)?;
+        handle_search_event(
+            event,
+            dock,
+            graphics,
+            surface,
+            dock_model,
+            &mut auxiliary.launcher,
+        )?;
     }
     for event in auxiliary.context_menu.drain_events() {
         handle_context_menu_event(event, dock, graphics, dock_model, auxiliary)?;
@@ -111,7 +129,13 @@ fn process_message(
         )?;
     }
     if windows_key_wake && let Some(controller) = runtime.windows_key {
-        handle_windows_key_events(controller, dock, graphics, dock_model, &mut auxiliary.launcher)?;
+        handle_windows_key_events(
+            controller,
+            dock,
+            graphics,
+            dock_model,
+            &mut auxiliary.launcher,
+        )?;
     }
     if alt_tab_wake && let Some(controller) = runtime.alt_tab {
         handle_alt_tab_events(
@@ -123,7 +147,9 @@ fn process_message(
         )?;
     }
     if search_catalog_wake
-        && auxiliary.launcher.refresh_catalog_if_ready(dock, dock_model, graphics)?
+        && auxiliary
+            .launcher
+            .refresh_catalog_if_ready(dock, dock_model, graphics)?
     {
         let dock_animation = render_surface(graphics, surface, dock_model.scene())?;
         let launcher_animation = auxiliary.launcher.render(graphics)?;
@@ -141,7 +167,10 @@ fn drain_settings_and_switcher_events(
     }
     let switcher_events = context.auxiliary.switcher.drain_events();
     for event in switcher_events {
-        context.auxiliary.switcher.handle_window_event(event, context.graphics)?;
+        context
+            .auxiliary
+            .switcher
+            .handle_window_event(event, context.graphics)?;
     }
     Ok(())
 }
@@ -229,7 +258,9 @@ fn execute_context_menu_action(
                 show_error(
                     dock.handle(),
                     "Lotus",
-                    &format!("Lotus could not open the Windows notification area.\n\n{error}"),
+                    &format!(
+                        "Lotus could not open the Windows notification area.\n\n{error}"
+                    ),
                 );
             }
         }
@@ -264,7 +295,10 @@ fn handle_settings_event(
 ) -> Result<(), AppError> {
     let action = match event {
         SettingsEvent::Resized { width, height } => {
-            context.auxiliary.settings.resize(context.graphics, width, height)?;
+            context
+                .auxiliary
+                .settings
+                .resize(context.graphics, width, height)?;
             return Ok(());
         }
         SettingsEvent::DpiChanged { dpi } => {
@@ -283,12 +317,18 @@ fn handle_settings_event(
             let cursor = if context.auxiliary.settings.dragging_slider.is_some() {
                 PointerCursor::HorizontalResize
             } else {
-                settings_pointer_cursor(context.auxiliary.settings.scene.pointer_style(x, y))
+                settings_pointer_cursor(
+                    context.auxiliary.settings.scene.pointer_style(x, y),
+                )
             };
             context.auxiliary.settings.window.set_pointer_cursor(cursor);
             if let Some(slider) = context.auxiliary.settings.dragging_slider {
                 context.auxiliary.settings.scene.pointer_move(x, y);
-                let action = context.auxiliary.settings.scene.set_slider_from_pointer(slider, x);
+                let action = context
+                    .auxiliary
+                    .settings
+                    .scene
+                    .set_slider_from_pointer(slider, x);
                 return apply_settings_action(action, context);
             }
             if context.auxiliary.settings.scene.pointer_move(x, y) {
@@ -297,7 +337,11 @@ fn handle_settings_event(
             return Ok(());
         }
         SettingsEvent::PointerLeft => {
-            context.auxiliary.settings.window.set_pointer_cursor(PointerCursor::Arrow);
+            context
+                .auxiliary
+                .settings
+                .window
+                .set_pointer_cursor(PointerCursor::Arrow);
             if context.auxiliary.settings.scene.set_hovered(None) {
                 context.auxiliary.settings.render(context.graphics)?;
             }
@@ -311,7 +355,11 @@ fn handle_settings_event(
             context.auxiliary.settings.dragging_slider =
                 context.auxiliary.settings.scene.slider_at(x, y);
             if let Some(slider) = context.auxiliary.settings.dragging_slider {
-                let action = context.auxiliary.settings.scene.set_slider_from_pointer(slider, x);
+                let action = context
+                    .auxiliary
+                    .settings
+                    .scene
+                    .set_slider_from_pointer(slider, x);
                 return apply_settings_action(action, context);
             }
             return Ok(());
@@ -337,7 +385,9 @@ fn handle_settings_event(
                 })
         }
         SettingsEvent::CloseRequested => SettingsAction::Close,
-        SettingsEvent::KeyPressed(key) => settings_key_action(&mut context.auxiliary.settings, key),
+        SettingsEvent::KeyPressed(key) => {
+            settings_key_action(&mut context.auxiliary.settings, key)
+        }
     };
 
     apply_settings_action(action, context)
@@ -351,7 +401,10 @@ fn settings_pointer_cursor(style: SettingsPointerStyle) -> PointerCursor {
     }
 }
 
-fn settings_key_action(runtime: &mut SettingsRuntime, key: WindowSettingsKey) -> SettingsAction {
+fn settings_key_action(
+    runtime: &mut SettingsRuntime,
+    key: WindowSettingsKey,
+) -> SettingsAction {
     let key = match key {
         WindowSettingsKey::Escape => SceneSettingsKey::Escape,
         WindowSettingsKey::Enter | WindowSettingsKey::Space => SceneSettingsKey::Activate,
@@ -362,7 +415,9 @@ fn settings_key_action(runtime: &mut SettingsRuntime, key: WindowSettingsKey) ->
         WindowSettingsKey::Up => SceneSettingsKey::Up,
         WindowSettingsKey::Down => SceneSettingsKey::Down,
         WindowSettingsKey::Save if runtime.scene.is_dirty() => {
-            return SettingsAction::Apply(Box::new(runtime.scene.draft().clone().normalized()));
+            return SettingsAction::Apply(Box::new(
+                runtime.scene.draft().clone().normalized(),
+            ));
         }
         WindowSettingsKey::Save => return SettingsAction::None,
     };
@@ -386,11 +441,9 @@ fn apply_settings_action(
                     context.dock_model.settings_directory(),
                 ) {
                     Ok(stored) => {
-                        context
-                            .auxiliary
-                            .settings
-                            .scene
-                            .set_mascot_image_path(Some(stored.to_string_lossy().into_owned()));
+                        context.auxiliary.settings.scene.set_mascot_image_path(Some(
+                            stored.to_string_lossy().into_owned(),
+                        ));
                         context.auxiliary.settings.render(context.graphics)
                     }
                     Err(error) => {
@@ -442,7 +495,12 @@ fn apply_settings_action(
                 context.dock_model.settings(),
             );
             apply_auxiliary_settings(context)?;
-            resize_dock(context.dock, context.graphics, context.dock_surface, context.dock_model)?;
+            resize_dock(
+                context.dock,
+                context.graphics,
+                context.dock_surface,
+                context.dock_model,
+            )?;
             render_and_schedule(
                 context.dock,
                 context.graphics,
@@ -456,7 +514,11 @@ fn apply_settings_action(
                 context.dock_model,
                 &mut context.auxiliary.launcher,
             )?;
-            context.auxiliary.settings.scene.mark_applied(context.dock_model.settings().clone());
+            context
+                .auxiliary
+                .settings
+                .scene
+                .mark_applied(context.dock_model.settings().clone());
             context.auxiliary.settings.render(context.graphics)?;
 
             if impact.restart_required {
@@ -464,7 +526,9 @@ fn apply_settings_action(
                     show_error(
                         context.auxiliary.settings.window.handle(),
                         "Lotus Settings",
-                        &format!("Lotus saved your settings but could not restart.\n\n{error}"),
+                        &format!(
+                            "Lotus saved your settings but could not restart.\n\n{error}"
+                        ),
                     );
                 } else {
                     request_exit(0);
@@ -506,9 +570,14 @@ fn choose_settings_color(
     }
 }
 
-fn apply_auxiliary_settings(context: &mut SettingsEventContext<'_>) -> Result<(), AppError> {
+fn apply_auxiliary_settings(
+    context: &mut SettingsEventContext<'_>,
+) -> Result<(), AppError> {
     let settings = context.dock_model.settings();
-    context.auxiliary.launcher.apply_settings(settings, context.dock, context.graphics)?;
+    context
+        .auxiliary
+        .launcher
+        .apply_settings(settings, context.dock, context.graphics)?;
     context.auxiliary.context_menu.apply_settings(settings);
     context.auxiliary.switcher.apply_settings(settings);
     Ok(())
@@ -533,8 +602,12 @@ fn handle_update_results(
     let results = settings.drain_update_results();
     for result in results {
         match result {
-            UpdateResult::Checked(result) => handle_update_check(result, settings, graphics)?,
-            UpdateResult::Staged(result) => handle_staged_update(result, settings, graphics)?,
+            UpdateResult::Checked(result) => {
+                handle_update_check(result, settings, graphics)?;
+            }
+            UpdateResult::Staged(result) => {
+                handle_staged_update(result, settings, graphics)?;
+            }
         }
     }
     Ok(())
@@ -549,7 +622,9 @@ fn handle_update_check(
     let installed = match is_installed() {
         Ok(installed) => installed,
         Err(error) => {
-            let _ = settings.scene.set_update_activity(SettingsUpdateActivity::Idle);
+            let _ = settings
+                .scene
+                .set_update_activity(SettingsUpdateActivity::Idle);
             settings.render(graphics)?;
             show_error(owner, "Lotus Update", &error.to_string());
             return Ok(());
@@ -557,12 +632,17 @@ fn handle_update_check(
     };
     match result {
         Ok(UpdateStatus::Current { release }) if installed => {
-            let _ = settings.scene.set_update_activity(SettingsUpdateActivity::Idle);
+            let _ = settings
+                .scene
+                .set_update_activity(SettingsUpdateActivity::Idle);
             settings.render(graphics)?;
             show_information(
                 owner,
                 "Lotus is up to date",
-                &format!("You are running the latest Lotus release ({}).", release.version),
+                &format!(
+                    "You are running the latest Lotus release ({}).",
+                    release.version
+                ),
             );
         }
         Ok(UpdateStatus::Current { release }) => {
@@ -570,18 +650,24 @@ fn handle_update_check(
                 match launch_current_installer() {
                     Ok(()) => request_exit(0),
                     Err(error) => {
-                        let _ = settings.scene.set_update_activity(SettingsUpdateActivity::Idle);
+                        let _ = settings
+                            .scene
+                            .set_update_activity(SettingsUpdateActivity::Idle);
                         settings.render(graphics)?;
                         show_error(owner, "Lotus Update", &error.to_string());
                     }
                 }
             } else {
-                let _ = settings.scene.set_update_activity(SettingsUpdateActivity::Idle);
+                let _ = settings
+                    .scene
+                    .set_update_activity(SettingsUpdateActivity::Idle);
                 settings.render(graphics)?;
             }
         }
         Ok(UpdateStatus::Ahead { current, release }) => {
-            let _ = settings.scene.set_update_activity(SettingsUpdateActivity::Idle);
+            let _ = settings
+                .scene
+                .set_update_activity(SettingsUpdateActivity::Idle);
             settings.render(graphics)?;
             show_information(
                 owner,
@@ -598,18 +684,24 @@ fn handle_update_check(
                     Ok(true) => settings.render(graphics)?,
                     Ok(false) => {}
                     Err(error) => {
-                        let _ = settings.scene.set_update_activity(SettingsUpdateActivity::Idle);
+                        let _ = settings
+                            .scene
+                            .set_update_activity(SettingsUpdateActivity::Idle);
                         settings.render(graphics)?;
                         show_error(owner, "Lotus Update", &error.to_string());
                     }
                 }
             } else {
-                let _ = settings.scene.set_update_activity(SettingsUpdateActivity::Idle);
+                let _ = settings
+                    .scene
+                    .set_update_activity(SettingsUpdateActivity::Idle);
                 settings.render(graphics)?;
             }
         }
         Err(error) => {
-            let _ = settings.scene.set_update_activity(SettingsUpdateActivity::Idle);
+            let _ = settings
+                .scene
+                .set_update_activity(SettingsUpdateActivity::Idle);
             settings.render(graphics)?;
             show_error(
                 owner,
@@ -631,13 +723,17 @@ fn handle_staged_update(
         Ok(staged) => match launch_installer(&staged) {
             Ok(()) => request_exit(0),
             Err(error) => {
-                let _ = settings.scene.set_update_activity(SettingsUpdateActivity::Idle);
+                let _ = settings
+                    .scene
+                    .set_update_activity(SettingsUpdateActivity::Idle);
                 settings.render(graphics)?;
                 show_error(owner, "Lotus Update", &error.to_string());
             }
         },
         Err(error) => {
-            let _ = settings.scene.set_update_activity(SettingsUpdateActivity::Idle);
+            let _ = settings
+                .scene
+                .set_update_activity(SettingsUpdateActivity::Idle);
             settings.render(graphics)?;
             show_error(
                 owner,

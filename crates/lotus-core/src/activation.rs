@@ -18,7 +18,9 @@ where
         [window] => ActivationDecision::Focus(*window),
         multiple => {
             let next_index = foreground
-                .and_then(|foreground| multiple.iter().position(|window| window == foreground))
+                .and_then(|foreground| {
+                    multiple.iter().position(|window| window == foreground)
+                })
                 .map_or(0, |index| (index + 1) % multiple.len());
 
             ActivationDecision::Focus(multiple[next_index])

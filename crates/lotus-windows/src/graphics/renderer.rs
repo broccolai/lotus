@@ -3,6 +3,7 @@ use std::ffi::c_void;
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
+use lotus_ui::theme::Theme;
 use thiserror::Error;
 use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -18,9 +19,9 @@ use windows::Win32::Graphics::Direct2D::{
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory,
-    IDWriteFactory, IDWriteTextFormat,
+    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
@@ -29,12 +30,11 @@ use windows::core::{Error as WindowsError, w};
 use super::assets::{AssetError, RasterImage, RasterSize, SvgAsset, SvgAssetCache};
 use super::device::GraphicsDevice;
 use super::scene::{
-    DockBadge, DockDragState, DockHitTarget, DockIcon, DockInteractionState, DockLayout, DockScene,
-    LaidOutItem, PixelRect, RasterIcon, RasterIconId,
+    DockBadge, DockDragState, DockHitTarget, DockIcon, DockInteractionState, DockLayout,
+    DockScene, LaidOutItem, PixelRect, RasterIcon, RasterIconId,
 };
 use super::surface::SurfaceSize;
 use super::theme;
-use lotus_ui::theme::Theme;
 
 const TARGET_DPI: f32 = 96.0;
 const DIVIDER_CORNER_RADIUS: f32 = 1.0;
@@ -42,7 +42,12 @@ const HOVER_DURATION: Duration = Duration::from_millis(145);
 const PRESS_DURATION: Duration = Duration::from_millis(80);
 const REORDER_DURATION: Duration = Duration::from_millis(180);
 
-const TRANSPARENT: D2D1_COLOR_F = D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+const TRANSPARENT: D2D1_COLOR_F = D2D1_COLOR_F {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.0,
+};
 
 pub(super) enum DrawResult {
     Complete { needs_animation: bool },
@@ -83,7 +88,8 @@ impl Direct2DRenderer {
         // same D3D11 device that owns the swap chain.
         let device = unsafe { factory.CreateDevice(&dxgi_device)? };
         // SAFETY: The Direct2D device is live and returns an owned context.
-        let context = unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
+        let context =
+            unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
         // SAFETY: DirectWrite returns an owned shared factory.
         let write_factory: IDWriteFactory =
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
@@ -151,7 +157,8 @@ impl Direct2DRenderer {
         // SAFETY: The DXGI surface and context are live, and `properties`
         // remains valid for the duration of the synchronous creation call.
         let target = unsafe {
-            self.context.CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
+            self.context
+                .CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
         };
         // SAFETY: `target` is a bitmap created by this context with TARGET set.
         unsafe { self.context.SetTarget(&target) };
@@ -170,7 +177,8 @@ impl Direct2DRenderer {
         let layout = scene.layout(size.width(), size.height());
         let now = Instant::now();
         let (visuals, jirachi_visual, needs_animation) =
-            self.interaction.sample(now, scene.interaction(), &layout.items);
+            self.interaction
+                .sample(now, scene.interaction(), &layout.items);
         let (reorder_offsets, reorder_animating) =
             self.reorder.sample(now, scene.drag(), &layout.items);
         for item in &layout.items {
@@ -184,10 +192,15 @@ impl Direct2DRenderer {
             .iter()
             .zip(visuals.into_iter().zip(reorder_offsets))
             .map(|(item, (mut visual, reorder_offset))| {
-                let is_dragged = drag.is_some_and(|drag| drag.source_index == item.source_index);
+                let is_dragged =
+                    drag.is_some_and(|drag| drag.source_index == item.source_index);
                 let native_raster = matches!(item.icon, DockIcon::Raster(_));
                 if drag.is_some() {
-                    visual = ItemVisual { scale: 1.0, translate_y: 0.0, icon_opacity: 1.0 };
+                    visual = ItemVisual {
+                        scale: 1.0,
+                        translate_y: 0.0,
+                        icon_opacity: 1.0,
+                    };
                 }
                 let bounds = if let Some(active_drag) =
                     drag.filter(|drag| drag.source_index == item.source_index)
@@ -203,7 +216,11 @@ impl Direct2DRenderer {
                     translated_scaled_pixel_rectangle(
                         item.bounds,
                         visual.scale,
-                        if native_raster { reorder_offset.round() } else { reorder_offset },
+                        if native_raster {
+                            reorder_offset.round()
+                        } else {
+                            reorder_offset
+                        },
                         scale_dip_offset(visual.translate_y, scene.dpi()),
                     )
                 };
@@ -239,9 +256,11 @@ impl Direct2DRenderer {
         let result = unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&raw const transparent));
-            self.context.FillRoundedRectangle(&raw const dock, &self.dock_brush);
+            self.context
+                .FillRoundedRectangle(&raw const dock, &self.dock_brush);
             self.draw_items(&item_draws, scene.dpi(), &badge_format);
-            self.context.FillRoundedRectangle(&raw const divider, &self.divider_brush);
+            self.context
+                .FillRoundedRectangle(&raw const divider, &self.divider_brush);
             self.draw_show_desktop(&layout, scene.interaction());
             self.context.DrawBitmap(
                 jirachi,
@@ -255,10 +274,12 @@ impl Direct2DRenderer {
         };
 
         match result {
-            Ok(()) => {
-                Ok(DrawResult::Complete { needs_animation: needs_animation || reorder_animating })
+            Ok(()) => Ok(DrawResult::Complete {
+                needs_animation: needs_animation || reorder_animating,
+            }),
+            Err(error) if error.code() == D2DERR_RECREATE_TARGET => {
+                Ok(DrawResult::RecreateTarget)
             }
-            Err(error) if error.code() == D2DERR_RECREATE_TARGET => Ok(DrawResult::RecreateTarget),
             Err(error) => Err(error.into()),
         }
     }
@@ -299,7 +320,13 @@ impl Direct2DRenderer {
         Ok(format)
     }
 
-    fn draw_badge(&self, badge: DockBadge, icon: D2D_RECT_F, dpi: u32, format: &IDWriteTextFormat) {
+    fn draw_badge(
+        &self,
+        badge: DockBadge,
+        icon: D2D_RECT_F,
+        dpi: u32,
+        format: &IDWriteTextFormat,
+    ) {
         let scale = f32::from(u16::try_from(dpi).unwrap_or(u16::MAX)) / TARGET_DPI;
         let (width, height) = match badge {
             DockBadge::Dot => (8.0 * scale, 8.0 * scale),
@@ -313,11 +340,15 @@ impl Direct2DRenderer {
             right: icon.right + 3.0 * scale,
             bottom: icon.top + height - 3.0 * scale,
         };
-        let surface =
-            D2D1_ROUNDED_RECT { rect: bounds, radiusX: height * 0.5, radiusY: height * 0.5 };
+        let surface = D2D1_ROUNDED_RECT {
+            rect: bounds,
+            radiusX: height * 0.5,
+            radiusY: height * 0.5,
+        };
         // SAFETY: Drawing occurs between BeginDraw and EndDraw with retained resources.
         unsafe {
-            self.context.FillRoundedRectangle(&raw const surface, &self.badge_brush);
+            self.context
+                .FillRoundedRectangle(&raw const surface, &self.badge_brush);
             if badge != DockBadge::Dot {
                 let label = match badge {
                     DockBadge::AtLeast(count) => format!("{count}+"),
@@ -338,7 +369,12 @@ impl Direct2DRenderer {
         }
     }
 
-    fn draw_items(&self, item_draws: &[ItemDraw<'_>], dpi: u32, badge_format: &IDWriteTextFormat) {
+    fn draw_items(
+        &self,
+        item_draws: &[ItemDraw<'_>],
+        dpi: u32,
+        badge_format: &IDWriteTextFormat,
+    ) {
         // SAFETY: Called between BeginDraw and EndDraw with live retained resources.
         unsafe {
             for (_, bitmap, visual, bounds, interpolation, _) in item_draws {
@@ -375,12 +411,17 @@ impl Direct2DRenderer {
         unsafe {
             if let Some(highlight) = highlight {
                 self.show_desktop_brush.SetOpacity(opacity);
-                self.context.FillRoundedRectangle(&raw const highlight, &self.show_desktop_brush);
+                self.context
+                    .FillRoundedRectangle(&raw const highlight, &self.show_desktop_brush);
             }
         }
     }
 
-    fn ensure_icon(&mut self, icon: &DockIcon, size: NonZeroU32) -> Result<(), RendererError> {
+    fn ensure_icon(
+        &mut self,
+        icon: &DockIcon,
+        size: NonZeroU32,
+    ) -> Result<(), RendererError> {
         match icon {
             DockIcon::Embedded(asset) => self.ensure_embedded_bitmap(*asset, size),
             DockIcon::Raster(raster) => self.ensure_raster_bitmap(raster),
@@ -445,14 +486,17 @@ impl InteractionAnimator {
         state: DockInteractionState,
         items: &[LaidOutItem],
     ) -> (Vec<ItemVisual>, ItemVisual, bool) {
-        self.items
-            .retain(|source_index, _| items.iter().any(|item| item.source_index == *source_index));
+        self.items.retain(|source_index, _| {
+            items.iter().any(|item| item.source_index == *source_index)
+        });
         let mut needs_animation = false;
         let visuals = items
             .iter()
             .map(|item| {
-                let motion =
-                    self.items.entry(item.source_index).or_insert_with(|| ItemMotion::new(now));
+                let motion = self
+                    .items
+                    .entry(item.source_index)
+                    .or_insert_with(|| ItemMotion::new(now));
                 let target = DockHitTarget::Item(item.source_index);
                 let (visual, animating) = motion.sample(
                     now,
@@ -487,19 +531,24 @@ impl ReorderAnimator {
         drag: Option<DockDragState>,
         items: &[LaidOutItem],
     ) -> (Vec<f32>, bool) {
-        self.items
-            .retain(|source_index, _| items.iter().any(|item| item.source_index == *source_index));
+        self.items.retain(|source_index, _| {
+            items.iter().any(|item| item.source_index == *source_index)
+        });
 
-        let targets =
-            drag.map_or_else(|| vec![0.0; items.len()], |drag| reorder_targets(items, drag));
+        let targets = drag.map_or_else(
+            || vec![0.0; items.len()],
+            |drag| reorder_targets(items, drag),
+        );
         let released = self.was_dragging && drag.is_none();
         let mut animating = false;
         let offsets = items
             .iter()
             .zip(targets)
             .map(|(item, target)| {
-                let motion =
-                    self.items.entry(item.source_index).or_insert_with(|| OffsetMotion::new(now));
+                let motion = self
+                    .items
+                    .entry(item.source_index)
+                    .or_insert_with(|| OffsetMotion::new(now));
                 if released {
                     motion.snap(target, now);
                 } else {
@@ -516,8 +565,9 @@ impl ReorderAnimator {
 }
 
 fn reorder_targets(items: &[LaidOutItem], drag: DockDragState) -> Vec<f32> {
-    let Some(source_position) =
-        items.iter().position(|item| item.source_index == drag.source_index)
+    let Some(source_position) = items
+        .iter()
+        .position(|item| item.source_index == drag.source_index)
     else {
         return vec![0.0; items.len()];
     };
@@ -533,7 +583,10 @@ fn reorder_targets(items: &[LaidOutItem], drag: DockDragState) -> Vec<f32> {
 
     (0..items.len())
         .map(|index| {
-            if destination > source_position && index > source_position && index <= destination {
+            if destination > source_position
+                && index > source_position
+                && index <= destination
+            {
                 -slot_width
             } else if destination < source_position
                 && index >= destination
@@ -554,7 +607,8 @@ impl DockLayoutView<'_> {
         self.0
             .iter()
             .position(|item| {
-                i64::from(x) < i64::from(item.bounds.left.saturating_add(item.bounds.width / 2))
+                i64::from(x)
+                    < i64::from(item.bounds.left.saturating_add(item.bounds.width / 2))
             })
             .unwrap_or(self.0.len())
     }
@@ -569,7 +623,12 @@ struct OffsetMotion {
 
 impl OffsetMotion {
     const fn new(now: Instant) -> Self {
-        Self { from: 0.0, target: 0.0, started: now, moving: false }
+        Self {
+            from: 0.0,
+            target: 0.0,
+            started: now,
+            moving: false,
+        }
     }
 
     fn retarget(&mut self, target: f32, now: Instant) {
@@ -644,7 +703,13 @@ struct AnimationTrack {
 
 impl AnimationTrack {
     const fn new(now: Instant, duration: Duration) -> Self {
-        Self { from: 0.0, active: false, moving: false, started: now, duration }
+        Self {
+            from: 0.0,
+            active: false,
+            moving: false,
+            started: now,
+            duration,
+        }
     }
 
     fn retarget(&mut self, active: bool, now: Instant) {
@@ -658,12 +723,17 @@ impl AnimationTrack {
     }
 
     fn sample(&self, now: Instant) -> f32 {
-        let target = if self.active { 1.0 } else { 0.0 };
+        let target = if self.active {
+            1.0
+        } else {
+            0.0
+        };
         if !self.moving {
             return target;
         }
         let elapsed = now.saturating_duration_since(self.started);
-        let progress = (elapsed.as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0);
+        let progress =
+            (elapsed.as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0);
         self.from + (target - self.from) * ease_out_cubic(progress)
     }
 
@@ -679,8 +749,14 @@ struct ItemVisual {
     icon_opacity: f32,
 }
 
-type ItemDraw<'a> =
-    (bool, &'a ID2D1Bitmap1, ItemVisual, D2D_RECT_F, D2D1_INTERPOLATION_MODE, Option<DockBadge>);
+type ItemDraw<'a> = (
+    bool,
+    &'a ID2D1Bitmap1,
+    ItemVisual,
+    D2D_RECT_F,
+    D2D1_INTERPOLATION_MODE,
+    Option<DockBadge>,
+);
 
 fn ease_out_cubic(value: f32) -> f32 {
     1.0 - (1.0 - value).powi(3)
@@ -733,7 +809,10 @@ fn upload_bitmap(
     // pixel format exactly match the CPU raster.
     unsafe {
         Ok(context.CreateBitmap(
-            D2D_SIZE_U { width: size.width(), height: size.height() },
+            D2D_SIZE_U {
+                width: size.width(),
+                height: size.height(),
+            },
             Some(raster.pixels().as_ptr().cast::<c_void>()),
             raster.stride()?,
             &raw const properties,
@@ -745,7 +824,13 @@ fn upload_raster_icon(
     context: &ID2D1DeviceContext,
     raster: &RasterIcon,
 ) -> Result<ID2D1Bitmap1, RendererError> {
-    upload_pixels(context, raster.width(), raster.height(), raster.pixels(), raster.stride())
+    upload_pixels(
+        context,
+        raster.width(),
+        raster.height(),
+        raster.pixels(),
+        raster.stride(),
+    )
 }
 
 fn upload_pixels(
@@ -782,16 +867,21 @@ fn mascot_interpolation(icon: &DockIcon) -> D2D1_INTERPOLATION_MODE {
 fn icon_interpolation(icon: &DockIcon, target_size: NonZeroU32) -> D2D1_INTERPOLATION_MODE {
     match icon {
         DockIcon::Raster(raster)
-            if raster.width() != target_size.get() || raster.height() != target_size.get() =>
+            if raster.width() != target_size.get()
+                || raster.height() != target_size.get() =>
         {
             D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC
         }
-        DockIcon::Embedded(_) | DockIcon::Raster(_) => D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+        DockIcon::Embedded(_) | DockIcon::Raster(_) => {
+            D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR
+        }
     }
 }
 
 fn fitted_mascot_bounds(icon: &DockIcon, bounds: D2D_RECT_F) -> D2D_RECT_F {
-    let DockIcon::Raster(raster) = icon else { return bounds };
+    let DockIcon::Raster(raster) = icon else {
+        return bounds;
+    };
     let available_width = bounds.right - bounds.left;
     let available_height = bounds.bottom - bounds.top;
     let aspect = pixels_to_f32(raster.width()) / pixels_to_f32(raster.height());
@@ -800,8 +890,8 @@ fn fitted_mascot_bounds(icon: &DockIcon, bounds: D2D_RECT_F) -> D2D_RECT_F {
     } else {
         (available_width, available_width / aspect)
     };
-    let center_x = (bounds.left + bounds.right) * 0.5;
-    let center_y = (bounds.top + bounds.bottom) * 0.5;
+    let center_x = f32::midpoint(bounds.left, bounds.right);
+    let center_y = f32::midpoint(bounds.top, bounds.bottom);
     D2D_RECT_F {
         left: center_x - width * 0.5,
         top: center_y - height * 0.5,
@@ -834,8 +924,8 @@ fn pixel_rectangle(rectangle: PixelRect) -> D2D_RECT_F {
 
 fn scaled_pixel_rectangle(rectangle: PixelRect, scale: f32) -> D2D_RECT_F {
     let original = pixel_rectangle(rectangle);
-    let center_x = (original.left + original.right) * 0.5;
-    let center_y = (original.top + original.bottom) * 0.5;
+    let center_x = f32::midpoint(original.left, original.right);
+    let center_y = f32::midpoint(original.top, original.bottom);
     let half_width = (original.right - original.left) * 0.5 * scale;
     let half_height = (original.bottom - original.top) * 0.5 * scale;
     D2D_RECT_F {
@@ -901,7 +991,11 @@ const fn signed_pixels_to_f32(value: i32) -> f32 {
 }
 
 fn rounded_pixel_rectangle(rectangle: PixelRect, radius: f32) -> D2D1_ROUNDED_RECT {
-    D2D1_ROUNDED_RECT { rect: pixel_rectangle(rectangle), radiusX: radius, radiusY: radius }
+    D2D1_ROUNDED_RECT {
+        rect: pixel_rectangle(rectangle),
+        radiusX: radius,
+        radiusY: radius,
+    }
 }
 
 #[allow(

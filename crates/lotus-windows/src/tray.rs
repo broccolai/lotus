@@ -26,15 +26,22 @@ pub fn open_overflow() -> Result<(), TrayError> {
         key(VK_LWIN, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
     ])?;
     thread::sleep(FOCUS_SETTLE_TIME);
-    send(&[key(VK_RETURN, KEYBD_EVENT_FLAGS::default()), key(VK_RETURN, KEYEVENTF_KEYUP)])
+    send(&[
+        key(VK_RETURN, KEYBD_EVENT_FLAGS::default()),
+        key(VK_RETURN, KEYEVENTF_KEYUP),
+    ])
 }
 
 fn send(inputs: &[INPUT]) -> Result<(), TrayError> {
     let expected = u32::try_from(inputs.len()).unwrap_or(u32::MAX);
     // SAFETY: Each value is a fully initialized keyboard INPUT and the size
     // matches the exact ABI type supplied to SendInput.
-    let inserted =
-        unsafe { SendInput(inputs, i32::try_from(size_of::<INPUT>()).unwrap_or(i32::MAX)) };
+    let inserted = unsafe {
+        SendInput(
+            inputs,
+            i32::try_from(size_of::<INPUT>()).unwrap_or(i32::MAX),
+        )
+    };
     if inserted == expected {
         Ok(())
     } else {

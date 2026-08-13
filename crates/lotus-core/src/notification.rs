@@ -23,24 +23,35 @@ pub fn count_for_item(
     disabled_apps: &[String],
 ) -> NotificationCount {
     let candidates = item_candidates(item);
-    if disabled_apps.iter().map(|value| normalized(value)).any(|disabled| {
-        !disabled.is_empty() && candidates.iter().any(|candidate| candidate == &disabled)
-    }) {
+    if disabled_apps
+        .iter()
+        .map(|value| normalized(value))
+        .any(|disabled| {
+            !disabled.is_empty()
+                && candidates.iter().any(|candidate| candidate == &disabled)
+        })
+    {
         return NotificationCount::default();
     }
 
-    sources.iter().filter(|source| source_matches(source, &candidates)).fold(
-        NotificationCount::default(),
-        |total, source| NotificationCount {
-            value: total.value.saturating_add(source.count),
-            is_lower_bound: total.is_lower_bound || source.count_is_lower_bound,
-        },
-    )
+    sources
+        .iter()
+        .filter(|source| source_matches(source, &candidates))
+        .fold(NotificationCount::default(), |total, source| {
+            NotificationCount {
+                value: total.value.saturating_add(source.count),
+                is_lower_bound: total.is_lower_bound || source.count_is_lower_bound,
+            }
+        })
 }
 
 fn source_matches(source: &NotificationSource, candidates: &[String]) -> bool {
     let display_name = normalized(&source.display_name);
-    if !display_name.is_empty() && candidates.iter().any(|candidate| candidate == &display_name) {
+    if !display_name.is_empty()
+        && candidates
+            .iter()
+            .any(|candidate| candidate == &display_name)
+    {
         return true;
     }
 
@@ -68,9 +79,16 @@ fn item_candidates(item: &DockItem) -> Vec<String> {
 }
 
 fn file_stem(value: &str) -> &str {
-    Path::new(value).file_stem().and_then(|value| value.to_str()).unwrap_or(value)
+    Path::new(value)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(value)
 }
 
 fn normalized(value: &str) -> String {
-    value.chars().filter(char::is_ascii_alphanumeric).flat_map(char::to_lowercase).collect()
+    value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect()
 }

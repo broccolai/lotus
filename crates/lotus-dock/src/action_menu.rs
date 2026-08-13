@@ -60,7 +60,9 @@ impl ActionMenu {
     }
 
     pub fn set_dpi(&mut self, dpi: u32) -> bool {
-        let Some(scale) = DpiScale::new(dpi) else { return false };
+        let Some(scale) = DpiScale::new(dpi) else {
+            return false;
+        };
         if scale == self.scale {
             return false;
         }
@@ -78,7 +80,10 @@ impl ActionMenu {
         let button = self.scale(BUTTON_DIPS);
         let gap = self.scale(GAP_DIPS);
         [
-            (Action::RequestShutdown, physical_rect(padding, padding, button, button)),
+            (
+                Action::RequestShutdown,
+                physical_rect(padding, padding, button, button),
+            ),
             (
                 Action::OpenVolumeMixer,
                 physical_rect(
@@ -166,7 +171,8 @@ impl ActionMenu {
     }
 
     fn action_at(&self, x: i32, y: i32) -> Option<Action> {
-        let point = PhysicalUnsignedPoint::new(u32::try_from(x).ok()?, u32::try_from(y).ok()?);
+        let point =
+            PhysicalUnsignedPoint::new(u32::try_from(x).ok()?, u32::try_from(y).ok()?);
         self.items()
             .into_iter()
             .find_map(|(action, bounds)| bounds.contains(point).then_some(action))

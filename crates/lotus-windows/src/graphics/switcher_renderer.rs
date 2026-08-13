@@ -3,6 +3,7 @@ use std::ffi::c_void;
 use std::num::NonZeroU32;
 
 use lotus_ui::geometry::DpiScale;
+use lotus_ui::theme::Theme;
 use thiserror::Error;
 use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -12,14 +13,15 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
-    D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1,
-    ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush,
+    D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_ROUNDED_RECT, D2D1CreateFactory,
+    ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Image,
+    ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP,
-    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
@@ -31,7 +33,6 @@ use super::scene::{DockIcon, RasterIcon, RasterIconId};
 use super::surface::SurfaceSize;
 use super::switcher_scene::SwitcherScene;
 use super::theme;
-use lotus_ui::theme::Theme;
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = rgba(0, 0, 0, 0);
@@ -69,9 +70,11 @@ impl SwitcherRenderer {
         // SAFETY: The live DXGI device is compatible with this factory.
         let device = unsafe { factory.CreateDevice(&dxgi)? };
         // SAFETY: The live device returns an owned drawing context.
-        let context = unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
+        let context =
+            unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
         // SAFETY: DirectWrite returns an owned shared factory.
-        let write: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
+        let write: IDWriteFactory =
+            unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let icon_format = text_format(&write, 26.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let text_format = text_format(&write, 13.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         let theme = Theme::default();
@@ -100,14 +103,18 @@ impl SwitcherRenderer {
         self.target = None;
     }
 
-    pub(super) fn attach_target(&mut self, chain: &IDXGISwapChain1) -> Result<(), WindowsError> {
+    pub(super) fn attach_target(
+        &mut self,
+        chain: &IDXGISwapChain1,
+    ) -> Result<(), WindowsError> {
         self.detach_target();
         // SAFETY: Buffer zero exists on the initialized swap chain.
         let surface: IDXGISurface = unsafe { chain.GetBuffer(0)? };
         let properties = target_properties();
         // SAFETY: Surface and properties remain live through bitmap creation.
         let target = unsafe {
-            self.context.CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
+            self.context
+                .CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
         };
         // SAFETY: The bitmap belongs to this context and is target-capable.
         unsafe { self.context.SetTarget(&target) };
@@ -147,12 +154,15 @@ impl SwitcherRenderer {
         let result = unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&raw const transparent));
-            self.context.FillRoundedRectangle(&raw const panel, &self.panel);
+            self.context
+                .FillRoundedRectangle(&raw const panel, &self.panel);
             for item in layout.items {
                 let bounds = rect(item.bounds);
                 if item.source_index == scene.selected() {
-                    let selected_bounds = rounded(bounds, scaled(scene, theme.radii.control));
-                    self.context.FillRoundedRectangle(&raw const selected_bounds, &self.selected);
+                    let selected_bounds =
+                        rounded(bounds, scaled(scene, theme.radii.control));
+                    self.context
+                        .FillRoundedRectangle(&raw const selected_bounds, &self.selected);
                 }
                 let icon_bounds = D2D_RECT_F {
                     bottom: bounds.top + (bounds.bottom - bounds.top) * 0.62,
@@ -181,8 +191,14 @@ impl SwitcherRenderer {
                         None,
                     );
                 } else {
-                    let initial =
-                        item.item.title.chars().next().unwrap_or('?').to_uppercase().to_string();
+                    let initial = item
+                        .item
+                        .title
+                        .chars()
+                        .next()
+                        .unwrap_or('?')
+                        .to_uppercase()
+                        .to_string();
                     let initial = initial.encode_utf16().collect::<Vec<_>>();
                     self.context.DrawText(
                         &initial,
@@ -194,8 +210,10 @@ impl SwitcherRenderer {
                     );
                 }
                 let title = item.item.title.encode_utf16().collect::<Vec<_>>();
-                let title_bounds =
-                    D2D_RECT_F { top: icon_bounds.bottom - scaled(scene, 4.0), ..bounds };
+                let title_bounds = D2D_RECT_F {
+                    top: icon_bounds.bottom - scaled(scene, 4.0),
+                    ..bounds
+                };
                 self.context.DrawText(
                     &title,
                     &self.text_format,
@@ -209,12 +227,18 @@ impl SwitcherRenderer {
         };
         match result {
             Ok(()) => Ok(DrawResult::Complete),
-            Err(error) if error.code() == D2DERR_RECREATE_TARGET => Ok(DrawResult::RecreateTarget),
+            Err(error) if error.code() == D2DERR_RECREATE_TARGET => {
+                Ok(DrawResult::RecreateTarget)
+            }
             Err(error) => Err(error.into()),
         }
     }
 
-    fn ensure_icon(&mut self, icon: &DockIcon, size: NonZeroU32) -> Result<(), RendererError> {
+    fn ensure_icon(
+        &mut self,
+        icon: &DockIcon,
+        size: NonZeroU32,
+    ) -> Result<(), RendererError> {
         match icon {
             DockIcon::Embedded(asset) => {
                 let key = (*asset, size);
@@ -241,7 +265,11 @@ impl SwitcherRenderer {
         Ok(())
     }
 
-    fn bitmap(&self, icon: &DockIcon, size: NonZeroU32) -> Result<&ID2D1Bitmap1, RendererError> {
+    fn bitmap(
+        &self,
+        icon: &DockIcon,
+        size: NonZeroU32,
+    ) -> Result<&ID2D1Bitmap1, RendererError> {
         match icon {
             DockIcon::Embedded(asset) => self
                 .embedded_bitmaps
@@ -330,7 +358,13 @@ fn upload_bitmap(
     raster: &RasterImage,
 ) -> Result<ID2D1Bitmap1, RendererError> {
     let size = raster.size();
-    upload_pixels(context, size.width(), size.height(), raster.pixels(), raster.stride()?)
+    upload_pixels(
+        context,
+        size.width(),
+        size.height(),
+        raster.pixels(),
+        raster.stride()?,
+    )
 }
 
 fn upload_pixels(
@@ -366,7 +400,11 @@ fn rect(value: lotus_ui::geometry::PhysicalRect) -> D2D_RECT_F {
 }
 
 const fn rounded(rect: D2D_RECT_F, radius: f32) -> D2D1_ROUNDED_RECT {
-    D2D1_ROUNDED_RECT { rect, radiusX: radius, radiusY: radius }
+    D2D1_ROUNDED_RECT {
+        rect,
+        radiusX: radius,
+        radiusY: radius,
+    }
 }
 
 fn scaled(scene: &SwitcherScene, dips: f32) -> f32 {
@@ -379,15 +417,21 @@ fn icon_interpolation(
 ) -> windows::Win32::Graphics::Direct2D::D2D1_INTERPOLATION_MODE {
     match icon {
         DockIcon::Raster(raster)
-            if raster.width() == target_size.get() && raster.height() == target_size.get() =>
+            if raster.width() == target_size.get()
+                && raster.height() == target_size.get() =>
         {
             D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR
         }
-        DockIcon::Raster(_) | DockIcon::Embedded(_) => D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+        DockIcon::Raster(_) | DockIcon::Embedded(_) => {
+            D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC
+        }
     }
 }
 
-#[allow(clippy::cast_precision_loss, reason = "window dimensions remain below f32 exact range")]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "window dimensions remain below f32 exact range"
+)]
 const fn as_f32(value: u32) -> f32 {
     value as f32
 }

@@ -25,7 +25,12 @@ pub struct SwitcherScene<Asset> {
 impl<Asset> SwitcherScene<Asset> {
     pub fn new(dpi: u32, items: Vec<SwitcherItem<Asset>>, selected: usize) -> Option<Self> {
         let dpi = DpiScale::new(dpi)?;
-        (selected < items.len()).then_some(Self { dpi, items, selected, theme: Theme::default() })
+        (selected < items.len()).then_some(Self {
+            dpi,
+            items,
+            selected,
+            theme: Theme::default(),
+        })
     }
 
     pub const fn dpi(&self) -> u32 {
@@ -57,7 +62,9 @@ impl<Asset> SwitcherScene<Asset> {
     }
 
     pub fn set_dpi(&mut self, dpi: u32) -> bool {
-        let Some(dpi) = DpiScale::new(dpi) else { return false };
+        let Some(dpi) = DpiScale::new(dpi) else {
+            return false;
+        };
         if self.dpi == dpi {
             return false;
         }
@@ -73,7 +80,11 @@ impl<Asset> SwitcherScene<Asset> {
             .saturating_add(ITEM_GAP_DIP.saturating_mul(count.saturating_sub(1)));
         NonZeroPhysicalSize::new(
             self.dpi.physical(width_dips),
-            self.dpi.physical(PADDING_DIP.saturating_mul(2).saturating_add(ITEM_HEIGHT_DIP)),
+            self.dpi.physical(
+                PADDING_DIP
+                    .saturating_mul(2)
+                    .saturating_add(ITEM_HEIGHT_DIP),
+            ),
         )
         .expect("switcher dimensions are nonzero")
     }
@@ -90,10 +101,13 @@ impl<Asset> SwitcherScene<Asset> {
             .map(|(offset, item)| {
                 let offset = u32::try_from(offset).unwrap_or(u32::MAX);
                 LaidOutItem {
-                    source_index: range.start + usize::try_from(offset).unwrap_or(usize::MAX),
+                    source_index: range.start
+                        + usize::try_from(offset).unwrap_or(usize::MAX),
                     item,
                     bounds: physical_rect(
-                        padding.saturating_add(offset.saturating_mul(width.saturating_add(gap))),
+                        padding.saturating_add(
+                            offset.saturating_mul(width.saturating_add(gap)),
+                        ),
                         padding,
                         width,
                         height,
@@ -106,7 +120,10 @@ impl<Asset> SwitcherScene<Asset> {
 
     fn visible_range(&self) -> std::ops::Range<usize> {
         let visible = self.items.len().min(MAX_VISIBLE_ITEMS);
-        let start = self.selected.saturating_sub(visible / 2).min(self.items.len() - visible);
+        let start = self
+            .selected
+            .saturating_sub(visible / 2)
+            .min(self.items.len() - visible);
         start..start + visible
     }
 }

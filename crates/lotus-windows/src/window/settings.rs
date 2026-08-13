@@ -47,7 +47,10 @@ impl SettingsWindow {
             state,
         )?;
         backdrop::apply_settings_window(window.hwnd());
-        Ok(Self { window, _class: class })
+        Ok(Self {
+            window,
+            _class: class,
+        })
     }
 
     pub(crate) fn hwnd(&self) -> HWND {
@@ -88,14 +91,19 @@ impl SettingsWindow {
     }
 
     pub fn drain_events(&mut self) -> impl Iterator<Item = SettingsEvent> + '_ {
-        self.window.state_mut().drain().filter_map(settings_event_from_window_event)
+        self.window
+            .state_mut()
+            .drain()
+            .filter_map(settings_event_from_window_event)
     }
 }
 
 fn settings_event_from_window_event(event: WindowEvent) -> Option<SettingsEvent> {
     match event {
         WindowEvent::Settings(event) => Some(event),
-        WindowEvent::Resized { width, height } => Some(SettingsEvent::Resized { width, height }),
+        WindowEvent::Resized { width, height } => {
+            Some(SettingsEvent::Resized { width, height })
+        }
         WindowEvent::DpiChanged { dpi } => Some(SettingsEvent::DpiChanged { dpi }),
         WindowEvent::RenderRequested => Some(SettingsEvent::RenderRequested),
         WindowEvent::Pointer(PointerEvent::Moved { x, y }) => {
@@ -123,9 +131,21 @@ fn initial_bounds(anchor: HWND) -> Result<(i32, i32, i32, i32)> {
     let dpi = display.dpi()?;
     let width = dpi.physical_i32(DEFAULT_WIDTH_DIPS);
     let height = dpi.physical_i32(DEFAULT_HEIGHT_DIPS);
-    let work_width = display.work_area.right.saturating_sub(display.work_area.left);
-    let work_height = display.work_area.bottom.saturating_sub(display.work_area.top);
-    let x = display.work_area.left.saturating_add(work_width.saturating_sub(width) / 2);
-    let y = display.work_area.top.saturating_add(work_height.saturating_sub(height) / 2);
+    let work_width = display
+        .work_area
+        .right
+        .saturating_sub(display.work_area.left);
+    let work_height = display
+        .work_area
+        .bottom
+        .saturating_sub(display.work_area.top);
+    let x = display
+        .work_area
+        .left
+        .saturating_add(work_width.saturating_sub(width) / 2);
+    let y = display
+        .work_area
+        .top
+        .saturating_add(work_height.saturating_sub(height) / 2);
     Ok((x, y, width, height))
 }

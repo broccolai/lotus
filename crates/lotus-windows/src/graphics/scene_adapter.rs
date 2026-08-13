@@ -13,8 +13,9 @@ where
         .iter()
         .enumerate()
         .filter_map(|(source_index, item)| {
-            native_icon(source_index, item)
-                .map(|icon| SceneDockItem::with_source_index(source_index, DockIcon::Raster(icon)))
+            native_icon(source_index, item).map(|icon| {
+                SceneDockItem::with_source_index(source_index, DockIcon::Raster(icon))
+            })
         })
         .collect()
 }

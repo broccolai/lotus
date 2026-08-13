@@ -16,7 +16,11 @@ pub struct SearchController {
 }
 
 impl SearchController {
-    pub fn new(result_limit: usize, usage: SearchUsage, usage_store: SearchUsageStore) -> Self {
+    pub fn new(
+        result_limit: usize,
+        usage: SearchUsage,
+        usage_store: SearchUsageStore,
+    ) -> Self {
         Self {
             model: LauncherModel::with_usage(result_limit, usage),
             usage_store,
@@ -107,7 +111,10 @@ pub struct SearchPresentation {
 
 impl Default for SearchPresentation {
     fn default() -> Self {
-        Self { started: None, progress: COMPLETE_PROGRESS }
+        Self {
+            started: None,
+            progress: COMPLETE_PROGRESS,
+        }
     }
 }
 

@@ -11,7 +11,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-const LATEST_RELEASE_API: &str = "https://api.github.com/repos/broccolai/lotus/releases/latest";
+const LATEST_RELEASE_API: &str =
+    "https://api.github.com/repos/broccolai/lotus/releases/latest";
 const RELEASE_BASE_URL: &str = "https://github.com/broccolai/lotus/releases";
 const DOWNLOAD_LIMIT: u64 = 64 * 1024 * 1024;
 
@@ -64,16 +65,21 @@ pub enum UpdateError {
 pub fn check(current_version: &str) -> Result<UpdateStatus, UpdateError> {
     let current = Version::parse(current_version).map_err(UpdateError::CurrentVersion)?;
     let release = fetch_release()?;
-    let latest = Version::parse(&release.version)
-        .map_err(|source| UpdateError::ReleaseVersion { tag: release.version.clone(), source })?;
+    let latest =
+        Version::parse(&release.version).map_err(|source| UpdateError::ReleaseVersion {
+            tag: release.version.clone(),
+            source,
+        })?;
     match latest.cmp(&current) {
-        std::cmp::Ordering::Greater => {
-            Ok(UpdateStatus::Available { current: current.to_string(), release })
-        }
+        std::cmp::Ordering::Greater => Ok(UpdateStatus::Available {
+            current: current.to_string(),
+            release,
+        }),
         std::cmp::Ordering::Equal => Ok(UpdateStatus::Current { release }),
-        std::cmp::Ordering::Less => {
-            Ok(UpdateStatus::Ahead { current: current.to_string(), release })
-        }
+        std::cmp::Ordering::Less => Ok(UpdateStatus::Ahead {
+            current: current.to_string(),
+            release,
+        }),
     }
 }
 
@@ -82,7 +88,9 @@ pub fn stage(release: &Release) -> Result<StagedUpdate, UpdateError> {
     let expected = std::str::from_utf8(&checksum)
         .ok()
         .and_then(|value| value.split_whitespace().next())
-        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .filter(|value| {
+            value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
         .ok_or(UpdateError::InvalidChecksum)?;
     let archive = download(&release.archive_url)?;
     let digest = Sha256::digest(&archive);
@@ -97,7 +105,8 @@ pub fn stage(release: &Release) -> Result<StagedUpdate, UpdateError> {
     let directory = staging_directory(&release.version);
     fs::create_dir_all(&directory).map_err(UpdateError::Staging)?;
     let executable = directory.join("lotus.exe");
-    let mut archive = zip::ZipArchive::new(Cursor::new(archive)).map_err(UpdateError::Archive)?;
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(archive)).map_err(UpdateError::Archive)?;
     let mut entry = archive.by_name("lotus.exe").map_err(|error| match error {
         zip::result::ZipError::FileNotFound => UpdateError::MissingExecutable,
         error => UpdateError::Archive(error),
@@ -105,7 +114,11 @@ pub fn stage(release: &Release) -> Result<StagedUpdate, UpdateError> {
     let mut output = File::create(&executable).map_err(UpdateError::Staging)?;
     io::copy(&mut entry, &mut output).map_err(UpdateError::Staging)?;
     output.sync_all().map_err(UpdateError::Staging)?;
-    Ok(StagedUpdate { version: release.version.clone(), executable, directory })
+    Ok(StagedUpdate {
+        version: release.version.clone(),
+        executable,
+        directory,
+    })
 }
 
 fn fetch_release() -> Result<Release, UpdateError> {
@@ -121,8 +134,10 @@ fn fetch_release() -> Result<Release, UpdateError> {
         .map_err(UpdateError::Request)?;
     let tag = release.tag_name.trim();
     let version = tag.strip_prefix('v').unwrap_or(tag);
-    Version::parse(version)
-        .map_err(|source| UpdateError::ReleaseVersion { tag: release.tag_name.clone(), source })?;
+    Version::parse(version).map_err(|source| UpdateError::ReleaseVersion {
+        tag: release.tag_name.clone(),
+        source,
+    })?;
     let archive_name = format!("lotus-v{version}-windows-x86_64.zip");
     let download_base = format!("{RELEASE_BASE_URL}/download/{}", release.tag_name);
     Ok(Release {
@@ -147,13 +162,20 @@ fn download(url: &str) -> Result<Vec<u8>, UpdateError> {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(30))).build().into()
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into()
 }
 
 fn staging_directory(version: &str) -> PathBuf {
-    let nonce =
-        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
-    std::env::temp_dir().join(format!("lotus-update-{version}-{}-{nonce}", std::process::id()))
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    std::env::temp_dir().join(format!(
+        "lotus-update-{version}-{}-{nonce}",
+        std::process::id()
+    ))
 }
 
 #[derive(Deserialize)]

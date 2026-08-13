@@ -1,11 +1,12 @@
-use super::{
-    AppError, ContextMenuRuntime, DeviceState, DockSettings, LauncherRuntime, NativeIconCache,
-    NonZeroPhysicalSize, RecentOrder, SettingsRuntime, SurfaceError,
-    SwitcherCompositionSurfaceState, SwitcherEvent, SwitcherItem, SwitcherScene, SwitcherSession,
-    SwitcherWindow, WindowInfo, resolve_icon_with_native, switch_window,
-};
 use lotus_settings::appearance::theme_for;
 use lotus_ui::theme::Theme;
+
+use super::{
+    AppError, ContextMenuRuntime, DeviceState, DockSettings, LauncherRuntime,
+    NativeIconCache, NonZeroPhysicalSize, RecentOrder, SettingsRuntime, SurfaceError,
+    SwitcherCompositionSurfaceState, SwitcherEvent, SwitcherItem, SwitcherScene,
+    SwitcherSession, SwitcherWindow, WindowInfo, resolve_icon_with_native, switch_window,
+};
 
 const SWITCHER_ICON_DIP: u32 = 38;
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
@@ -59,16 +60,32 @@ impl SwitcherRuntime {
             self.recent_windows.record(foreground);
         }
         let windows = self.recent_windows.arrange(windows, |window| window.id);
-        let Some(session) = SwitcherSession::begin(windows, direction) else { return Ok(()) };
+        let Some(session) = SwitcherSession::begin(windows, direction) else {
+            return Ok(());
+        };
         self.name_overrides = settings.application_name_overrides.clone();
         self.theme = theme_for(settings);
         self.session = Some(session);
         self.rebuild_scene(self.window.dpi())?;
-        let size = self.scene.as_ref().ok_or(AppError::InvalidSwitcherScene)?.desired_size();
+        let size = self
+            .scene
+            .as_ref()
+            .ok_or(AppError::InvalidSwitcherScene)?
+            .desired_size();
         let dpi = self.window.show_centered(foreground, size)?;
-        if dpi != self.scene.as_ref().ok_or(AppError::InvalidSwitcherScene)?.dpi() {
+        if dpi
+            != self
+                .scene
+                .as_ref()
+                .ok_or(AppError::InvalidSwitcherScene)?
+                .dpi()
+        {
             self.rebuild_scene(dpi)?;
-            let size = self.scene.as_ref().ok_or(AppError::InvalidSwitcherScene)?.desired_size();
+            let size = self
+                .scene
+                .as_ref()
+                .ok_or(AppError::InvalidSwitcherScene)?
+                .desired_size();
             let _dpi = self.window.show_centered(foreground, size)?;
         }
         self.ensure_surface(graphics)?;
@@ -80,7 +97,9 @@ impl SwitcherRuntime {
         direction: lotus_switcher::model::Direction,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        let Some(session) = &mut self.session else { return Ok(()) };
+        let Some(session) = &mut self.session else {
+            return Ok(());
+        };
         session.cycle(direction);
         if let Some(scene) = &mut self.scene {
             let _changed = scene.set_selected(session.selected_index());
@@ -130,7 +149,9 @@ impl SwitcherRuntime {
     }
 
     pub(super) fn rebuild_scene(&mut self, dpi: u32) -> Result<(), AppError> {
-        let Some(session) = &self.session else { return Ok(()) };
+        let Some(session) = &self.session else {
+            return Ok(());
+        };
         let icon_size = lotus_ui::geometry::DpiScale::from_system(dpi)
             .physical(SWITCHER_ICON_DIP)
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
@@ -141,7 +162,10 @@ impl SwitcherRuntime {
                 window: window.id,
                 title: switcher_title(window, &self.name_overrides),
                 icon: resolve_icon_with_native(|| {
-                    self.native_icons.icon(&window.executable_path, icon_size).ok().flatten()
+                    self.native_icons
+                        .icon(&window.executable_path, icon_size)
+                        .ok()
+                        .flatten()
                 }),
             })
             .collect();
@@ -163,7 +187,10 @@ impl SwitcherRuntime {
         }
     }
 
-    pub(super) fn ensure_surface(&mut self, graphics: &mut DeviceState) -> Result<(), AppError> {
+    pub(super) fn ensure_surface(
+        &mut self,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
         let scene = self.scene.as_ref().ok_or(AppError::InvalidSwitcherScene)?;
         let size = scene.desired_size();
         if let Some(surface) = &mut self.surface {
@@ -171,8 +198,11 @@ impl SwitcherRuntime {
             return Ok(());
         }
         let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-        self.surface =
-            Some(SwitcherCompositionSurfaceState::create(device, self.window.handle(), size)?);
+        self.surface = Some(SwitcherCompositionSurfaceState::create(
+            device,
+            self.window.handle(),
+            size,
+        )?);
         Ok(())
     }
 
@@ -198,7 +228,10 @@ fn switcher_title(
     window: &WindowInfo,
     overrides: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    let executable_name = window.executable_path.file_name().and_then(|name| name.to_str());
+    let executable_name = window
+        .executable_path
+        .file_name()
+        .and_then(|name| name.to_str());
     if let Some(name) = executable_name.and_then(|name| {
         overrides
             .iter()
@@ -217,8 +250,14 @@ fn switcher_title(
 }
 
 fn executable_is_hidden(window: &WindowInfo, hidden: &[String]) -> bool {
-    let Some(name) = window.executable_path.file_name().and_then(|name| name.to_str()) else {
+    let Some(name) = window
+        .executable_path
+        .file_name()
+        .and_then(|name| name.to_str())
+    else {
         return false;
     };
-    hidden.iter().any(|candidate| candidate.trim().eq_ignore_ascii_case(name))
+    hidden
+        .iter()
+        .any(|candidate| candidate.trim().eq_ignore_ascii_case(name))
 }

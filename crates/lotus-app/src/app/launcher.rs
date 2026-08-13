@@ -1,12 +1,14 @@
+use lotus_settings::appearance::theme_for;
+use lotus_ui::theme::Theme;
+
 use super::{
     AppError, DeviceState, DockIcon, DockRuntime, DockSettings, DockWindow, Duration,
     LauncherCompositionSurfaceState, LauncherResult, LauncherScene, NativeIconCache, Path,
-    SearchCatalogCache, SearchController, SearchEvent, SearchPresentation, SearchUsageStore,
-    SearchWindow, SelectionDirection, SelectionMove, SurfaceError, SurfaceSize, WindowHandle,
-    launch_target, local_time_24h, resize_launcher_surface, show_error,
+    SearchCatalogCache, SearchController, SearchEvent, SearchPresentation,
+    SearchUsageStore, SearchWindow, SelectionDirection, SelectionMove, SurfaceError,
+    SurfaceSize, WindowHandle, launch_target, local_time_24h, resize_launcher_surface,
+    show_error,
 };
-use lotus_settings::appearance::theme_for;
-use lotus_ui::theme::Theme;
 
 pub(super) struct LauncherRuntime {
     pub(super) window: SearchWindow,
@@ -65,15 +67,18 @@ impl LauncherRuntime {
         }
 
         let _ = self.catalog.refresh_if_stale(Duration::from_mins(5));
-        if let Some(ready) = self
-            .catalog
-            .ready_catalog(dock_model.items(), &dock_model.settings().hidden_executables)
-        {
+        if let Some(ready) = self.catalog.ready_catalog(
+            dock_model.items(),
+            &dock_model.settings().hidden_executables,
+        ) {
             self.controller.begin(Some(ready.generation), ready.catalog);
         } else {
             self.controller.begin(
                 None,
-                self.catalog.catalog(dock_model.items(), &dock_model.settings().hidden_executables),
+                self.catalog.catalog(
+                    dock_model.items(),
+                    &dock_model.settings().hidden_executables,
+                ),
             );
         }
         self.presentation.begin();
@@ -81,21 +86,34 @@ impl LauncherRuntime {
 
         let scene = self.scene.as_ref().ok_or(AppError::InvalidLauncherScene)?;
         let desired = scene.desired_size();
-        self.window.show_sized(dock.handle(), desired.width(), desired.height())?;
+        self.window
+            .show_sized(dock.handle(), desired.width(), desired.height())?;
         if self.window.dpi() != scene.dpi() {
             self.rebuild_scene(self.window.dpi())?;
-            let desired = self.scene.as_ref().ok_or(AppError::InvalidLauncherScene)?.desired_size();
-            self.window.show_sized(dock.handle(), desired.width(), desired.height())?;
+            let desired = self
+                .scene
+                .as_ref()
+                .ok_or(AppError::InvalidLauncherScene)?
+                .desired_size();
+            self.window
+                .show_sized(dock.handle(), desired.width(), desired.height())?;
         }
 
-        let desired = self.scene.as_ref().ok_or(AppError::InvalidLauncherScene)?.desired_size();
+        let desired = self
+            .scene
+            .as_ref()
+            .ok_or(AppError::InvalidLauncherScene)?
+            .desired_size();
         let size = SurfaceSize::from(desired);
         if let Some(surface) = &mut self.surface {
             resize_launcher_surface(graphics, surface, size)?;
         } else {
             let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            self.surface =
-                Some(LauncherCompositionSurfaceState::create(device, self.window.handle(), size)?);
+            self.surface = Some(LauncherCompositionSurfaceState::create(
+                device,
+                self.window.handle(),
+                size,
+            )?);
         }
         self.visible = true;
         let needs_animation = self.render(graphics)?;
@@ -109,13 +127,16 @@ impl LauncherRuntime {
         dock_model: &DockRuntime,
         graphics: &mut DeviceState,
     ) -> Result<bool, AppError> {
-        let Some(ready) = self
-            .catalog
-            .ready_catalog(dock_model.items(), &dock_model.settings().hidden_executables)
-        else {
+        let Some(ready) = self.catalog.ready_catalog(
+            dock_model.items(),
+            &dock_model.settings().hidden_executables,
+        ) else {
             return Ok(false);
         };
-        if !self.controller.refresh_catalog(ready.generation, ready.catalog) {
+        if !self
+            .controller
+            .refresh_catalog(ready.generation, ready.catalog)
+        {
             return Ok(false);
         }
         if !self.visible {
@@ -173,7 +194,10 @@ impl LauncherRuntime {
         )
         .ok_or(AppError::InvalidLauncherScene)?;
         let _ = scene.set_theme(self.theme);
-        scene.set_result_viewport(self.controller.visible_start(), self.controller.total_results());
+        scene.set_result_viewport(
+            self.controller.visible_start(),
+            self.controller.total_results(),
+        );
         scene.set_query_cursor(self.controller.query_cursor());
         let _ = scene.set_footer_time(local_time_24h());
         let _ = scene.set_presentation_progress(self.presentation.progress());
@@ -181,7 +205,10 @@ impl LauncherRuntime {
         Ok(())
     }
 
-    pub(super) fn move_selection(&mut self, direction: SelectionDirection) -> Result<(), AppError> {
+    pub(super) fn move_selection(
+        &mut self,
+        direction: SelectionDirection,
+    ) -> Result<(), AppError> {
         self.controller.move_selection(match direction {
             SelectionDirection::Previous => SelectionMove::Previous,
             SelectionDirection::Next => SelectionMove::Next,
@@ -196,7 +223,9 @@ impl LauncherRuntime {
     }
 
     pub(super) fn set_hovered_result(&mut self, hovered: Option<usize>) -> bool {
-        self.scene.as_mut().is_some_and(|scene| scene.set_hovered(hovered))
+        self.scene
+            .as_mut()
+            .is_some_and(|scene| scene.set_hovered(hovered))
     }
 
     pub(super) fn select_result(&mut self, index: usize) -> Result<bool, AppError> {
@@ -238,8 +267,13 @@ impl LauncherRuntime {
         dock: &DockWindow,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        let desired = self.scene.as_ref().ok_or(AppError::InvalidLauncherScene)?.desired_size();
-        self.window.show_sized(dock.handle(), desired.width(), desired.height())?;
+        let desired = self
+            .scene
+            .as_ref()
+            .ok_or(AppError::InvalidLauncherScene)?
+            .desired_size();
+        self.window
+            .show_sized(dock.handle(), desired.width(), desired.height())?;
         if let Some(surface) = &mut self.surface {
             resize_launcher_surface(graphics, surface, SurfaceSize::from(desired))?;
         }
@@ -251,7 +285,10 @@ impl LauncherRuntime {
             return Ok(false);
         }
         let scene = self.scene.as_ref().ok_or(AppError::InvalidLauncherScene)?;
-        let surface = self.surface.as_mut().ok_or(AppError::InvalidLauncherScene)?;
+        let surface = self
+            .surface
+            .as_mut()
+            .ok_or(AppError::InvalidLauncherScene)?;
         match surface.render_scene(scene) {
             Ok(frame) => Ok(frame.needs_animation()),
             Err(SurfaceError::DeviceLost(_)) => {

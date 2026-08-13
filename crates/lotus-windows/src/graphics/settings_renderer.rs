@@ -1,3 +1,6 @@
+use lotus_core::settings::NotificationBadgeStyle;
+use lotus_settings::appearance::{AccentPreset, SurfacePreset};
+use lotus_ui::theme::{Color, Theme};
 use thiserror::Error;
 use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -12,8 +15,9 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory,
+    IDWriteFactory, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
@@ -21,14 +25,11 @@ use windows::core::{Error as WindowsError, w};
 
 use super::device::GraphicsDevice;
 use super::settings_scene::{
-    SettingsControl, SettingsLayout, SettingsPage, SettingsRect, SettingsScene, SettingsSlider,
-    SettingsToggle, SettingsUpdateActivity,
+    SettingsControl, SettingsLayout, SettingsPage, SettingsRect, SettingsScene,
+    SettingsSlider, SettingsToggle, SettingsUpdateActivity,
 };
 use super::surface::SurfaceSize;
 use super::theme;
-use lotus_core::settings::NotificationBadgeStyle;
-use lotus_settings::appearance::{AccentPreset, SurfacePreset};
-use lotus_ui::theme::{Color, Theme};
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = color(0.0, 0.0, 0.0, 0.0);
@@ -80,14 +81,16 @@ impl SettingsRenderer {
         // SAFETY: The live DXGI device is compatible with the Direct2D factory.
         let device = unsafe { factory.CreateDevice(&dxgi)? };
         // SAFETY: The live Direct2D device returns an owned context.
-        let context = unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
+        let context =
+            unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
         // SAFETY: DirectWrite returns an owned shared factory.
         let write_factory: IDWriteFactory =
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let title_format = text_format(&write_factory, 18.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let body_format = text_format(&write_factory, 14.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         let small_format = text_format(&write_factory, 12.5, DWRITE_FONT_WEIGHT_NORMAL)?;
-        let button_format = text_format(&write_factory, 13.5, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let button_format =
+            text_format(&write_factory, 13.5, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         // SAFETY: Each retained format is live and accepts these valid layout values.
         unsafe {
             title_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
@@ -131,14 +134,18 @@ impl SettingsRenderer {
         self.target = None;
     }
 
-    pub(super) fn attach_target(&mut self, chain: &IDXGISwapChain1) -> Result<(), WindowsError> {
+    pub(super) fn attach_target(
+        &mut self,
+        chain: &IDXGISwapChain1,
+    ) -> Result<(), WindowsError> {
         self.detach_target();
         // SAFETY: Buffer zero exists on the initialized composition swap chain.
         let surface: IDXGISurface = unsafe { chain.GetBuffer(0)? };
         let properties = target_properties();
         // SAFETY: Surface and properties live for the synchronous creation call.
         let target = unsafe {
-            self.context.CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
+            self.context
+                .CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
         };
         // SAFETY: The target bitmap belongs to this context.
         unsafe { self.context.SetTarget(&target) };
@@ -208,14 +215,19 @@ impl SettingsRenderer {
             right: as_f32(size.width()),
             bottom: as_f32(size.height()),
         };
-        let footer_divider = D2D_RECT_F { bottom: footer.top + scale_f32(scene, 1.0), ..footer };
+        let footer_divider = D2D_RECT_F {
+            bottom: footer.top + scale_f32(scene, 1.0),
+            ..footer
+        };
         // SAFETY: The active context and retained brushes are live. One continuous translucent
         // Lotus surface covers both areas, with only a quiet structural divider between them.
         unsafe {
             self.context.FillRectangle(&raw const surface, &self.panel);
             self.context.FillRectangle(&raw const footer, &self.group);
-            self.context.FillRectangle(&raw const divider, &self.divider);
-            self.context.FillRectangle(&raw const footer_divider, &self.divider);
+            self.context
+                .FillRectangle(&raw const divider, &self.divider);
+            self.context
+                .FillRectangle(&raw const footer_divider, &self.divider);
         }
     }
 
@@ -234,7 +246,9 @@ impl SettingsRenderer {
         );
         for page in SettingsPage::ALL {
             let control = SettingsControl::Navigate(page);
-            let Some(bounds) = layout.bounds(control) else { continue };
+            let Some(bounds) = layout.bounds(control) else {
+                continue;
+            };
             let selected = scene.page() == page;
             self.draw_control_surface(scene, bounds, selected);
             if selected {
@@ -246,7 +260,10 @@ impl SettingsRenderer {
                 };
                 let marker = rounded(rect(marker), scale_f32(scene, 1.5));
                 // SAFETY: Active context, local geometry, and retained accent brush are live.
-                unsafe { self.context.FillRoundedRectangle(&raw const marker, &self.accent) };
+                unsafe {
+                    self.context
+                        .FillRoundedRectangle(&raw const marker, &self.accent);
+                };
             }
             self.draw_text(
                 page.title(),
@@ -284,8 +301,12 @@ impl SettingsRenderer {
                 SettingsControl::Slider(slider) => {
                     self.draw_slider(scene, entry.bounds, slider);
                 }
-                SettingsControl::ChooseMascotImage => self.draw_mascot_image(scene, entry.bounds),
-                SettingsControl::ResetMascotImage => self.draw_reset_mascot(scene, entry.bounds),
+                SettingsControl::ChooseMascotImage => {
+                    self.draw_mascot_image(scene, entry.bounds);
+                }
+                SettingsControl::ResetMascotImage => {
+                    self.draw_reset_mascot(scene, entry.bounds);
+                }
                 SettingsControl::CheckForUpdates => {
                     self.draw_check_for_updates(scene, entry.bounds);
                 }
@@ -314,7 +335,9 @@ impl SettingsRenderer {
                 )
             })
             .collect();
-        let (Some(first), Some(last)) = (controls.first(), controls.last()) else { return };
+        let (Some(first), Some(last)) = (controls.first(), controls.last()) else {
+            return;
+        };
         let bottom = last.bounds.top.saturating_add(last.bounds.height);
         let bounds = SettingsRect {
             left: first.bounds.left,
@@ -324,7 +347,10 @@ impl SettingsRenderer {
         };
         let card = rounded(rect(bounds), scale_f32(scene, scene.theme().radii.panel));
         // SAFETY: Active context, local geometry, and retained group brush are live.
-        unsafe { self.context.FillRoundedRectangle(&raw const card, &self.group) };
+        unsafe {
+            self.context
+                .FillRoundedRectangle(&raw const card, &self.group);
+        };
         for entry in controls.iter().take(controls.len().saturating_sub(1)) {
             let y = entry
                 .bounds
@@ -344,7 +370,10 @@ impl SettingsRenderer {
                 bottom: as_f32(y.saturating_add(scale(scene, 1))),
             };
             // SAFETY: Active context, local rectangle, and retained divider brush are live.
-            unsafe { self.context.FillRectangle(&raw const divider, &self.divider) };
+            unsafe {
+                self.context
+                    .FillRectangle(&raw const divider, &self.divider);
+            };
         }
     }
 
@@ -361,7 +390,9 @@ impl SettingsRenderer {
         let selected = SurfacePreset::selected(scene.draft());
         for index in 0_u32..4 {
             let segment = SettingsRect {
-                left: picker.left.saturating_add(index.saturating_mul(segment_width)),
+                left: picker
+                    .left
+                    .saturating_add(index.saturating_mul(segment_width)),
                 top: picker.top,
                 width: if index == 3 {
                     picker.width.saturating_sub(segment_width.saturating_mul(3))
@@ -370,21 +401,29 @@ impl SettingsRenderer {
                 },
                 height: picker.height,
             };
-            let preset =
-                usize::try_from(index).ok().and_then(|index| SurfacePreset::ALL.get(index));
+            let preset = usize::try_from(index)
+                .ok()
+                .and_then(|index| SurfacePreset::ALL.get(index));
             let color = preset.map_or_else(
-                || Color::from_hex(&scene.draft().background_color).unwrap_or(scene.theme().canvas),
+                || {
+                    Color::from_hex(&scene.draft().background_color)
+                        .unwrap_or(scene.theme().canvas)
+                },
                 |preset| Color::from_hex(preset.color()).unwrap_or(scene.theme().canvas),
             );
             let label = preset.map_or("Custom", |preset| preset.name());
-            let is_selected = preset.map_or(selected.is_none(), |preset| selected == Some(*preset));
+            let is_selected =
+                preset.map_or(selected.is_none(), |preset| selected == Some(*preset));
             let surface = rounded(
                 rect(inset_all(segment, scale(scene, 2))),
                 scale_f32(scene, scene.theme().radii.compact),
             );
             theme::set(&self.row, color);
             // SAFETY: The active context, retained brush, and local geometry remain live.
-            unsafe { self.context.FillRoundedRectangle(&raw const surface, &self.row) };
+            unsafe {
+                self.context
+                    .FillRoundedRectangle(&raw const surface, &self.row);
+            };
             if is_selected {
                 let outline = rounded(
                     inset_rect(surface.rect, scale_f32(scene, 0.5)),
@@ -425,20 +464,31 @@ impl SettingsRenderer {
                 .saturating_add(segment_width.saturating_sub(diameter) / 2);
             let swatch_bounds = SettingsRect {
                 left,
-                top: bounds.top.saturating_add(bounds.height.saturating_sub(diameter) / 2),
+                top: bounds
+                    .top
+                    .saturating_add(bounds.height.saturating_sub(diameter) / 2),
                 width: diameter,
                 height: diameter,
             };
             let swatch = rounded(rect(swatch_bounds), as_f32(diameter) * 0.5);
-            let preset = usize::try_from(index).ok().and_then(|index| AccentPreset::ALL.get(index));
+            let preset = usize::try_from(index)
+                .ok()
+                .and_then(|index| AccentPreset::ALL.get(index));
             let color = preset.map_or_else(
-                || Color::from_hex(&scene.draft().accent_color).unwrap_or(scene.theme().accent),
+                || {
+                    Color::from_hex(&scene.draft().accent_color)
+                        .unwrap_or(scene.theme().accent)
+                },
                 |preset| Color::from_hex(preset.color()).unwrap_or(scene.theme().accent),
             );
             theme::set(&self.row, color);
             // SAFETY: The active context, retained brush, and local geometry remain live.
-            unsafe { self.context.FillRoundedRectangle(&raw const swatch, &self.row) };
-            let is_selected = preset.map_or(selected.is_none(), |preset| selected == Some(*preset));
+            unsafe {
+                self.context
+                    .FillRoundedRectangle(&raw const swatch, &self.row);
+            };
+            let is_selected =
+                preset.map_or(selected.is_none(), |preset| selected == Some(*preset));
             if is_selected {
                 let outline = rounded(
                     outset_rect(swatch.rect, scale_f32(scene, 3.0)),
@@ -455,7 +505,13 @@ impl SettingsRenderer {
                 }
             }
             if preset.is_none() {
-                self.draw_text("+", swatch_bounds, &self.small_format, &self.accent_dark, true);
+                self.draw_text(
+                    "+",
+                    swatch_bounds,
+                    &self.small_format,
+                    &self.accent_dark,
+                    true,
+                );
             }
         }
         theme::set(&self.row, scene.theme().control);
@@ -498,10 +554,14 @@ impl SettingsRenderer {
         for (index, (label, selected)) in options.iter().enumerate() {
             let index = u32::try_from(index).unwrap_or_default();
             let segment = SettingsRect {
-                left: picker.left.saturating_add(index.saturating_mul(segment_width)),
+                left: picker
+                    .left
+                    .saturating_add(index.saturating_mul(segment_width)),
                 top: picker.top,
                 width: if index + 1 == count {
-                    picker.width.saturating_sub(segment_width.saturating_mul(index))
+                    picker
+                        .width
+                        .saturating_sub(segment_width.saturating_mul(index))
                 } else {
                     segment_width
                 },
@@ -515,7 +575,11 @@ impl SettingsRenderer {
             unsafe {
                 self.context.FillRoundedRectangle(
                     &raw const surface,
-                    if *selected { &self.selected } else { &self.row },
+                    if *selected {
+                        &self.selected
+                    } else {
+                        &self.row
+                    },
                 );
                 if *selected {
                     self.context.DrawRoundedRectangle(
@@ -558,7 +622,12 @@ impl SettingsRenderer {
         );
     }
 
-    fn draw_toggle(&self, scene: &SettingsScene, bounds: SettingsRect, toggle: SettingsToggle) {
+    fn draw_toggle(
+        &self,
+        scene: &SettingsScene,
+        bounds: SettingsRect,
+        toggle: SettingsToggle,
+    ) {
         self.draw_control_surface(scene, bounds, false);
         self.draw_text(
             toggle_label(toggle),
@@ -591,16 +660,29 @@ impl SettingsRenderer {
         unsafe {
             self.context.FillRoundedRectangle(
                 &raw const switch_rect,
-                if on { &self.accent } else { &self.track },
+                if on {
+                    &self.accent
+                } else {
+                    &self.track
+                },
             );
             self.context.FillRoundedRectangle(
                 &raw const knob_rect,
-                if on { &self.accent_dark } else { &self.text },
+                if on {
+                    &self.accent_dark
+                } else {
+                    &self.text
+                },
             );
         }
     }
 
-    fn draw_slider(&self, scene: &SettingsScene, bounds: SettingsRect, slider: SettingsSlider) {
+    fn draw_slider(
+        &self,
+        scene: &SettingsScene,
+        bounds: SettingsRect,
+        slider: SettingsSlider,
+    ) {
         self.draw_control_surface(scene, bounds, false);
         self.draw_text(
             slider_label(slider),
@@ -619,7 +701,10 @@ impl SettingsRenderer {
         let (minimum, maximum) = slider.range();
         let value = scene.slider_value(slider);
         let filled = track.width.saturating_mul(value - minimum) / (maximum - minimum);
-        let fill = SettingsRect { width: filled, ..track };
+        let fill = SettingsRect {
+            width: filled,
+            ..track
+        };
         let knob = SettingsRect {
             left: track.left + filled.saturating_sub(scale(scene, 7)),
             top: track.top.saturating_sub(scale(scene, 5)),
@@ -631,16 +716,22 @@ impl SettingsRenderer {
         let knob_round = rounded(rect(knob), as_f32(knob.height) * 0.5);
         // SAFETY: Active context and local geometry remain live.
         unsafe {
-            self.context.FillRoundedRectangle(&raw const track_round, &self.track);
-            self.context.FillRoundedRectangle(&raw const fill_round, &self.accent);
-            self.context.FillRoundedRectangle(&raw const knob_round, &self.accent);
+            self.context
+                .FillRoundedRectangle(&raw const track_round, &self.track);
+            self.context
+                .FillRoundedRectangle(&raw const fill_round, &self.accent);
+            self.context
+                .FillRoundedRectangle(&raw const knob_round, &self.accent);
         }
         let value_bounds = scene.slider_value_bounds(bounds);
-        let value_surface =
-            rounded(rect(value_bounds), scale_f32(scene, scene.theme().radii.compact));
+        let value_surface = rounded(
+            rect(value_bounds),
+            scale_f32(scene, scene.theme().radii.compact),
+        );
         // SAFETY: Active context, retained brushes, and local geometry remain live.
         unsafe {
-            self.context.FillRoundedRectangle(&raw const value_surface, &self.row);
+            self.context
+                .FillRoundedRectangle(&raw const value_surface, &self.row);
             self.context.DrawRoundedRectangle(
                 &raw const value_surface,
                 &self.divider,
@@ -649,7 +740,13 @@ impl SettingsRenderer {
             );
         }
         let value_text = slider_value_text(scene, slider);
-        self.draw_text(&value_text, value_bounds, &self.small_format, &self.muted, true);
+        self.draw_text(
+            &value_text,
+            value_bounds,
+            &self.small_format,
+            &self.muted,
+            true,
+        );
     }
 
     fn draw_mascot_image(&self, scene: &SettingsScene, bounds: SettingsRect) {
@@ -661,12 +758,18 @@ impl SettingsRenderer {
             &self.text,
             false,
         );
-        let value =
-            if scene.draft().mascot_image_path.is_some() { "Change image" } else { "Choose image" };
+        let value = if scene.draft().mascot_image_path.is_some() {
+            "Change image"
+        } else {
+            "Choose image"
+        };
         self.draw_text(
             value,
             SettingsRect {
-                left: bounds.left.saturating_add(bounds.width).saturating_sub(scale(scene, 142)),
+                left: bounds
+                    .left
+                    .saturating_add(bounds.width)
+                    .saturating_sub(scale(scene, 142)),
                 top: bounds.top,
                 width: scale(scene, 126),
                 height: bounds.height,
@@ -781,7 +884,10 @@ impl SettingsRenderer {
             "Unsaved changes",
             SettingsRect {
                 left: scale(scene, 244),
-                top: scene.desired_size().height().saturating_sub(scale(scene, 72)),
+                top: scene
+                    .desired_size()
+                    .height()
+                    .saturating_sub(scale(scene, 72)),
                 width: scale(scene, 240),
                 height: scale(scene, 72),
             },
@@ -795,16 +901,30 @@ impl SettingsRenderer {
         self.draw_text("×", bounds, &self.title_format, &self.muted, true);
     }
 
-    fn draw_control_surface(&self, scene: &SettingsScene, bounds: SettingsRect, selected: bool) {
+    fn draw_control_surface(
+        &self,
+        scene: &SettingsScene,
+        bounds: SettingsRect,
+        selected: bool,
+    ) {
         let surface = rounded(rect(bounds), scale_f32(scene, scene.theme().radii.control));
-        let brush = if selected { Some(&self.selected) } else { None };
+        let brush = if selected {
+            Some(&self.selected)
+        } else {
+            None
+        };
         if let Some(brush) = brush {
             // SAFETY: Active context and retained brush remain live.
             unsafe { self.context.FillRoundedRectangle(&raw const surface, brush) };
         }
     }
 
-    fn draw_focus(&self, scene: &SettingsScene, control: SettingsControl, bounds: SettingsRect) {
+    fn draw_focus(
+        &self,
+        scene: &SettingsScene,
+        control: SettingsControl,
+        bounds: SettingsRect,
+    ) {
         if !scene.focus_visible() || scene.focused() != Some(control) {
             return;
         }
@@ -949,7 +1069,11 @@ fn rect(value: SettingsRect) -> D2D_RECT_F {
     }
 }
 fn rounded(rect: D2D_RECT_F, radius: f32) -> D2D1_ROUNDED_RECT {
-    D2D1_ROUNDED_RECT { rect, radiusX: radius, radiusY: radius }
+    D2D1_ROUNDED_RECT {
+        rect,
+        radiusX: radius,
+        radiusY: radius,
+    }
 }
 fn inset(bounds: SettingsRect, horizontal: u32, vertical: u32) -> SettingsRect {
     SettingsRect {
@@ -992,7 +1116,10 @@ fn scale_f32(scene: &SettingsScene, dips: f32) -> f32 {
 const fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
     D2D1_COLOR_F { r, g, b, a }
 }
-#[allow(clippy::cast_precision_loss, reason = "settings dimensions remain below f32 exact range")]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "settings dimensions remain below f32 exact range"
+)]
 const fn as_f32(value: u32) -> f32 {
     value as f32
 }

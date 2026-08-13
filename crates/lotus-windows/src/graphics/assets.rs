@@ -7,10 +7,14 @@ use tiny_skia::{Pixmap, Transform};
 
 const LOTUS_PIXEL_SVG: &[u8] = include_bytes!("../../assets/ui/lotus-pixel.svg");
 const FLUENT_POWER_SVG: &[u8] = include_bytes!("../../assets/fluent/power-24-regular.svg");
-const FLUENT_VOLUME_SVG: &[u8] = include_bytes!("../../assets/fluent/speaker-2-24-regular.svg");
-const FLUENT_SETTINGS_SVG: &[u8] = include_bytes!("../../assets/fluent/settings-24-regular.svg");
-const FLUENT_TRAY_SVG: &[u8] = include_bytes!("../../assets/fluent/chevron-up-24-regular.svg");
-const FLUENT_DISMISS_SVG: &[u8] = include_bytes!("../../assets/fluent/dismiss-24-regular.svg");
+const FLUENT_VOLUME_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/speaker-2-24-regular.svg");
+const FLUENT_SETTINGS_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/settings-24-regular.svg");
+const FLUENT_TRAY_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/chevron-up-24-regular.svg");
+const FLUENT_DISMISS_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/dismiss-24-regular.svg");
 const MAX_RASTER_DIMENSION: u32 = 4_096;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -74,7 +78,10 @@ impl RasterSize {
     }
 
     pub const fn square(side: NonZeroU32) -> Self {
-        Self { width: side, height: side }
+        Self {
+            width: side,
+            height: side,
+        }
     }
 
     pub const fn width(self) -> u32 {
@@ -101,7 +108,10 @@ impl RasterImage {
     }
 
     pub fn stride(&self) -> Result<u32, AssetError> {
-        self.size.width().checked_mul(4).ok_or(AssetError::RasterTooLarge)
+        self.size
+            .width()
+            .checked_mul(4)
+            .ok_or(AssetError::RasterTooLarge)
     }
 }
 
@@ -114,9 +124,15 @@ impl SvgAssetCache {
     pub fn create() -> Result<Self, AssetError> {
         let mut trees = HashMap::new();
         for asset in SvgAsset::ALL {
-            trees.insert(asset, usvg::Tree::from_data(asset.source(), &usvg::Options::default())?);
+            trees.insert(
+                asset,
+                usvg::Tree::from_data(asset.source(), &usvg::Options::default())?,
+            );
         }
-        Ok(Self { trees, rasters: HashMap::new() })
+        Ok(Self {
+            trees,
+            rasters: HashMap::new(),
+        })
     }
 
     pub fn rasterize(
@@ -153,7 +169,8 @@ fn rasterize_tree(tree: &usvg::Tree, size: RasterSize) -> Result<RasterImage, As
         return Err(AssetError::RasterTooLarge);
     }
 
-    let mut pixmap = Pixmap::new(size.width(), size.height()).ok_or(AssetError::RasterTooLarge)?;
+    let mut pixmap =
+        Pixmap::new(size.width(), size.height()).ok_or(AssetError::RasterTooLarge)?;
     let tree_size = tree.size();
     let transform = Transform::from_scale(
         pixels_to_f32(size.width()) / tree_size.width(),

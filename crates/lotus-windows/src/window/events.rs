@@ -41,7 +41,10 @@ pub enum SettingsKey {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DockContextRequest {
-    Pointer { screen: SignedPoint, client: SignedPoint },
+    Pointer {
+        screen: SignedPoint,
+        client: SignedPoint,
+    },
     Keyboard,
 }
 

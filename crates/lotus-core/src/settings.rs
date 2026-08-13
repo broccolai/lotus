@@ -1,11 +1,12 @@
-use atomic_write_file::AtomicWriteFile;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use atomic_write_file::AtomicWriteFile;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 pub const CURRENT_APPEARANCE_VERSION: u32 = 3;
@@ -47,7 +48,10 @@ pub enum SettingsLoadSource {
     CreatedDefaults,
     Existing,
     Migrated,
-    RecoveredInvalid { backup_path: PathBuf, error: SettingsDecodeError },
+    RecoveredInvalid {
+        backup_path: PathBuf,
+        error: SettingsDecodeError,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -64,7 +68,9 @@ pub struct SettingsStore {
 impl SettingsStore {
     #[must_use]
     pub fn new(directory: impl Into<PathBuf>) -> Self {
-        Self { directory: directory.into() }
+        Self {
+            directory: directory.into(),
+        }
     }
 
     #[must_use]
@@ -84,7 +90,10 @@ impl SettingsStore {
         if !path.exists() {
             let settings = DockSettings::default().normalized();
             self.save(&settings)?;
-            return Ok(SettingsLoad { settings, source: SettingsLoadSource::CreatedDefaults });
+            return Ok(SettingsLoad {
+                settings,
+                source: SettingsLoadSource::CreatedDefaults,
+            });
         }
 
         let source = fs::read_to_string(&path)
@@ -108,8 +117,9 @@ impl SettingsStore {
         };
 
         let backup_path = self.invalid_backup_path();
-        fs::copy(&path, &backup_path)
-            .map_err(|error| store_io("back up invalid settings to", &backup_path, error))?;
+        fs::copy(&path, &backup_path).map_err(|error| {
+            store_io("back up invalid settings to", &backup_path, error)
+        })?;
         Ok(SettingsLoad {
             settings: DockSettings::default().normalized(),
             source: SettingsLoadSource::RecoveredInvalid { backup_path, error },
@@ -127,18 +137,23 @@ impl SettingsStore {
             .map_err(|error| store_io("open settings for atomic write at", &path, error))?;
         file.write_all(json.as_bytes())
             .map_err(|error| store_io("write settings to", &path, error))?;
-        file.commit().map_err(|error| store_io("commit settings at", &path, error))
+        file.commit()
+            .map_err(|error| store_io("commit settings at", &path, error))
     }
 
     fn ensure_directory(&self) -> Result<(), SettingsStoreError> {
-        fs::create_dir_all(&self.directory)
-            .map_err(|error| store_io("create settings directory at", &self.directory, error))
+        fs::create_dir_all(&self.directory).map_err(|error| {
+            store_io("create settings directory at", &self.directory, error)
+        })
     }
 
     fn invalid_backup_path(&self) -> PathBuf {
-        let timestamp =
-            SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis());
-        let base = self.directory.join(format!("settings.json.invalid-{timestamp}"));
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis());
+        let base = self
+            .directory
+            .join(format!("settings.json.invalid-{timestamp}"));
         unique_path(base)
     }
 }
@@ -301,7 +316,9 @@ fn normalized_unique_strings(values: Vec<String>) -> Vec<String> {
     for value in values {
         let value = value.trim();
         if !value.is_empty()
-            && !normalized.iter().any(|saved: &String| saved.eq_ignore_ascii_case(value))
+            && !normalized
+                .iter()
+                .any(|saved: &String| saved.eq_ignore_ascii_case(value))
         {
             normalized.push(value.to_owned());
         }
@@ -373,7 +390,10 @@ fn strip_json_comments_and_trailing_commas(source: &str) -> String {
         } else if bytes[index] == b'"' {
             in_string = true;
         } else if bytes[index] == b',' {
-            let next = bytes[index + 1..].iter().copied().find(|byte| !byte.is_ascii_whitespace());
+            let next = bytes[index + 1..]
+                .iter()
+                .copied()
+                .find(|byte| !byte.is_ascii_whitespace());
             if matches!(next, Some(b'}' | b']')) {
                 bytes[index] = b' ';
             }
@@ -449,7 +469,8 @@ fn canonicalize_property_names_in_json(json: &mut [u8]) {
         if json.get(after) == Some(&b':') && !json[start..end].contains(&b'\\') {
             for property in PROPERTY_NAMES {
                 let property = property.as_bytes();
-                if property.len() == end - start && property.eq_ignore_ascii_case(&json[start..end])
+                if property.len() == end - start
+                    && property.eq_ignore_ascii_case(&json[start..end])
                 {
                     json[start..end].copy_from_slice(property);
                     break;
@@ -489,13 +510,20 @@ fn repair_legacy_null_strings(value: &mut Value) {
     };
 
     if object.get("backgroundColor").is_some_and(Value::is_null) {
-        object.insert("backgroundColor".to_owned(), Value::String("#11141A".to_owned()));
+        object.insert(
+            "backgroundColor".to_owned(),
+            Value::String("#11141A".to_owned()),
+        );
     }
     if object.get("accentColor").is_some_and(Value::is_null) {
-        object.insert("accentColor".to_owned(), Value::String("#F5A5A5".to_owned()));
+        object.insert(
+            "accentColor".to_owned(),
+            Value::String("#F5A5A5".to_owned()),
+        );
     }
 
-    let Some(pinned_apps) = object.get_mut("pinnedApps").and_then(Value::as_array_mut) else {
+    let Some(pinned_apps) = object.get_mut("pinnedApps").and_then(Value::as_array_mut)
+    else {
         return;
     };
     for app in pinned_apps.iter_mut().filter_map(Value::as_object_mut) {
@@ -539,7 +567,10 @@ fn normalize_signed_integer_fields(value: &mut Value) -> Result<(), SettingsDeco
                 "property `{property}` is outside the .NET Int32 range"
             )));
         }
-        object.insert(property.to_owned(), Value::from(integer.clamp(minimum, maximum)));
+        object.insert(
+            property.to_owned(),
+            Value::from(integer.clamp(minimum, maximum)),
+        );
     }
     Ok(())
 }
@@ -553,7 +584,8 @@ fn apply_legacy_migrations(source: &str, settings: &mut DockSettings) -> bool {
     };
 
     let has_appearance_version = object.contains_key("appearanceVersion");
-    let needs_appearance_migration = !has_appearance_version || settings.appearance_version < 2;
+    let needs_appearance_migration =
+        !has_appearance_version || settings.appearance_version < 2;
     let needs_frosted_material_migration =
         !has_appearance_version || settings.appearance_version < CURRENT_APPEARANCE_VERSION;
 
@@ -584,7 +616,9 @@ fn unique_path(base: PathBuf) -> PathBuf {
     for suffix in 1_u32.. {
         let candidate = base.with_extension(format!(
             "{}-{suffix}",
-            base.extension().and_then(|extension| extension.to_str()).unwrap_or("invalid")
+            base.extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("invalid")
         ));
         if !candidate.exists() {
             return candidate;
@@ -594,5 +628,9 @@ fn unique_path(base: PathBuf) -> PathBuf {
 }
 
 fn store_io(operation: &'static str, path: &Path, source: io::Error) -> SettingsStoreError {
-    SettingsStoreError::Io { operation, path: path.to_owned(), source }
+    SettingsStoreError::Io {
+        operation,
+        path: path.to_owned(),
+        source,
+    }
 }

@@ -6,25 +6,26 @@ use windows::Win32::Graphics::DirectComposition::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
+    DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG, IDXGIAdapter, IDXGIDevice, IDXGIFactory2,
+    IDXGISwapChain1,
 };
 use windows::core::{Error as WindowsError, Interface};
-
-use crate::WindowHandle;
 
 use super::device::{DeviceLost, GraphicsDevice};
 use super::surface::{FrameResult, SurfaceError, SurfaceSize, swap_chain_description};
 use super::switcher_renderer::{DrawResult, RendererError, SwitcherRenderer};
 use super::switcher_scene::SwitcherScene;
+use crate::WindowHandle;
 
 impl From<RendererError> for SurfaceError {
     fn from(error: RendererError) -> Self {
         match error {
             RendererError::Windows(error) => Self::from(error),
             RendererError::Asset(error) => Self::from(error),
-            RendererError::BitmapCacheInvariant => {
-                Self::from(WindowsError::new(E_FAIL, "switcher bitmap cache invariant failed"))
-            }
+            RendererError::BitmapCacheInvariant => Self::from(WindowsError::new(
+                E_FAIL,
+                "switcher bitmap cache invariant failed",
+            )),
         }
     }
 }
@@ -61,7 +62,8 @@ impl SwitcherCompositionSurface {
             )?
         };
         // SAFETY: The live DXGI device supports DirectComposition.
-        let composition_device: IDCompositionDevice = unsafe { DCompositionCreateDevice(&dxgi)? };
+        let composition_device: IDCompositionDevice =
+            unsafe { DCompositionCreateDevice(&dxgi)? };
         // SAFETY: The owner retains the HWND for the surface lifetime.
         let target = unsafe { composition_device.CreateTargetForHwnd(hwnd, true)? };
         // SAFETY: The device returns an owned visual.
@@ -109,7 +111,9 @@ impl SwitcherCompositionSurface {
             DrawResult::Complete => {
                 // SAFETY: This surface exclusively owns the live swap chain.
                 unsafe { self.swap_chain.Present(1, DXGI_PRESENT(0)).ok()? };
-                Ok(FrameResult::Presented { needs_animation: false })
+                Ok(FrameResult::Presented {
+                    needs_animation: false,
+                })
             }
             DrawResult::RecreateTarget => {
                 // SAFETY: The retained D3D device is live; this checks removal.
@@ -128,7 +132,11 @@ impl SwitcherCompositionSurface {
 
 pub enum SwitcherCompositionSurfaceState {
     Ready(Box<SwitcherCompositionSurface>),
-    Lost { hwnd: HWND, size: SurfaceSize, reason: DeviceLost },
+    Lost {
+        hwnd: HWND,
+        size: SurfaceSize,
+        reason: DeviceLost,
+    },
 }
 
 impl SwitcherCompositionSurfaceState {
@@ -156,9 +164,14 @@ impl SwitcherCompositionSurfaceState {
         Ok(())
     }
 
-    pub fn render_scene(&mut self, scene: &SwitcherScene) -> Result<FrameResult, SurfaceError> {
+    pub fn render_scene(
+        &mut self,
+        scene: &SwitcherScene,
+    ) -> Result<FrameResult, SurfaceError> {
         let Self::Ready(surface) = self else {
-            return Err(SurfaceError::DeviceLost(self.loss().expect("switcher surface is lost")));
+            return Err(SurfaceError::DeviceLost(
+                self.loss().expect("switcher surface is lost"),
+            ));
         };
         let hwnd = surface.hwnd;
         let size = surface.size;
@@ -170,7 +183,9 @@ impl SwitcherCompositionSurfaceState {
     }
 
     pub fn recover(&mut self, graphics: &GraphicsDevice) -> Result<(), SurfaceError> {
-        let Self::Lost { hwnd, size, .. } = self else { return Ok(()) };
+        let Self::Lost { hwnd, size, .. } = self else {
+            return Ok(());
+        };
         let (hwnd, size) = (*hwnd, *size);
         *self = SwitcherCompositionSurface::create(graphics, hwnd, size)
             .map(|surface| Self::Ready(Box::new(surface)))?;

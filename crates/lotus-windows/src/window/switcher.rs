@@ -7,14 +7,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::w;
 
+use super::procedure::{SwitcherEvent, WindowClass, WindowEvent};
+use crate::NativeError;
 use crate::platform::windows::backdrop;
 use crate::platform::windows::display::primary_display;
 use crate::platform::windows::native_window::{
     Activation, NativeWindow, WindowCreation, WindowHandle,
 };
-use crate::{NativeError, window::procedure::WindowState};
-
-use super::procedure::{SwitcherEvent, WindowClass, WindowEvent};
+use crate::window::procedure::WindowState;
 
 type Result<T> = std::result::Result<T, NativeError>;
 
@@ -43,7 +43,10 @@ impl SwitcherWindow {
             Box::new(WindowState::switcher()),
         )?;
         backdrop::apply_context_menu(window.hwnd());
-        Ok(Self { window, _class: class })
+        Ok(Self {
+            window,
+            _class: class,
+        })
     }
 
     pub fn handle(&self) -> WindowHandle {
@@ -63,15 +66,24 @@ impl SwitcherWindow {
         let width = i32::try_from(size.width()).unwrap_or(i32::MAX);
         let height = i32::try_from(size.height()).unwrap_or(i32::MAX);
         let x = display.work_area.left.saturating_add(
-            display.work_area.right.saturating_sub(display.work_area.left).saturating_sub(width)
+            display
+                .work_area
+                .right
+                .saturating_sub(display.work_area.left)
+                .saturating_sub(width)
                 / 2,
         );
         let y = display.work_area.top.saturating_add(
-            display.work_area.bottom.saturating_sub(display.work_area.top).saturating_sub(height)
+            display
+                .work_area
+                .bottom
+                .saturating_sub(display.work_area.top)
+                .saturating_sub(height)
                 / 2,
         );
         self.window.state_mut().clear_events();
-        self.window.place_topmost(x, y, width, height, Activation::KeepInactive, true)?;
+        self.window
+            .place_topmost(x, y, width, height, Activation::KeepInactive, true)?;
         super::procedure::apply_rounded_region(self.window.hwnd(), 0);
         Ok(display.dpi()?.dpi())
     }
@@ -89,7 +101,9 @@ impl SwitcherWindow {
 fn switcher_event(event: WindowEvent) -> Option<SwitcherEvent> {
     match event {
         WindowEvent::Switcher(event) => Some(event),
-        WindowEvent::Resized { width, height } => Some(SwitcherEvent::Resized { width, height }),
+        WindowEvent::Resized { width, height } => {
+            Some(SwitcherEvent::Resized { width, height })
+        }
         WindowEvent::DpiChanged { dpi } => Some(SwitcherEvent::DpiChanged { dpi }),
         WindowEvent::RenderRequested => Some(SwitcherEvent::RenderRequested),
         WindowEvent::PlacementRefreshRequested

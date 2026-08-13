@@ -5,16 +5,18 @@ use windows::Win32::Graphics::DirectComposition::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
+    DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG, IDXGIAdapter, IDXGIDevice, IDXGIFactory2,
+    IDXGISwapChain1,
 };
 use windows::core::{Error as WindowsError, Interface};
 
-use crate::WindowHandle;
-
 use super::device::{DeviceLost, GraphicsDevice};
-use super::settings_renderer::{SettingsDrawResult, SettingsRenderer, SettingsRendererError};
+use super::settings_renderer::{
+    SettingsDrawResult, SettingsRenderer, SettingsRendererError,
+};
 use super::settings_scene::{SettingsScene, SettingsSize};
 use super::surface::{FrameResult, SurfaceError, SurfaceSize, swap_chain_description};
+use crate::WindowHandle;
 
 pub struct SettingsCompositionSurface {
     hwnd: HWND,
@@ -48,7 +50,8 @@ impl SettingsCompositionSurface {
             )?
         };
         // SAFETY: The live DXGI device supports DirectComposition ownership.
-        let composition_device: IDCompositionDevice = unsafe { DCompositionCreateDevice(&dxgi)? };
+        let composition_device: IDCompositionDevice =
+            unsafe { DCompositionCreateDevice(&dxgi)? };
         // SAFETY: HWND ownership remains with the caller and outlives this surface.
         let target = unsafe { composition_device.CreateTargetForHwnd(hwnd, true)? };
         // SAFETY: The live composition device returns an owned visual.
@@ -91,14 +94,19 @@ impl SettingsCompositionSurface {
         self.renderer.attach_target(&self.swap_chain)
     }
 
-    fn render(&mut self, scene: &SettingsScene) -> Result<FrameResult, SettingsRendererError> {
+    fn render(
+        &mut self,
+        scene: &SettingsScene,
+    ) -> Result<FrameResult, SettingsRendererError> {
         match self.renderer.draw(self.size, scene)? {
             SettingsDrawResult::Complete => {
                 // SAFETY: The live swap chain is owned exclusively by this surface.
                 unsafe {
                     self.swap_chain.Present(1, DXGI_PRESENT(0)).ok()?;
                 }
-                Ok(FrameResult::Presented { needs_animation: false })
+                Ok(FrameResult::Presented {
+                    needs_animation: false,
+                })
             }
             SettingsDrawResult::RecreateTarget => {
                 // SAFETY: The retained D3D device is live; this checks device removal.
@@ -119,7 +127,11 @@ impl SettingsCompositionSurface {
 
 pub enum SettingsCompositionSurfaceState {
     Ready(Box<SettingsCompositionSurface>),
-    Lost { hwnd: HWND, size: SurfaceSize, reason: DeviceLost },
+    Lost {
+        hwnd: HWND,
+        size: SurfaceSize,
+        reason: DeviceLost,
+    },
 }
 
 impl SettingsCompositionSurfaceState {
@@ -148,7 +160,10 @@ impl SettingsCompositionSurfaceState {
         Ok(())
     }
 
-    pub fn render_scene(&mut self, scene: &SettingsScene) -> Result<FrameResult, SurfaceError> {
+    pub fn render_scene(
+        &mut self,
+        scene: &SettingsScene,
+    ) -> Result<FrameResult, SurfaceError> {
         let Self::Ready(surface) = self else {
             return Err(SurfaceError::DeviceLost(
                 self.loss().expect("settings surface is known to be lost"),
@@ -158,7 +173,9 @@ impl SettingsCompositionSurfaceState {
         let size = surface.size;
         match surface.render(scene) {
             Ok(frame) => Ok(frame),
-            Err(SettingsRendererError::Windows(error)) => self.handle_error(hwnd, size, error),
+            Err(SettingsRendererError::Windows(error)) => {
+                self.handle_error(hwnd, size, error)
+            }
         }
     }
 
@@ -206,5 +223,6 @@ impl From<SettingsRendererError> for SurfaceError {
 }
 
 fn surface_size(size: SettingsSize) -> SurfaceSize {
-    SurfaceSize::new(size.width(), size.height()).expect("settings size is guaranteed nonzero")
+    SurfaceSize::new(size.width(), size.height())
+        .expect("settings size is guaranteed nonzero")
 }

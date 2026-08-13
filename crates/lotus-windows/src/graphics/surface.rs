@@ -12,20 +12,18 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
-    DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter, IDXGIDevice,
-    IDXGIFactory2, IDXGISwapChain1,
+    DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter,
+    IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::core::{Error as WindowsError, Interface};
-
-use crate::NativeError;
-use crate::WindowHandle;
 
 use super::assets::AssetError;
 use super::device::{DeviceLost, GraphicsDevice};
 use super::launcher_scene::LauncherSize;
 use super::renderer::{Direct2DRenderer, DrawResult, RendererError};
 use super::scene::{DockScene, DockSize};
+use crate::{NativeError, WindowHandle};
 
 const BUFFER_COUNT: u32 = 2;
 
@@ -210,7 +208,11 @@ impl CompositionSurface {
 
 pub enum CompositionSurfaceState {
     Ready(Box<CompositionSurface>),
-    Lost { hwnd: HWND, size: SurfaceSize, reason: DeviceLost },
+    Lost {
+        hwnd: HWND,
+        size: SurfaceSize,
+        reason: DeviceLost,
+    },
 }
 
 impl CompositionSurfaceState {
@@ -280,8 +282,9 @@ impl CompositionSurfaceState {
         if let Self::Lost { reason, .. } = self {
             return Err(SurfaceError::DeviceLost(*reason));
         }
-        let scene = DockScene::initial(self.window_dpi()?, super::assets::SvgAsset::LotusPixel)
-            .ok_or(SurfaceError::InvalidWindowDpi)?;
+        let scene =
+            DockScene::initial(self.window_dpi()?, super::assets::SvgAsset::LotusPixel)
+                .ok_or(SurfaceError::InvalidWindowDpi)?;
         self.render_scene(&scene)
     }
 
@@ -296,7 +299,9 @@ impl CompositionSurfaceState {
         let size = surface.size;
         match surface.render(scene) {
             Ok(result) => Ok(result),
-            Err(RendererError::Windows(error)) => self.handle_operation_error(hwnd, size, error),
+            Err(RendererError::Windows(error)) => {
+                self.handle_operation_error(hwnd, size, error)
+            }
             Err(error) => Err(SurfaceError::from(error)),
         }
     }
@@ -350,7 +355,12 @@ pub enum FrameResult {
 
 impl FrameResult {
     pub const fn needs_animation(self) -> bool {
-        matches!(self, Self::Presented { needs_animation: true })
+        matches!(
+            self,
+            Self::Presented {
+                needs_animation: true
+            }
+        )
     }
 }
 
@@ -389,7 +399,9 @@ fn window_dpi(hwnd: HWND) -> Result<u32, SurfaceError> {
     // SAFETY: The composition surface retains the live HWND supplied by its
     // window owner. A zero result is handled as an explicit error.
     let dpi = unsafe { GetDpiForWindow(hwnd) };
-    NonZeroU32::new(dpi).map(NonZeroU32::get).ok_or(SurfaceError::InvalidWindowDpi)
+    NonZeroU32::new(dpi)
+        .map(NonZeroU32::get)
+        .ok_or(SurfaceError::InvalidWindowDpi)
 }
 
 pub(super) fn swap_chain_description(size: SurfaceSize) -> DXGI_SWAP_CHAIN_DESC1 {
@@ -397,7 +409,10 @@ pub(super) fn swap_chain_description(size: SurfaceSize) -> DXGI_SWAP_CHAIN_DESC1
         Width: size.width(),
         Height: size.height(),
         Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
         BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
         BufferCount: BUFFER_COUNT,
         Scaling: DXGI_SCALING_STRETCH,

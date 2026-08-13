@@ -1,4 +1,10 @@
 edition = "2024"
-max_width = 100
+style_edition = "2024"
+unstable_features = true
+max_width = 92
 use_field_init_shorthand = true
-use_small_heuristics = "Max"
+use_small_heuristics = "Default"
+single_line_if_else_max_width = 0
+single_line_let_else_max_width = 0
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"

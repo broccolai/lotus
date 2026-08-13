@@ -6,11 +6,10 @@ use windows::Win32::Graphics::DirectComposition::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
+    DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG, IDXGIAdapter, IDXGIDevice, IDXGIFactory2,
+    IDXGISwapChain1,
 };
 use windows::core::{Error as WindowsError, Interface};
-
-use crate::WindowHandle;
 
 use super::context_menu_renderer::{
     ContextMenuDrawResult, ContextMenuRenderer, ContextMenuRendererError,
@@ -18,6 +17,7 @@ use super::context_menu_renderer::{
 use super::context_menu_scene::ContextMenuScene;
 use super::device::{DeviceLost, GraphicsDevice};
 use super::surface::{FrameResult, SurfaceError, SurfaceSize, swap_chain_description};
+use crate::WindowHandle;
 
 pub struct ContextMenuCompositionSurface {
     hwnd: HWND,
@@ -51,7 +51,8 @@ impl ContextMenuCompositionSurface {
             )?
         };
         // SAFETY: The live DXGI device supports DirectComposition ownership.
-        let composition_device: IDCompositionDevice = unsafe { DCompositionCreateDevice(&dxgi)? };
+        let composition_device: IDCompositionDevice =
+            unsafe { DCompositionCreateDevice(&dxgi)? };
         // SAFETY: The owner retains the HWND for this surface's lifetime.
         let target = unsafe { composition_device.CreateTargetForHwnd(hwnd, true)? };
         // SAFETY: The live composition device returns an owned visual.
@@ -102,7 +103,9 @@ impl ContextMenuCompositionSurface {
             ContextMenuDrawResult::Complete => {
                 // SAFETY: This surface exclusively owns the live swap chain.
                 unsafe { self.swap_chain.Present(1, DXGI_PRESENT(0)).ok()? };
-                Ok(FrameResult::Presented { needs_animation: false })
+                Ok(FrameResult::Presented {
+                    needs_animation: false,
+                })
             }
             ContextMenuDrawResult::RecreateTarget => {
                 // SAFETY: The retained D3D device is live; this checks removal.
@@ -121,7 +124,11 @@ impl ContextMenuCompositionSurface {
 
 pub enum ContextMenuCompositionSurfaceState {
     Ready(Box<ContextMenuCompositionSurface>),
-    Lost { hwnd: HWND, size: SurfaceSize, reason: DeviceLost },
+    Lost {
+        hwnd: HWND,
+        size: SurfaceSize,
+        reason: DeviceLost,
+    },
 }
 
 impl ContextMenuCompositionSurfaceState {
@@ -150,23 +157,31 @@ impl ContextMenuCompositionSurfaceState {
         Ok(())
     }
 
-    pub fn render_scene(&mut self, scene: &ContextMenuScene) -> Result<FrameResult, SurfaceError> {
+    pub fn render_scene(
+        &mut self,
+        scene: &ContextMenuScene,
+    ) -> Result<FrameResult, SurfaceError> {
         let Self::Ready(surface) = self else {
             return Err(SurfaceError::DeviceLost(
-                self.loss().expect("context menu surface is known to be lost"),
+                self.loss()
+                    .expect("context menu surface is known to be lost"),
             ));
         };
         let hwnd = surface.hwnd;
         let size = surface.size;
         match surface.render(scene) {
             Ok(frame) => Ok(frame),
-            Err(ContextMenuRendererError::Windows(error)) => self.handle_error(hwnd, size, error),
+            Err(ContextMenuRendererError::Windows(error)) => {
+                self.handle_error(hwnd, size, error)
+            }
             Err(error) => Err(error.into()),
         }
     }
 
     pub fn recover(&mut self, graphics: &GraphicsDevice) -> Result<(), SurfaceError> {
-        let Self::Lost { hwnd, size, .. } = self else { return Ok(()) };
+        let Self::Lost { hwnd, size, .. } = self else {
+            return Ok(());
+        };
         let (hwnd, size) = (*hwnd, *size);
         *self = ContextMenuCompositionSurface::create(graphics, hwnd, size)
             .map(|surface| Self::Ready(Box::new(surface)))?;

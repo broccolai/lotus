@@ -13,6 +13,8 @@ use crate::NativeError;
 
 type Result<T> = std::result::Result<T, NativeError>;
 
+use lotus_dock::appbar::AppBarLayout;
+
 use super::context_menu::ContextMenuWindow;
 use crate::platform::windows::backdrop;
 use crate::platform::windows::display::{ScreenArea, primary_display};
@@ -20,11 +22,9 @@ use crate::platform::windows::interaction::drag_threshold;
 use crate::platform::windows::native_window::{
     Activation, NativeWindow, WindowCreation, WindowHandle, current_instance,
 };
-use crate::window::procedure::WindowClass;
-use crate::window::procedure::{WindowEvent, WindowState};
+use crate::window::procedure::{WindowClass, WindowEvent, WindowState};
 use crate::window::search::SearchWindow;
 use crate::window::settings::SettingsWindow;
-use lotus_dock::appbar::AppBarLayout;
 
 const PREVIEW_WIDTH: u32 = 118;
 
@@ -61,7 +61,11 @@ impl DockWindow {
         )?;
 
         backdrop::apply(window.hwnd());
-        Ok(Self { window, class, appbar_active: Cell::new(false) })
+        Ok(Self {
+            window,
+            class,
+            appbar_active: Cell::new(false),
+        })
     }
 
     pub fn prepare(&self, settings: &DockSettings) -> Result<()> {
@@ -80,11 +84,17 @@ impl DockWindow {
         self.apply_visibility(visible)
     }
 
-    pub fn apply_appbar_layout(&self, layout: AppBarLayout, settings: &DockSettings) -> Result<()> {
+    pub fn apply_appbar_layout(
+        &self,
+        layout: AppBarLayout,
+        settings: &DockSettings,
+    ) -> Result<()> {
         let rect = layout.content_rect();
         let width = rect.right - rect.left;
         let height = rect.bottom - rect.top;
-        self.window.state().set_corner_radius(settings.corner_radius);
+        self.window
+            .state()
+            .set_corner_radius(settings.corner_radius);
         self.window.place_topmost(
             rect.left,
             rect.top,
@@ -104,22 +114,35 @@ impl DockWindow {
             return false;
         };
         match action {
-            VisibilityAction::ShowNoActivate => self.window.reveal(Activation::KeepInactive),
+            VisibilityAction::ShowNoActivate => {
+                self.window.reveal(Activation::KeepInactive);
+            }
             VisibilityAction::Hide => self.window.hide(),
         }
         true
     }
 
-    pub fn resize_content(&self, width: u32, height: u32, settings: &DockSettings) -> Result<()> {
+    pub fn resize_content(
+        &self,
+        width: u32,
+        height: u32,
+        settings: &DockSettings,
+    ) -> Result<()> {
         let size = ContentSize::new(width, height)?;
-        self.window.state().set_corner_radius(settings.corner_radius);
+        self.window
+            .state()
+            .set_corner_radius(settings.corner_radius);
         let hwnd = self.window.hwnd();
         let dpi = DpiScale::from_system(self.dpi());
         let appbar_active = self.appbar_active.get();
         let reserved_gutter = dpi.physical_i32(settings.bottom_offset);
-        let bottom_offset =
-            if appbar_active { centered_bottom_offset(reserved_gutter) } else { reserved_gutter };
-        let (x, y) = normal_position(primary_placement_area(appbar_active)?, size, bottom_offset);
+        let bottom_offset = if appbar_active {
+            centered_bottom_offset(reserved_gutter)
+        } else {
+            reserved_gutter
+        };
+        let (x, y) =
+            normal_position(primary_placement_area(appbar_active)?, size, bottom_offset);
 
         self.window.place_topmost(
             x,
@@ -159,7 +182,9 @@ impl DockWindow {
     }
 
     pub fn set_animation_active(&self, active: bool) -> Result<()> {
-        self.window.state().set_animation_active(self.hwnd(), active)
+        self.window
+            .state()
+            .set_animation_active(self.hwnd(), active)
     }
 
     pub fn create_search_window(&self) -> Result<SearchWindow> {
@@ -206,21 +231,36 @@ struct ContentSize {
 impl ContentSize {
     fn new(width: u32, height: u32) -> Result<Self> {
         if width == 0 || height == 0 {
-            return Err(Error::new(E_INVALIDARG, "dock content dimensions must be nonzero").into());
+            return Err(Error::new(
+                E_INVALIDARG,
+                "dock content dimensions must be nonzero",
+            )
+            .into());
         }
-        let width = i32::try_from(width)
-            .map_err(|_| Error::new(E_INVALIDARG, "dock content width exceeds Win32 limits"))?;
-        let height = i32::try_from(height)
-            .map_err(|_| Error::new(E_INVALIDARG, "dock content height exceeds Win32 limits"))?;
+        let width = i32::try_from(width).map_err(|_| {
+            Error::new(E_INVALIDARG, "dock content width exceeds Win32 limits")
+        })?;
+        let height = i32::try_from(height).map_err(|_| {
+            Error::new(E_INVALIDARG, "dock content height exceeds Win32 limits")
+        })?;
         Ok(Self { width, height })
     }
 }
 
-fn normal_position(work_area: ScreenArea, size: ContentSize, bottom_offset: i32) -> (i32, i32) {
+fn normal_position(
+    work_area: ScreenArea,
+    size: ContentSize,
+    bottom_offset: i32,
+) -> (i32, i32) {
     let available_width = work_area.right.saturating_sub(work_area.left);
     (
-        work_area.left.saturating_add(available_width.saturating_sub(size.width) / 2),
-        work_area.bottom.saturating_sub(size.height).saturating_sub(bottom_offset),
+        work_area
+            .left
+            .saturating_add(available_width.saturating_sub(size.width) / 2),
+        work_area
+            .bottom
+            .saturating_sub(size.height)
+            .saturating_sub(bottom_offset),
     )
 }
 
@@ -230,5 +270,9 @@ const fn centered_bottom_offset(reserved_gutter: i32) -> i32 {
 
 fn primary_placement_area(appbar_active: bool) -> Result<ScreenArea> {
     let display = primary_display()?;
-    Ok(if appbar_active { display.bounds } else { display.work_area })
+    Ok(if appbar_active {
+        display.bounds
+    } else {
+        display.work_area
+    })
 }

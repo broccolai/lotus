@@ -1,9 +1,9 @@
+use std::path::Path;
+
 use lotus_core::activation::{ActivationDecision, decide_activation};
 use lotus_core::dock::DockItem;
 use lotus_core::settings::{DockSettings, SettingsStore, SettingsStoreError};
-use lotus_core::window::WindowId;
-use lotus_core::window::WindowInfo;
-use std::path::Path;
+use lotus_core::window::{WindowId, WindowInfo};
 
 pub fn project_snapshot<F>(
     settings: &DockSettings,
@@ -43,7 +43,11 @@ impl DockModel {
         settings_store: SettingsStore,
         items: Vec<DockItem>,
     ) -> Self {
-        Self { settings, settings_store, items }
+        Self {
+            settings,
+            settings_store,
+            items,
+        }
     }
 
     pub const fn settings(&self) -> &DockSettings {
@@ -69,7 +73,10 @@ impl DockModel {
     ) -> Result<SettingsImpact, SettingsStoreError> {
         let next = next.normalized();
         if self.settings == next {
-            return Ok(SettingsImpact { changed: false, restart_required: false });
+            return Ok(SettingsImpact {
+                changed: false,
+                restart_required: false,
+            });
         }
 
         let previous = self.settings.clone();
@@ -108,19 +115,31 @@ impl DockModel {
         };
         let source_id = &self.items[source_index].id;
         let target_id = &self.items[target_index].id;
-        let mut full_order = Vec::with_capacity(settings.item_order.len() + self.items.len());
-        for id in settings.item_order.iter().chain(self.items.iter().map(|item| &item.id)) {
-            if !full_order.iter().any(|saved: &String| saved.eq_ignore_ascii_case(id)) {
+        let mut full_order =
+            Vec::with_capacity(settings.item_order.len() + self.items.len());
+        for id in settings
+            .item_order
+            .iter()
+            .chain(self.items.iter().map(|item| &item.id))
+        {
+            if !full_order
+                .iter()
+                .any(|saved: &String| saved.eq_ignore_ascii_case(id))
+            {
                 full_order.push(id.clone());
             }
         }
         full_order.retain(|id| !id.eq_ignore_ascii_case(source_id));
-        let Some(target_position) =
-            full_order.iter().position(|id| id.eq_ignore_ascii_case(target_id))
+        let Some(target_position) = full_order
+            .iter()
+            .position(|id| id.eq_ignore_ascii_case(target_id))
         else {
             return Ok(false);
         };
-        full_order.insert(target_position + usize::from(insert_after), source_id.clone());
+        full_order.insert(
+            target_position + usize::from(insert_after),
+            source_id.clone(),
+        );
         settings.item_order = full_order;
         self.settings_store.save(&settings)?;
 
@@ -135,7 +154,11 @@ impl DockModel {
         foreground: Option<&WindowId>,
     ) -> Option<(ActivationDecision<WindowId>, &DockItem)> {
         let item = self.items.get(source_index)?;
-        let windows = item.windows.iter().map(|window| window.id).collect::<Vec<_>>();
+        let windows = item
+            .windows
+            .iter()
+            .map(|window| window.id)
+            .collect::<Vec<_>>();
         Some((decide_activation(&windows, foreground), item))
     }
 }
@@ -160,7 +183,15 @@ fn insertion_destination(
     if insertion_slot > item_count || item_count == 0 {
         return None;
     }
-    let (target_index, insert_after) =
-        if insertion_slot == item_count { (item_count - 1, true) } else { (insertion_slot, false) };
-    lotus_core::reorder::destination_index(item_count, source_index, target_index, insert_after)
+    let (target_index, insert_after) = if insertion_slot == item_count {
+        (item_count - 1, true)
+    } else {
+        (insertion_slot, false)
+    };
+    lotus_core::reorder::destination_index(
+        item_count,
+        source_index,
+        target_index,
+        insert_after,
+    )
 }

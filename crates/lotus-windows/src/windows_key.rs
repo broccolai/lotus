@@ -11,8 +11,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_LWIN, VK_RWIN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, PostThreadMessageW, SetWindowsHookExW,
-    UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, PostThreadMessageW,
+    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN, WM_KEYUP,
+    WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 use crate::NativeError;
@@ -67,7 +68,8 @@ impl WindowsKeyController {
         }
 
         claim_active_controller(&self.context)?;
-        let hook = install_hook().inspect_err(|_| release_active_controller(&self.context))?;
+        let hook =
+            install_hook().inspect_err(|_| release_active_controller(&self.context))?;
         self.hook = Some(hook);
         Ok(true)
     }
@@ -128,7 +130,12 @@ fn install_hook() -> Result<OwnedKeyboardHook, NativeError> {
     // SAFETY: The callback has the required ABI and static lifetime. Thread id
     // zero is required for the documented global low-level keyboard hook.
     let hook = unsafe {
-        SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), Some(HINSTANCE(module.0)), 0)
+        SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(keyboard_hook),
+            Some(HINSTANCE(module.0)),
+            0,
+        )
     }?;
     Ok(OwnedKeyboardHook(hook))
 }
@@ -144,8 +151,10 @@ fn claim_active_controller(context: &Arc<HookContext>) -> Result<(), WindowsKeyE
 
 fn release_active_controller(context: &Arc<HookContext>) {
     let mut active = lock(&ACTIVE_CONTROLLER);
-    let owns_slot =
-        active.as_ref().and_then(Weak::upgrade).is_some_and(|owner| Arc::ptr_eq(&owner, context));
+    let owns_slot = active
+        .as_ref()
+        .and_then(Weak::upgrade)
+        .is_some_and(|owner| Arc::ptr_eq(&owner, context));
     if owns_slot {
         *active = None;
     }
@@ -158,7 +167,11 @@ fn release_pending_modifier(context: &HookContext) {
     }
 }
 
-unsafe extern "system" fn keyboard_hook(code: i32, message: WPARAM, data: LPARAM) -> LRESULT {
+unsafe extern "system" fn keyboard_hook(
+    code: i32,
+    message: WPARAM,
+    data: LPARAM,
+) -> LRESULT {
     if code < 0 || data.0 == 0 {
         return call_next(code, message, data);
     }
@@ -208,9 +221,15 @@ fn perform_action(context: &HookContext, action: SequenceAction) {
         SequenceAction::Toggle => {
             emit_event(context, WindowsKeyEvent::ToggleRequested);
         }
-        SequenceAction::ReplayChord { windows_key, chord_key, chord_extended } => {
-            let inputs =
-                [ReplayKey::down(windows_key, true), ReplayKey::down(chord_key, chord_extended)];
+        SequenceAction::ReplayChord {
+            windows_key,
+            chord_key,
+            chord_extended,
+        } => {
+            let inputs = [
+                ReplayKey::down(windows_key, true),
+                ReplayKey::down(chord_key, chord_extended),
+            ];
             if !send_replay(context, &inputs) {
                 let _ = lock(&context.sequence).cancel();
                 send_replay(context, &[ReplayKey::up(windows_key, true)]);
@@ -223,16 +242,27 @@ fn perform_action(context: &HookContext, action: SequenceAction) {
 }
 
 fn send_replay(context: &HookContext, replay: &[ReplayKey]) -> bool {
-    let inputs = replay.iter().copied().map(input_from_replay).collect::<Vec<_>>();
+    let inputs = replay
+        .iter()
+        .copied()
+        .map(input_from_replay)
+        .collect::<Vec<_>>();
     let expected = u32::try_from(inputs.len()).unwrap_or(u32::MAX);
     // SAFETY: INPUT values are fully initialized keyboard variants and the
     // byte size matches the Win32 INPUT structure used by this crate version.
-    let inserted =
-        unsafe { SendInput(&inputs, i32::try_from(size_of::<INPUT>()).unwrap_or(i32::MAX)) };
+    let inserted = unsafe {
+        SendInput(
+            &inputs,
+            i32::try_from(size_of::<INPUT>()).unwrap_or(i32::MAX),
+        )
+    };
     if inserted == expected {
         return true;
     }
-    emit_event(context, WindowsKeyEvent::ReplayIncomplete { inserted, expected });
+    emit_event(
+        context,
+        WindowsKeyEvent::ReplayIncomplete { inserted, expected },
+    );
     false
 }
 
@@ -243,13 +273,21 @@ fn emit_event(context: &HookContext, event: WindowsKeyEvent) {
     // SAFETY: The controller captured its owning UI thread and posts only
     // value data; no pointer or borrowed state crosses the thread boundary.
     let _ = unsafe {
-        PostThreadMessageW(context.owner_thread, WINDOWS_KEY_WAKE_MESSAGE, WPARAM(0), LPARAM(0))
+        PostThreadMessageW(
+            context.owner_thread,
+            WINDOWS_KEY_WAKE_MESSAGE,
+            WPARAM(0),
+            LPARAM(0),
+        )
     };
 }
 
 fn input_from_replay(replay: ReplayKey) -> INPUT {
-    let mut flags =
-        if replay.extended { KEYEVENTF_EXTENDEDKEY } else { KEYBD_EVENT_FLAGS::default() };
+    let mut flags = if replay.extended {
+        KEYEVENTF_EXTENDEDKEY
+    } else {
+        KEYBD_EVENT_FLAGS::default()
+    };
     if replay.transition == KeyTransition::Up {
         flags |= KEYEVENTF_KEYUP;
     }
@@ -276,7 +314,9 @@ fn transition_from_message(message: u32) -> Option<KeyTransition> {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -302,19 +342,33 @@ struct ReplayKey {
 
 impl ReplayKey {
     const fn down(virtual_key: u16, extended: bool) -> Self {
-        Self { virtual_key, transition: KeyTransition::Down, extended }
+        Self {
+            virtual_key,
+            transition: KeyTransition::Down,
+            extended,
+        }
     }
 
     const fn up(virtual_key: u16, extended: bool) -> Self {
-        Self { virtual_key, transition: KeyTransition::Up, extended }
+        Self {
+            virtual_key,
+            transition: KeyTransition::Up,
+            extended,
+        }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SequenceAction {
     Toggle,
-    ReplayChord { windows_key: u16, chord_key: u16, chord_extended: bool },
-    ReleaseWindows { windows_key: u16 },
+    ReplayChord {
+        windows_key: u16,
+        chord_key: u16,
+        chord_extended: bool,
+    },
+    ReleaseWindows {
+        windows_key: u16,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

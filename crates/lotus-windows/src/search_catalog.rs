@@ -1,10 +1,8 @@
 use std::ffi::c_void;
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{fs, io, thread};
 
 use lotus_core::dock::DockItem;
 use lotus_core::search::{ApplicationEntry, ApplicationSource, SearchCatalog};
@@ -13,8 +11,8 @@ use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{
     BHID_EnumItems, FOLDERID_AppsFolder, FOLDERID_CommonPrograms, FOLDERID_Programs,
-    IEnumShellItems, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem, SHGetKnownFolderPath,
-    SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
+    IEnumShellItems, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem,
+    SHGetKnownFolderPath, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
 };
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 use windows::core::{GUID, PWSTR};
@@ -64,7 +62,11 @@ impl SearchCatalogCache {
         Self::with_discovery(discover_start_menu_entries)
     }
 
-    pub fn catalog(&self, dock_items: &[DockItem], hidden_executables: &[String]) -> SearchCatalog {
+    pub fn catalog(
+        &self,
+        dock_items: &[DockItem],
+        hidden_executables: &[String],
+    ) -> SearchCatalog {
         let entries = lock(&self.state).entries.clone();
         compose_catalog(dock_items, entries, hidden_executables)
     }
@@ -87,7 +89,10 @@ impl SearchCatalogCache {
             if state.refreshing {
                 return Ok(RefreshStatus::InProgress);
             }
-            if state.refreshed_at.is_some_and(|updated| updated.elapsed() < maximum_age) {
+            if state
+                .refreshed_at
+                .is_some_and(|updated| updated.elapsed() < maximum_age)
+            {
                 return Ok(RefreshStatus::Fresh);
             }
             state.refreshing = true;
@@ -96,9 +101,13 @@ impl SearchCatalogCache {
         let state = Arc::clone(&self.state);
         let discovery = Arc::clone(&self.discovery);
         let owner_thread = self.owner_thread;
-        let spawn =
-            thread::Builder::new().name("lotus-start-menu-catalog".into()).spawn(move || {
-                let completion = RefreshCompletion { state: Arc::clone(&state), owner_thread };
+        let spawn = thread::Builder::new()
+            .name("lotus-start-menu-catalog".into())
+            .spawn(move || {
+                let completion = RefreshCompletion {
+                    state: Arc::clone(&state),
+                    owner_thread,
+                };
                 let entries = discovery();
                 {
                     let mut state = lock(&state);
@@ -141,7 +150,12 @@ impl Drop for RefreshCompletion {
         // SAFETY: The captured thread id belongs to the UI thread that created
         // the cache. Posting a value-only thread message transfers no pointers.
         let _ = unsafe {
-            PostThreadMessageW(self.owner_thread, SEARCH_CATALOG_WAKE_MESSAGE, WPARAM(0), LPARAM(0))
+            PostThreadMessageW(
+                self.owner_thread,
+                SEARCH_CATALOG_WAKE_MESSAGE,
+                WPARAM(0),
+                LPARAM(0),
+            )
         };
     }
 }
@@ -151,7 +165,9 @@ pub const fn is_search_catalog_wake(message: u32) -> bool {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn compose_catalog(
@@ -171,13 +187,17 @@ fn compose_catalog(
             ApplicationSource::Running
         })
     };
-    let mut entries =
-        dock_items.iter().filter(|item| item.is_pinned).map(dock_entry).collect::<Vec<_>>();
+    let mut entries = dock_items
+        .iter()
+        .filter(|item| item.is_pinned)
+        .map(dock_entry)
+        .collect::<Vec<_>>();
 
     entries.extend(discovered_entries.into_iter().map(|mut entry| {
         if entry.icon_source.starts_with(r"shell:AppsFolder\")
-            && let Some(item) =
-                dock_items.iter().find(|item| item.display_name.eq_ignore_ascii_case(&entry.name))
+            && let Some(item) = dock_items
+                .iter()
+                .find(|item| item.display_name.eq_ignore_ascii_case(&entry.name))
         {
             entry.icon_source.clone_from(&item.executable_path);
         }
@@ -187,7 +207,12 @@ fn compose_catalog(
             entry
         }
     }));
-    entries.extend(dock_items.iter().filter(|item| !item.is_pinned).map(dock_entry));
+    entries.extend(
+        dock_items
+            .iter()
+            .filter(|item| !item.is_pinned)
+            .map(dock_entry),
+    );
 
     entries.push(ApplicationEntry::new(
         WINDOWS_SETTINGS_NAME,
@@ -197,7 +222,10 @@ fn compose_catalog(
     SearchCatalog::new(entries)
 }
 
-fn matches_hidden_executable(entry: &ApplicationEntry, hidden_executables: &[String]) -> bool {
+fn matches_hidden_executable(
+    entry: &ApplicationEntry,
+    hidden_executables: &[String],
+) -> bool {
     hidden_executables.iter().any(|hidden| {
         let hidden = Path::new(hidden);
         let matches_path = [entry.launch_target.as_str(), entry.icon_source.as_str()]
@@ -212,7 +240,10 @@ fn matches_hidden_executable(entry: &ApplicationEntry, hidden_executables: &[Str
 }
 
 fn discover_start_menu_entries() -> Vec<ApplicationEntry> {
-    let roots = [known_folder(&FOLDERID_Programs), known_folder(&FOLDERID_CommonPrograms)];
+    let roots = [
+        known_folder(&FOLDERID_Programs),
+        known_folder(&FOLDERID_CommonPrograms),
+    ];
     let mut entries = discover_entries(roots.into_iter().flatten());
     entries.extend(discover_apps_folder_entries());
     entries
@@ -243,7 +274,9 @@ fn discover_apps_folder_entries() -> Vec<ApplicationEntry> {
         let mut fetched = 0;
         // SAFETY: `item` and `fetched` are writable for this synchronous COM
         // call, and the enumerator owns any returned interface reference.
-        if unsafe { enumerator.Next(&mut item, Some(&raw mut fetched)) }.is_err() || fetched == 0 {
+        if unsafe { enumerator.Next(&mut item, Some(&raw mut fetched)) }.is_err()
+            || fetched == 0
+        {
             break;
         }
         let Some(item) = item[0].take() else {
@@ -263,7 +296,9 @@ fn discover_apps_folder_entries() -> Vec<ApplicationEntry> {
 }
 
 fn apps_folder_entry(name: String, identity: &str) -> Option<ApplicationEntry> {
-    if should_exclude(&name) || identity.starts_with("http://") || identity.starts_with("https://")
+    if should_exclude(&name)
+        || identity.starts_with("http://")
+        || identity.starts_with("https://")
     {
         return None;
     }
@@ -271,7 +306,10 @@ fn apps_folder_entry(name: String, identity: &str) -> Option<ApplicationEntry> {
     Some(ApplicationEntry::new(name, target.clone(), Some(target)))
 }
 
-fn shell_item_text(item: &IShellItem, format: windows::Win32::UI::Shell::SIGDN) -> Option<String> {
+fn shell_item_text(
+    item: &IShellItem,
+    format: windows::Win32::UI::Shell::SIGDN,
+) -> Option<String> {
     // SAFETY: `item` is live and the returned task-allocated UTF-16 string is
     // transferred to the guard before conversion.
     let text = unsafe { item.GetDisplayName(format) }.ok()?;
@@ -369,11 +407,13 @@ fn supported_files(root: &Path) -> Vec<PathBuf> {
 }
 
 fn is_supported(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
-        ["lnk", "url", "appref-ms", "exe"]
-            .iter()
-            .any(|supported| extension.eq_ignore_ascii_case(supported))
-    })
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["lnk", "url", "appref-ms", "exe"]
+                .iter()
+                .any(|supported| extension.eq_ignore_ascii_case(supported))
+        })
 }
 
 fn display_name(path: &Path) -> Option<String> {
@@ -422,9 +462,14 @@ fn is_launchable_entry(path: &Path) -> bool {
             .is_some_and(|value| value.eq_ignore_ascii_case("lnk"))
         {
             return resolve_executable(&path.to_string_lossy()).is_none_or(|target| {
-                !target.extension().and_then(|value| value.to_str()).is_some_and(|value| {
-                    ["url", "htm", "html", "chm"].iter().any(|web| value.eq_ignore_ascii_case(web))
-                })
+                !target
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| {
+                        ["url", "htm", "html", "chm"]
+                            .iter()
+                            .any(|web| value.eq_ignore_ascii_case(web))
+                    })
             });
         }
         return true;
@@ -458,10 +503,11 @@ fn catalog_priority(path: &Path, name: &str) -> u8 {
         .filter_map(|ancestor| ancestor.file_name()?.to_str())
         .map(str::to_lowercase)
         .collect::<Vec<_>>();
-    if folders
-        .iter()
-        .any(|folder| ADVANCED_TOOLS.iter().any(|advanced| folder.starts_with(advanced)))
-    {
+    if folders.iter().any(|folder| {
+        ADVANCED_TOOLS
+            .iter()
+            .any(|advanced| folder.starts_with(advanced))
+    }) {
         return 2;
     }
     u8::from(

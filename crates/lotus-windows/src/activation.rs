@@ -8,8 +8,8 @@ use thiserror::Error;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Shell::{SHELLEXECUTEINFOW, ShellExecuteExW};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, IsIconic, IsWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOWNORMAL, ShowWindow,
-    SwitchToThisWindow,
+    GetForegroundWindow, IsIconic, IsWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOWNORMAL,
+    ShowWindow, SwitchToThisWindow,
 };
 use windows::core::PCWSTR;
 
@@ -42,7 +42,11 @@ pub fn foreground_window() -> Option<WindowId> {
     // borrowed HWND or null. Lotus does not own or destroy the handle.
     let window = unsafe { GetForegroundWindow() };
     let address = window.0.addr();
-    if address == 0 { None } else { u64::try_from(address).ok().map(WindowId::new) }
+    if address == 0 {
+        None
+    } else {
+        u64::try_from(address).ok().map(WindowId::new)
+    }
 }
 
 pub fn execute_activation(
@@ -115,8 +119,8 @@ fn existing_window(window: WindowId) -> Result<HWND, ActivationError> {
 }
 
 fn hwnd_from_id(window: WindowId) -> Result<HWND, ActivationError> {
-    let address =
-        usize::try_from(window.get()).map_err(|_| ActivationError::InvalidWindowId(window))?;
+    let address = usize::try_from(window.get())
+        .map_err(|_| ActivationError::InvalidWindowId(window))?;
     if address == 0 {
         return Err(ActivationError::InvalidWindowId(window));
     }
@@ -136,7 +140,9 @@ pub fn launch_target(target: &str, arguments: Option<&str>) -> Result<(), Activa
         cbSize: u32::try_from(size_of::<SHELLEXECUTEINFOW>())
             .expect("SHELLEXECUTEINFOW size fits u32"),
         lpFile: PCWSTR(file.as_ptr()),
-        lpParameters: parameters.as_ref().map_or_else(PCWSTR::null, |value| PCWSTR(value.as_ptr())),
+        lpParameters: parameters
+            .as_ref()
+            .map_or_else(PCWSTR::null, |value| PCWSTR(value.as_ptr())),
         nShow: SW_SHOWNORMAL.0,
         ..SHELLEXECUTEINFOW::default()
     };
@@ -144,8 +150,10 @@ pub fn launch_target(target: &str, arguments: Option<&str>) -> Result<(), Activa
     // SAFETY: `execute` has the documented size, all optional fields are null,
     // and its UTF-16 buffers remain alive through this synchronous call. No
     // process handle is requested, so there is no returned ownership to close.
-    unsafe { ShellExecuteExW(&raw mut execute) }
-        .map_err(|source| ActivationError::Launch { target: request.target, source: source.into() })
+    unsafe { ShellExecuteExW(&raw mut execute) }.map_err(|source| ActivationError::Launch {
+        target: request.target,
+        source: source.into(),
+    })
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -160,9 +168,12 @@ impl LaunchRequest {
             return Err(ActivationError::EmptyLaunchTarget);
         }
 
-        let target =
-            expand_environment_variables(target).ok_or(ActivationError::EnvironmentExpansion)?;
-        Ok(Self { target, arguments: arguments.map(str::to_owned) })
+        let target = expand_environment_variables(target)
+            .ok_or(ActivationError::EnvironmentExpansion)?;
+        Ok(Self {
+            target,
+            arguments: arguments.map(str::to_owned),
+        })
     }
 }
 

@@ -22,10 +22,10 @@ impl DockItem {
     }
 
     pub fn initial(&self) -> String {
-        self.display_name
-            .chars()
-            .next()
-            .map_or_else(|| "?".into(), |character| character.to_uppercase().collect())
+        self.display_name.chars().next().map_or_else(
+            || "?".into(),
+            |character| character.to_uppercase().collect(),
+        )
     }
 }
 
@@ -50,7 +50,8 @@ where
         .filter(|window| {
             let executable = window.executable_name();
             !settings.hidden_executables.iter().any(|hidden| {
-                executable.is_some_and(|executable| path_case_eq(Path::new(hidden), executable))
+                executable
+                    .is_some_and(|executable| path_case_eq(Path::new(hidden), executable))
             })
         })
         .collect::<Vec<_>>();
@@ -67,7 +68,11 @@ where
             }
         }
         let executable_path = matches.first().map_or_else(
-            || resolved_launch.clone().unwrap_or_else(|| pinned.launch_target.clone()),
+            || {
+                resolved_launch
+                    .clone()
+                    .unwrap_or_else(|| pinned.launch_target.clone())
+            },
             |window| path_text(&window.executable_path),
         );
 
@@ -76,7 +81,10 @@ where
             display_name: pinned.name.clone(),
             launch_target: pinned.launch_target.clone(),
             arguments: pinned.arguments.clone(),
-            icon_source: pinned.icon_source.clone().unwrap_or_else(|| executable_path.clone()),
+            icon_source: pinned
+                .icon_source
+                .clone()
+                .unwrap_or_else(|| executable_path.clone()),
             executable_path,
             is_pinned: true,
             windows: matches,
@@ -91,15 +99,24 @@ where
     items
 }
 
-fn matches_pin(pinned: &PinnedApp, window: &WindowInfo, resolved_launch: Option<&str>) -> bool {
+fn matches_pin(
+    pinned: &PinnedApp,
+    window: &WindowInfo,
+    resolved_launch: Option<&str>,
+) -> bool {
     let executable_name = window.executable_name();
     pinned.match_executables.iter().any(|candidate| {
-        executable_name.is_some_and(|executable| path_case_eq(Path::new(candidate), executable))
+        executable_name
+            .is_some_and(|executable| path_case_eq(Path::new(candidate), executable))
     }) || resolved_launch
         .is_some_and(|resolved| path_case_eq(Path::new(resolved), &window.executable_path))
 }
 
-fn append_unpinned(items: &mut Vec<DockItem>, visible_windows: &[&WindowInfo], unmatched: &[bool]) {
+fn append_unpinned(
+    items: &mut Vec<DockItem>,
+    visible_windows: &[&WindowInfo],
+    unmatched: &[bool],
+) {
     let mut group_indices = HashMap::<String, usize>::new();
     let mut groups = Vec::<(String, Vec<WindowInfo>)>::new();
 
@@ -124,16 +141,20 @@ fn append_unpinned(items: &mut Vec<DockItem>, visible_windows: &[&WindowInfo], u
             .then_with(|| left.0.cmp(&right.0))
     });
 
-    items.extend(groups.into_iter().map(|(executable_path, windows)| DockItem {
-        id: executable_path.clone(),
-        display_name: file_stem(&executable_path),
-        launch_target: executable_path.clone(),
-        arguments: None,
-        icon_source: executable_path.clone(),
-        executable_path,
-        is_pinned: false,
-        windows,
-    }));
+    items.extend(
+        groups
+            .into_iter()
+            .map(|(executable_path, windows)| DockItem {
+                id: executable_path.clone(),
+                display_name: file_stem(&executable_path),
+                launch_target: executable_path.clone(),
+                arguments: None,
+                icon_source: executable_path.clone(),
+                executable_path,
+                is_pinned: false,
+                windows,
+            }),
+    );
 }
 
 fn apply_saved_order(items: &mut [DockItem], saved_order: &[String]) {
@@ -142,7 +163,12 @@ fn apply_saved_order(items: &mut [DockItem], saved_order: &[String]) {
         order.entry(case_key(id)).or_insert(index);
     }
 
-    items.sort_by_key(|item| order.get(&case_key(&item.id)).copied().unwrap_or(usize::MAX));
+    items.sort_by_key(|item| {
+        order
+            .get(&case_key(&item.id))
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
 }
 
 fn file_stem(path: &str) -> String {
@@ -152,7 +178,9 @@ fn file_stem(path: &str) -> String {
         return "Settings".to_owned();
     }
     let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
-    name.rsplit_once('.').map_or(name, |(stem, _)| stem).to_owned()
+    name.rsplit_once('.')
+        .map_or(name, |(stem, _)| stem)
+        .to_owned()
 }
 
 fn path_case_eq(left: &Path, right: &Path) -> bool {

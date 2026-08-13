@@ -1,17 +1,17 @@
 use std::ffi::c_void;
 use std::mem::{size_of, size_of_val};
 
+use lotus_core::settings::DockSettings;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{
     DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
-    DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE,
-    DWMWCP_ROUND, DWMWCP_ROUNDSMALL, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+    DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
+    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::UI::Controls::MARGINS;
 use windows::core::{BOOL, s, w};
-
-use lotus_core::settings::DockSettings;
 
 use crate::WindowHandle;
 
@@ -120,11 +120,18 @@ pub(crate) fn apply_settings_window(hwnd: HWND) {
     }
 }
 
-fn apply_common(hwnd: HWND, corner: windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE) {
+fn apply_common(
+    hwnd: HWND,
+    corner: windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE,
+) {
     let dark_mode = 1_i32;
     let backdrop = DWMSBT_TRANSIENTWINDOW;
-    let margins =
-        MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
+    let margins = MARGINS {
+        cxLeftWidth: -1,
+        cxRightWidth: -1,
+        cyTopHeight: -1,
+        cyBottomHeight: -1,
+    };
 
     // SAFETY: Every attribute pointer references a correctly typed, initialized value and
     // remains valid for the duration of its synchronous DWM call.
@@ -159,12 +166,14 @@ fn apply_explicit_acrylic(hwnd: HWND, tint: u32) -> bool {
         return false;
     };
     // SAFETY: The symbol is queried by its stable export name and checked for absence.
-    let Some(procedure) = (unsafe { GetProcAddress(user32, s!("SetWindowCompositionAttribute")) })
+    let Some(procedure) =
+        (unsafe { GetProcAddress(user32, s!("SetWindowCompositionAttribute")) })
     else {
         return false;
     };
     // SAFETY: This export has the SetWindowCompositionAttribute ABI represented by the alias.
-    let set_attribute: SetWindowCompositionAttribute = unsafe { std::mem::transmute(procedure) };
+    let set_attribute: SetWindowCompositionAttribute =
+        unsafe { std::mem::transmute(procedure) };
 
     let mut policy = AccentPolicy {
         state: ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND,

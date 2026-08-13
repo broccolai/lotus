@@ -5,7 +5,9 @@ use thiserror::Error;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_INVALID_PARAMETER, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
-use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+};
 use windows::core::HRESULT;
 
 use crate::NativeError;
@@ -80,8 +82,10 @@ where
         let argument = arguments[index].as_ref();
         if argument_eq(argument, "--restart-after") {
             index += 1;
-            let value =
-                arguments.get(index).ok_or(StartupArgsError::MissingRestartProcess)?.as_ref();
+            let value = arguments
+                .get(index)
+                .ok_or(StartupArgsError::MissingRestartProcess)?
+                .as_ref();
             let process_id = parse_process_id(value)?;
             if let Some(first) = restart_after
                 && first != process_id
@@ -97,17 +101,26 @@ where
         } else if argument_eq(argument, "--cleanup-update") {
             index += 1;
             cleanup_update = Some(PathBuf::from(
-                arguments.get(index).ok_or(StartupArgsError::MissingCleanupDirectory)?.as_ref(),
+                arguments
+                    .get(index)
+                    .ok_or(StartupArgsError::MissingCleanupDirectory)?
+                    .as_ref(),
             ));
         }
         index += 1;
     }
 
-    Ok(StartupOptions { restart_after, open_settings, cleanup_update })
+    Ok(StartupOptions {
+        restart_after,
+        open_settings,
+        cleanup_update,
+    })
 }
 
 fn argument_eq(argument: &OsStr, expected: &str) -> bool {
-    argument.to_str().is_some_and(|argument| argument.eq_ignore_ascii_case(expected))
+    argument
+        .to_str()
+        .is_some_and(|argument| argument.eq_ignore_ascii_case(expected))
 }
 
 fn parse_process_id(value: &OsStr) -> Result<u32, StartupArgsError> {
@@ -130,10 +143,18 @@ pub enum RestartWaitOutcome {
 #[derive(Debug, Error)]
 pub enum RestartWaitError {
     #[error("could not open restart source process {process_id}: {source}")]
-    OpenProcess { process_id: u32, source: NativeError },
+    OpenProcess {
+        process_id: u32,
+        source: NativeError,
+    },
     #[error("waiting for restart source process {process_id} failed: {source}")]
-    Wait { process_id: u32, source: NativeError },
-    #[error("restart source process {process_id} returned an unexpected wait status {status}")]
+    Wait {
+        process_id: u32,
+        source: NativeError,
+    },
+    #[error(
+        "restart source process {process_id} returned an unexpected wait status {status}"
+    )]
     UnexpectedStatus { process_id: u32, status: u32 },
 }
 
@@ -154,7 +175,10 @@ pub fn wait_for_restart_source(
             return Ok(RestartWaitOutcome::AlreadyExited);
         }
         Err(source) => {
-            return Err(RestartWaitError::OpenProcess { process_id, source: source.into() });
+            return Err(RestartWaitError::OpenProcess {
+                process_id,
+                source: source.into(),
+            });
         }
     };
 
@@ -167,7 +191,10 @@ pub fn wait_for_restart_source(
             process_id,
             source: windows::core::Error::from_thread().into(),
         }),
-        status => Err(RestartWaitError::UnexpectedStatus { process_id, status: status.0 }),
+        status => Err(RestartWaitError::UnexpectedStatus {
+            process_id,
+            status: status.0,
+        }),
     }
 }
 

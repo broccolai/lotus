@@ -39,10 +39,18 @@ impl UpdateChecker {
         let (sender, results) = mpsc::channel();
         // SAFETY: GetCurrentThreadId has no preconditions and captures the message-loop owner.
         let owner_thread = unsafe { GetCurrentThreadId() };
-        Self { owner_thread, working: Arc::new(AtomicBool::new(false)), results, sender }
+        Self {
+            owner_thread,
+            working: Arc::new(AtomicBool::new(false)),
+            results,
+            sender,
+        }
     }
 
-    pub fn start_check(&self, current_version: &'static str) -> Result<bool, UpdateStartError> {
+    pub fn start_check(
+        &self,
+        current_version: &'static str,
+    ) -> Result<bool, UpdateStartError> {
         self.spawn("lotus-update-check", move || {
             UpdateResult::Checked(lotus_update::check(current_version))
         })
@@ -63,23 +71,33 @@ impl UpdateChecker {
         name: &'static str,
         work: impl FnOnce() -> UpdateResult + Send + 'static,
     ) -> Result<bool, UpdateStartError> {
-        if self.working.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err()
+        if self
+            .working
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
         {
             return Ok(false);
         }
         let sender = self.sender.clone();
         let working = Arc::clone(&self.working);
         let owner_thread = self.owner_thread;
-        let spawn = std::thread::Builder::new().name(name.into()).spawn(move || {
-            let result = work();
-            working.store(false, Ordering::Release);
-            if sender.send(result).is_ok() {
-                // SAFETY: This private message carries no pointers and targets the captured UI thread.
-                let _ = unsafe {
-                    PostThreadMessageW(owner_thread, UPDATE_WAKE_MESSAGE, WPARAM(0), LPARAM(0))
-                };
-            }
-        });
+        let spawn = std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                let result = work();
+                working.store(false, Ordering::Release);
+                if sender.send(result).is_ok() {
+                    // SAFETY: This private message carries no pointers and targets the captured UI thread.
+                    let _ = unsafe {
+                        PostThreadMessageW(
+                            owner_thread,
+                            UPDATE_WAKE_MESSAGE,
+                            WPARAM(0),
+                            LPARAM(0),
+                        )
+                    };
+                }
+            });
         if let Err(source) = spawn {
             self.working.store(false, Ordering::Release);
             return Err(UpdateStartError::Thread(source));
@@ -129,17 +147,25 @@ fn launch_helper(executable: &Path) -> Result<(), UpdateInstallError> {
 
 pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let Some(index) =
-        arguments.iter().position(|argument| argument_eq(argument, APPLY_UPDATE_ARGUMENT))
+    let Some(index) = arguments
+        .iter()
+        .position(|argument| argument_eq(argument, APPLY_UPDATE_ARGUMENT))
     else {
         return Ok(false);
     };
-    let target =
-        arguments.get(index + 1).map(PathBuf::from).ok_or(UpdateInstallError::MissingTarget)?;
-    let startup = parse_startup_args(&arguments).map_err(UpdateInstallError::StartupArguments)?;
-    wait_for_restart_source(startup.restart_after).map_err(UpdateInstallError::RestartWait)?;
+    let target = arguments
+        .get(index + 1)
+        .map(PathBuf::from)
+        .ok_or(UpdateInstallError::MissingTarget)?;
+    let startup =
+        parse_startup_args(&arguments).map_err(UpdateInstallError::StartupArguments)?;
+    wait_for_restart_source(startup.restart_after)
+        .map_err(UpdateInstallError::RestartWait)?;
     let source = std::env::current_exe().map_err(UpdateInstallError::CurrentExecutable)?;
-    let directory = target.parent().ok_or(UpdateInstallError::InvalidTarget)?.to_owned();
+    let directory = target
+        .parent()
+        .ok_or(UpdateInstallError::InvalidTarget)?
+        .to_owned();
     fs::create_dir_all(&directory).map_err(UpdateInstallError::InstallDirectory)?;
     let temporary = directory.join("lotus.update.exe");
     fs::copy(&source, &temporary).map_err(UpdateInstallError::CopyExecutable)?;
@@ -157,7 +183,9 @@ pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
 
 pub fn cleanup_staging_directory(path: &Path) -> Result<(), UpdateInstallError> {
     let expected_parent = std::env::temp_dir();
-    let valid = path.parent().is_some_and(|parent| paths_equal(parent, &expected_parent))
+    let valid = path
+        .parent()
+        .is_some_and(|parent| paths_equal(parent, &expected_parent))
         && path
             .file_name()
             .and_then(OsStr::to_str)
@@ -190,11 +218,14 @@ fn replace_file(source: &Path, target: &Path) -> Result<(), UpdateInstallError> 
 }
 
 fn paths_equal(left: &Path, right: &Path) -> bool {
-    left.to_string_lossy().eq_ignore_ascii_case(&right.to_string_lossy())
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
 }
 
 fn argument_eq(argument: &OsStr, expected: &str) -> bool {
-    argument.to_str().is_some_and(|argument| argument.eq_ignore_ascii_case(expected))
+    argument
+        .to_str()
+        .is_some_and(|argument| argument.eq_ignore_ascii_case(expected))
 }
 
 fn wide_null(value: &OsStr) -> Vec<u16> {

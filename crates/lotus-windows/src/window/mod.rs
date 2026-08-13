@@ -9,8 +9,9 @@ mod switcher;
 pub use context_menu::ContextMenuWindow;
 pub use dock::DockWindow;
 pub use events::{
-    ContextMenuEvent, CursorMove, DockContextRequest, PointerEvent, SearchEdit, SearchEvent,
-    SelectionDirection, SettingsEvent, SettingsKey, SignedPoint, SwitcherEvent, WindowEvent,
+    ContextMenuEvent, CursorMove, DockContextRequest, PointerEvent, SearchEdit,
+    SearchEvent, SelectionDirection, SettingsEvent, SettingsKey, SignedPoint,
+    SwitcherEvent, WindowEvent,
 };
 pub use lotus_dock::appbar::AppBarLayout;
 pub use search::SearchWindow;

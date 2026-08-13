@@ -11,7 +11,8 @@ pub struct SingleInstance {
 impl SingleInstance {
     pub fn acquire() -> Result<Option<Self>, NativeError> {
         // SAFETY: The static name is NUL-terminated and the returned handle is owned below.
-        let mutex = unsafe { CreateMutexW(None, true, w!(r"Local\Lotus.Dock.SingleInstance"))? };
+        let mutex =
+            unsafe { CreateMutexW(None, true, w!(r"Local\Lotus.Dock.SingleInstance"))? };
         // SAFETY: This immediately follows CreateMutexW without an intervening Win32 call.
         let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
 

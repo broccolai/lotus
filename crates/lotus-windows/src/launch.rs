@@ -1,8 +1,7 @@
 use std::ffi::OsString;
-use std::fs;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::ptr;
+use std::{fs, ptr};
 
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::Storage::FileSystem::SearchPathW;
@@ -55,15 +54,20 @@ pub(crate) fn resolve_shortcut_icon(shortcut_path: &Path) -> Option<(PathBuf, i3
     let icon_path = String::from_utf16_lossy(utf16_without_nul(&icon_path));
     let expanded = expand_environment_variables(icon_path.trim().trim_matches('"'))?;
     let candidate = PathBuf::from(expanded);
-    let candidate =
-        if candidate.is_absolute() { candidate } else { shortcut_path.parent()?.join(candidate) };
+    let candidate = if candidate.is_absolute() {
+        candidate
+    } else {
+        shortcut_path.parent()?.join(candidate)
+    };
     if !candidate.is_file() {
         return None;
     }
     Some((std::path::absolute(candidate).ok()?, icon_index))
 }
 
-pub(crate) fn resolve_internet_shortcut_icon(shortcut_path: &Path) -> Option<(PathBuf, i32)> {
+pub(crate) fn resolve_internet_shortcut_icon(
+    shortcut_path: &Path,
+) -> Option<(PathBuf, i32)> {
     if !has_extension(shortcut_path, "url") {
         return None;
     }
@@ -73,7 +77,8 @@ pub(crate) fn resolve_internet_shortcut_icon(shortcut_path: &Path) -> Option<(Pa
     let mut icon_index = 0;
     for line in contents.lines().map(str::trim) {
         if line.starts_with('[') && line.ends_with(']') {
-            in_internet_shortcut = line[1..line.len() - 1].eq_ignore_ascii_case("InternetShortcut");
+            in_internet_shortcut =
+                line[1..line.len() - 1].eq_ignore_ascii_case("InternetShortcut");
             continue;
         }
         if !in_internet_shortcut {
@@ -91,8 +96,11 @@ pub(crate) fn resolve_internet_shortcut_icon(shortcut_path: &Path) -> Option<(Pa
 
     let expanded = expand_environment_variables(icon_path?)?;
     let candidate = PathBuf::from(expanded);
-    let candidate =
-        if candidate.is_absolute() { candidate } else { shortcut_path.parent()?.join(candidate) };
+    let candidate = if candidate.is_absolute() {
+        candidate
+    } else {
+        shortcut_path.parent()?.join(candidate)
+    };
     if !candidate.is_file() {
         return None;
     }
@@ -114,7 +122,10 @@ fn decode_internet_shortcut(bytes: &[u8]) -> Option<String> {
             .collect::<Vec<_>>();
         return String::from_utf16(&units).ok();
     }
-    Some(String::from_utf8_lossy(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)).into())
+    Some(
+        String::from_utf8_lossy(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes))
+            .into(),
+    )
 }
 
 fn prepare_target(target: &str) -> Option<&str> {
@@ -131,7 +142,9 @@ fn has_uri_scheme(target: &str) -> bool {
         return false;
     };
     let mut characters = scheme.chars();
-    characters.next().is_some_and(|first| first.is_ascii_alphabetic())
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
         && characters.all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
         })
@@ -205,8 +218,10 @@ fn resolve_shortcut(shortcut_path: &Path) -> Option<PathBuf> {
     let mut target = vec![0u16; WINDOWS_PATH_CAPACITY];
     // SAFETY: `target` is valid writable UTF-16 storage. A null find-data
     // pointer is permitted when only the resolved path is requested.
-    unsafe { shell_link.GetPath(&mut target, ptr::null_mut(), SLGP_RAWPATH.0.cast_unsigned()) }
-        .ok()?;
+    unsafe {
+        shell_link.GetPath(&mut target, ptr::null_mut(), SLGP_RAWPATH.0.cast_unsigned())
+    }
+    .ok()?;
     let target = String::from_utf16_lossy(utf16_without_nul(&target));
     if target.is_empty() {
         return None;
@@ -214,7 +229,10 @@ fn resolve_shortcut(shortcut_path: &Path) -> Option<PathBuf> {
 
     let expanded = expand_environment_variables(&target)?;
     let expanded = Path::new(&expanded);
-    expanded.is_file().then(|| std::path::absolute(expanded).ok()).flatten()
+    expanded
+        .is_file()
+        .then(|| std::path::absolute(expanded).ok())
+        .flatten()
 }
 
 pub(super) struct ComApartment {
@@ -229,7 +247,9 @@ impl ComApartment {
         if result.is_ok() {
             Some(Self { uninitialize: true })
         } else if result == RPC_E_CHANGED_MODE {
-            Some(Self { uninitialize: false })
+            Some(Self {
+                uninitialize: false,
+            })
         } else {
             None
         }
@@ -255,6 +275,9 @@ fn wide_path_null(value: &Path) -> Vec<u16> {
 }
 
 fn utf16_without_nul(value: &[u16]) -> &[u16] {
-    let length = value.iter().position(|unit| *unit == 0).unwrap_or(value.len());
+    let length = value
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(value.len());
     &value[..length]
 }

@@ -4,23 +4,24 @@ use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 
+use lotus_ui::icon::{RasterIcon, RasterIconError};
 use thiserror::Error;
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
-    DeleteDC, DeleteObject, HBITMAP, HDC, HGDIOBJ, SelectObject,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, HBITMAP, HDC, HGDIOBJ, SelectObject,
 };
 use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
 use windows::Win32::UI::Shell::{
-    SHDefExtractIconW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_PIDL, SHGetFileInfoW,
-    SHParseDisplayName,
+    SHDefExtractIconW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_PIDL,
+    SHGetFileInfoW, SHParseDisplayName,
 };
 use windows::Win32::UI::WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON};
 use windows::core::{Error, PCWSTR};
 
-use lotus_ui::icon::{RasterIcon, RasterIconError};
-
-use super::launch::{resolve_executable, resolve_internet_shortcut_icon, resolve_shortcut_icon};
+use super::launch::{
+    resolve_executable, resolve_internet_shortcut_icon, resolve_shortcut_icon,
+};
 use crate::NativeError;
 
 const MAX_ICON_SIZE: u32 = 1_024;
@@ -59,13 +60,21 @@ pub struct NativeIconCache {
 }
 
 impl NativeIconCache {
-    pub fn icon(&mut self, path: &Path, size: u32) -> Result<Option<RasterIcon>, NativeIconError> {
+    pub fn icon(
+        &mut self,
+        path: &Path,
+        size: u32,
+    ) -> Result<Option<RasterIcon>, NativeIconError> {
         validate_size(size)?;
         let source_path = sanitized_path(path)?;
         let normalized_path = normalize_path(&source_path)?;
         let extraction = icon_extraction_source(&source_path);
         let icon_index = extraction.as_ref().map_or(0, |(_, index)| *index);
-        let key = CacheKey { normalized_path, icon_index, size };
+        let key = CacheKey {
+            normalized_path,
+            icon_index,
+            size,
+        };
 
         if !self.icons.contains_key(&key) {
             let image = match extraction {
@@ -131,7 +140,12 @@ fn extract_icon(
     )?))
 }
 
-fn load_shell_icon(source: &Path, path: &[u16], icon_index: i32, size: u32) -> Option<OwnedIcon> {
+fn load_shell_icon(
+    source: &Path,
+    path: &[u16],
+    icon_index: i32,
+    size: u32,
+) -> Option<OwnedIcon> {
     if source.to_string_lossy().starts_with("shell:")
         && let Some(icon) = load_namespace_icon(path)
     {
@@ -173,8 +187,10 @@ fn load_namespace_icon(path: &[u16]) -> Option<OwnedIcon> {
     let mut item_id_list = std::ptr::null_mut();
     // SAFETY: `path` is null-terminated, the bind context is optional, and the
     // output receives a task-allocated absolute item ID list.
-    unsafe { SHParseDisplayName(PCWSTR(path.as_ptr()), None, &raw mut item_id_list, 0, None) }
-        .ok()?;
+    unsafe {
+        SHParseDisplayName(PCWSTR(path.as_ptr()), None, &raw mut item_id_list, 0, None)
+    }
+    .ok()?;
     let item_id_list = CoTaskMemItemIdList(item_id_list);
     let mut info = SHFILEINFOW::default();
     // SAFETY: SHGFI_PIDL documents that the first argument is an absolute PIDL;
@@ -188,7 +204,11 @@ fn load_namespace_icon(path: &[u16]) -> Option<OwnedIcon> {
             SHGFI_PIDL | SHGFI_ICON | SHGFI_LARGEICON,
         )
     };
-    if result == 0 || info.hIcon.0.is_null() { None } else { Some(OwnedIcon(info.hIcon)) }
+    if result == 0 || info.hIcon.0.is_null() {
+        None
+    } else {
+        Some(OwnedIcon(info.hIcon))
+    }
 }
 
 struct CoTaskMemItemIdList(*mut windows::Win32::UI::Shell::Common::ITEMIDLIST);
@@ -209,14 +229,27 @@ fn render_icon(icon: HICON, size: u32, background: u8) -> Result<Vec<u8>, Native
     let selection = SelectedBitmap::select(dc.get(), bitmap.get())?;
 
     // SAFETY: The top-down DIB exposes exactly `byte_len` writable bytes while its bitmap lives.
-    let pixels = unsafe { std::slice::from_raw_parts_mut(bitmap.bits().as_ptr(), byte_len) };
+    let pixels =
+        unsafe { std::slice::from_raw_parts_mut(bitmap.bits().as_ptr(), byte_len) };
     for pixel in pixels.chunks_exact_mut(4) {
         pixel.copy_from_slice(&[background, background, background, u8::MAX]);
     }
 
     // SAFETY: The memory DC has the live DIB selected, the icon is owned and live, and dimensions
     // were validated for both GDI and the allocated pixel buffer.
-    unsafe { DrawIconEx(dc.get(), 0, 0, icon, dimension, dimension, 0, None, DI_NORMAL)? };
+    unsafe {
+        DrawIconEx(
+            dc.get(),
+            0,
+            0,
+            icon,
+            dimension,
+            dimension,
+            0,
+            None,
+            DI_NORMAL,
+        )?;
+    };
     let rendered = pixels.to_vec();
     drop(selection);
     Ok(rendered)
@@ -272,13 +305,23 @@ fn wide_path(path: &Path) -> Result<Vec<u16>, NativeIconError> {
 }
 
 fn validate_size(size: u32) -> Result<(), NativeIconError> {
-    if size == 0 || size > MAX_ICON_SIZE { Err(NativeIconError::InvalidSize) } else { Ok(()) }
+    if size == 0 || size > MAX_ICON_SIZE {
+        Err(NativeIconError::InvalidSize)
+    } else {
+        Ok(())
+    }
 }
 
 fn raster_byte_len(size: u32) -> Result<usize, NativeIconError> {
-    let pixels = size.checked_mul(size).ok_or(NativeIconError::RasterTooLarge)?;
-    usize::try_from(pixels.checked_mul(BYTES_PER_PIXEL).ok_or(NativeIconError::RasterTooLarge)?)
-        .map_err(|_| NativeIconError::RasterTooLarge)
+    let pixels = size
+        .checked_mul(size)
+        .ok_or(NativeIconError::RasterTooLarge)?;
+    usize::try_from(
+        pixels
+            .checked_mul(BYTES_PER_PIXEL)
+            .ok_or(NativeIconError::RasterTooLarge)?,
+    )
+    .map_err(|_| NativeIconError::RasterTooLarge)
 }
 
 struct OwnedIcon(HICON);
@@ -302,7 +345,11 @@ impl OwnedMemoryDc {
     fn create() -> Result<Self, NativeIconError> {
         // SAFETY: A null source DC creates a display-compatible memory DC.
         let dc = unsafe { CreateCompatibleDC(None) };
-        if dc.0.is_null() { Err(Error::from_thread().into()) } else { Ok(Self(dc)) }
+        if dc.0.is_null() {
+            Err(Error::from_thread().into())
+        } else {
+            Ok(Self(dc))
+        }
     }
 
     const fn get(&self) -> HDC {
@@ -341,10 +388,18 @@ impl OwnedDib {
         let mut bits = std::ptr::null_mut::<c_void>();
         // SAFETY: `info` fully describes a 32-bit top-down DIB and `bits` is writable output.
         let bitmap = unsafe {
-            CreateDIBSection(Some(dc), &raw const info, DIB_RGB_COLORS, &raw mut bits, None, 0)?
+            CreateDIBSection(
+                Some(dc),
+                &raw const info,
+                DIB_RGB_COLORS,
+                &raw mut bits,
+                None,
+                0,
+            )?
         };
-        let bits = NonNull::new(bits.cast::<u8>())
-            .ok_or_else(|| Error::new(E_FAIL, "CreateDIBSection returned no pixel storage"))?;
+        let bits = NonNull::new(bits.cast::<u8>()).ok_or_else(|| {
+            Error::new(E_FAIL, "CreateDIBSection returned no pixel storage")
+        })?;
         Ok(Self { bitmap, bits })
     }
 

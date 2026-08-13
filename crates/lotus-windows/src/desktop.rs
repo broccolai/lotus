@@ -26,9 +26,17 @@ pub fn toggle() -> Result<(), ShowDesktopError> {
     let expected = u32::try_from(inputs.len()).unwrap_or(u32::MAX);
     // SAFETY: Each value is a fully initialized keyboard INPUT and the size
     // matches the exact ABI type supplied to SendInput.
-    let inserted =
-        unsafe { SendInput(&inputs, i32::try_from(size_of::<INPUT>()).unwrap_or(i32::MAX)) };
-    if inserted == expected { Ok(()) } else { Err(ShowDesktopError { inserted, expected }) }
+    let inserted = unsafe {
+        SendInput(
+            &inputs,
+            i32::try_from(size_of::<INPUT>()).unwrap_or(i32::MAX),
+        )
+    };
+    if inserted == expected {
+        Ok(())
+    } else {
+        Err(ShowDesktopError { inserted, expected })
+    }
 }
 
 const fn key(virtual_key: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {

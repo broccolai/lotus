@@ -9,13 +9,13 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{
-    ABE_BOTTOM, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, ABN_FULLSCREENAPP, APPBARDATA,
-    DefSubclassProc, RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
+    ABE_BOTTOM, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, ABN_FULLSCREENAPP,
+    APPBARDATA, DefSubclassProc, RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, PostThreadMessageW, RegisterWindowMessageW, SWP_NOACTIVATE,
-    SWP_NOZORDER, SetWindowPos, WINDOW_EX_STYLE, WM_APP, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_POPUP,
+    CreateWindowExW, DestroyWindow, PostThreadMessageW, RegisterWindowMessageW,
+    SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WINDOW_EX_STYLE, WM_APP, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::core::w;
 
@@ -32,7 +32,8 @@ pub fn fullscreen_notification(
     message_id: u32,
     parameter: usize,
 ) -> Option<bool> {
-    (is_thread_message && message_id == FULLSCREEN_NOTIFICATION_MESSAGE).then_some(parameter != 0)
+    (is_thread_message && message_id == FULLSCREEN_NOTIFICATION_MESSAGE)
+        .then_some(parameter != 0)
 }
 
 #[derive(Debug, Error)]
@@ -72,12 +73,19 @@ impl ShellIntegration {
         }
 
         let taskbar = if settings.exclusive_taskbar_replacement {
-            TaskbarOwnership::Exclusive { _guard: ExclusiveTaskbarGuard::start()? }
+            TaskbarOwnership::Exclusive {
+                _guard: ExclusiveTaskbarGuard::start()?,
+            }
         } else {
-            TaskbarOwnership::Autohide { _guard: TaskbarStateGuard::enable_autohide()? }
+            TaskbarOwnership::Autohide {
+                _guard: TaskbarStateGuard::enable_autohide()?,
+            }
         };
         let appbar = AppBarController::register(dock, settings)?;
-        Ok(Some(Self { appbar, taskbar: Some(taskbar) }))
+        Ok(Some(Self {
+            appbar,
+            taskbar: Some(taskbar),
+        }))
     }
 }
 
@@ -99,15 +107,21 @@ struct AppBarController {
 }
 
 impl AppBarController {
-    fn register(dock: &DockWindow, settings: &DockSettings) -> Result<Self, ShellIntegrationError> {
+    fn register(
+        dock: &DockWindow,
+        settings: &DockSettings,
+    ) -> Result<Self, ShellIntegrationError> {
         // SAFETY: The static message name is NUL-terminated and process lifetime stable.
-        let callback_message = unsafe { RegisterWindowMessageW(w!("Lotus.AppBar.Callback")) };
+        let callback_message =
+            unsafe { RegisterWindowMessageW(w!("Lotus.AppBar.Callback")) };
         if callback_message == 0 {
             return Err(ShellIntegrationError::CallbackRegistration);
         }
 
-        let mut controller =
-            Self { reservation: ReservationWindow::create(callback_message)?, registered: false };
+        let mut controller = Self {
+            reservation: ReservationWindow::create(callback_message)?,
+            registered: false,
+        };
         let mut data = appbar_data(controller.reservation.hwnd());
         data.uCallbackMessage = callback_message;
         // SAFETY: APPBARDATA has the correct ABI size and refers to Lotus's live dock HWND.
@@ -183,7 +197,10 @@ impl ReservationWindow {
         };
         // SAFETY: Reading the creating UI thread identifier has no preconditions.
         let thread_id = unsafe { GetCurrentThreadId() };
-        let callback = Box::new(ReservationCallback { message: callback_message, thread_id });
+        let callback = Box::new(ReservationCallback {
+            message: callback_message,
+            thread_id,
+        });
         let callback_pointer = std::ptr::from_ref(callback.as_ref()).addr();
         // SAFETY: The boxed callback state stays at a stable address until this owned HWND removes
         // the subclass during Drop. The callback itself never unwinds or retains message pointers.
@@ -201,7 +218,10 @@ impl ReservationWindow {
             let _ = unsafe { DestroyWindow(hwnd) };
             return Err(windows::core::Error::from_thread());
         }
-        Ok(Self { hwnd, _callback: callback })
+        Ok(Self {
+            hwnd,
+            _callback: callback,
+        })
     }
 
     const fn hwnd(&self) -> HWND {
@@ -250,11 +270,14 @@ unsafe extern "system" fn reservation_subclass_proc(
     _subclass_id: usize,
     callback_pointer: usize,
 ) -> LRESULT {
-    let callback = std::ptr::with_exposed_provenance::<ReservationCallback>(callback_pointer);
+    let callback =
+        std::ptr::with_exposed_provenance::<ReservationCallback>(callback_pointer);
     // SAFETY: SetWindowSubclass receives the stable boxed pointer and RemoveWindowSubclass runs
     // before that box is dropped.
     let callback = unsafe { &*callback };
-    if message == callback.message && wparam.0 == usize::try_from(ABN_FULLSCREENAPP).unwrap_or(2) {
+    if message == callback.message
+        && wparam.0 == usize::try_from(ABN_FULLSCREENAPP).unwrap_or(2)
+    {
         let fullscreen = usize::from(lparam.0 != 0);
         // SAFETY: This posts a pointer-free private message to the creating UI thread.
         let _ = unsafe {
@@ -290,7 +313,10 @@ fn requested_layout(
 fn monitor_rect(hwnd: HWND) -> Result<ScreenRect, windows::core::Error> {
     // SAFETY: The dock HWND is live; primary fallback guarantees a monitor handle.
     let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY) };
-    let mut info = MONITORINFO { cbSize: monitor_info_size(), ..MONITORINFO::default() };
+    let mut info = MONITORINFO {
+        cbSize: monitor_info_size(),
+        ..MONITORINFO::default()
+    };
     // SAFETY: `info` has the required ABI size and valid writable storage.
     unsafe { GetMonitorInfoW(monitor, &raw mut info).ok()? };
     Ok(to_screen_rect(info.rcMonitor))
@@ -306,19 +332,35 @@ fn appbar_data(hwnd: HWND) -> APPBARDATA {
 }
 
 const fn to_rect(rect: ScreenRect) -> RECT {
-    RECT { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+    RECT {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    }
 }
 
 const fn to_screen_rect(rect: RECT) -> ScreenRect {
-    ScreenRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+    ScreenRect {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    }
 }
 
-#[allow(clippy::cast_possible_truncation, reason = "APPBARDATA is a fixed Win32 ABI structure")]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "APPBARDATA is a fixed Win32 ABI structure"
+)]
 const fn appbar_data_size() -> u32 {
     size_of::<APPBARDATA>() as u32
 }
 
-#[allow(clippy::cast_possible_truncation, reason = "MONITORINFO is a fixed Win32 ABI structure")]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "MONITORINFO is a fixed Win32 ABI structure"
+)]
 const fn monitor_info_size() -> u32 {
     size_of::<MONITORINFO>() as u32
 }

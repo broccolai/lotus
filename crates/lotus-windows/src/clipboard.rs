@@ -2,7 +2,9 @@ use std::mem::size_of;
 
 use thiserror::Error;
 use windows::Win32::Foundation::HGLOBAL;
-use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, GetClipboardData, OpenClipboard,
+};
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 
 use crate::NativeError;
@@ -43,7 +45,10 @@ pub fn read_text() -> Result<String, ClipboardError> {
 }
 
 fn decode_unicode_text(units: &[u16]) -> Result<String, ClipboardError> {
-    let end = units.iter().position(|unit| *unit == 0).unwrap_or(units.len());
+    let end = units
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(units.len());
     String::from_utf16(&units[..end]).map_err(|_| ClipboardError::InvalidUnicode)
 }
 

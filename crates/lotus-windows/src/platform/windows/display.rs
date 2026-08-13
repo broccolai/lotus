@@ -3,8 +3,8 @@ use std::mem::size_of;
 use lotus_ui::geometry::DpiScale;
 use windows::Win32::Foundation::{E_FAIL, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MonitorFromPoint, MonitorFromWindow,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST,
+    MONITORINFO, MonitorFromPoint, MonitorFromWindow,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
@@ -71,15 +71,23 @@ pub fn nearest_display_to_point(x: i32, y: i32) -> Result<Display> {
 }
 
 pub fn primary_display() -> Result<Display> {
-    Ok(all_displays()?.into_iter().find(|display| display.is_primary).ok_or_else(no_display)?)
+    Ok(all_displays()?
+        .into_iter()
+        .find(|display| display.is_primary)
+        .ok_or_else(no_display)?)
 }
 
 fn all_displays() -> Result<Vec<Display>> {
     let mut displays = Vec::new();
     // SAFETY: Enumeration is synchronous and LPARAM carries a live vector pointer throughout.
     unsafe {
-        EnumDisplayMonitors(None, None, Some(collect_display), pointer_lparam(&raw mut displays))
-            .ok()?;
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(collect_display),
+            pointer_lparam(&raw mut displays),
+        )
+        .ok()?;
     }
     Ok(displays)
 }
@@ -99,7 +107,10 @@ unsafe extern "system" fn collect_display(
 }
 
 fn display_info(handle: HMONITOR) -> Result<Display> {
-    let mut info = MONITORINFO { cbSize: monitor_info_size(), ..MONITORINFO::default() };
+    let mut info = MONITORINFO {
+        cbSize: monitor_info_size(),
+        ..MONITORINFO::default()
+    };
     // SAFETY: The monitor handle is live and `info` is initialized writable ABI storage.
     unsafe { GetMonitorInfoW(handle, &raw mut info).ok()? };
     Ok(Display {

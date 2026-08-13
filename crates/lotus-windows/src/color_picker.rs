@@ -37,7 +37,11 @@ pub fn choose_color(
     }
     // SAFETY: This reads the calling thread's common-dialog error immediately after failure.
     let error = unsafe { CommDlgExtendedError() }.0;
-    if error == 0 { Ok(None) } else { Err(ColorPickerError::Native(error)) }
+    if error == 0 {
+        Ok(None)
+    } else {
+        Err(ColorPickerError::Native(error))
+    }
 }
 
 fn to_color_ref(value: &str) -> COLORREF {

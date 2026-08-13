@@ -1,6 +1,7 @@
 use std::sync::mpsc::{self, Receiver, Sender, TryIter};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
+use lotus_core::window::WindowId;
 use lotus_switcher::model::Direction;
 use thiserror::Error;
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
@@ -10,11 +11,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_ESCAPE, VK_LMENU, VK_RMENU, VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, PostThreadMessageW, SetWindowsHookExW,
-    UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, PostThreadMessageW,
+    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN, WM_KEYUP,
+    WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
-
-use lotus_core::window::WindowId;
 
 use crate::NativeError;
 
@@ -25,7 +25,10 @@ static ACTIVE_CONTROLLER: Mutex<Option<Weak<HookContext>>> = Mutex::new(None);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AltTabEvent {
-    Begin { direction: Direction, foreground: Option<WindowId> },
+    Begin {
+        direction: Direction,
+        foreground: Option<WindowId>,
+    },
     Cycle(Direction),
     Commit,
     Cancel,
@@ -122,7 +125,12 @@ fn install() -> Result<OwnedHook, NativeError> {
     let module = unsafe { GetModuleHandleW(None) }?;
     // SAFETY: The callback has static lifetime and the required low-level hook ABI.
     let hook = unsafe {
-        SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), Some(HINSTANCE(module.0)), 0)
+        SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(keyboard_hook),
+            Some(HINSTANCE(module.0)),
+            0,
+        )
     }?;
     Ok(OwnedHook(hook))
 }
@@ -138,12 +146,20 @@ fn claim(context: &Arc<HookContext>) -> Result<(), AltTabError> {
 
 fn release(context: &Arc<HookContext>) {
     let mut active = lock(&ACTIVE_CONTROLLER);
-    if active.as_ref().and_then(Weak::upgrade).is_some_and(|owner| Arc::ptr_eq(&owner, context)) {
+    if active
+        .as_ref()
+        .and_then(Weak::upgrade)
+        .is_some_and(|owner| Arc::ptr_eq(&owner, context))
+    {
         *active = None;
     }
 }
 
-unsafe extern "system" fn keyboard_hook(code: i32, message: WPARAM, data: LPARAM) -> LRESULT {
+unsafe extern "system" fn keyboard_hook(
+    code: i32,
+    message: WPARAM,
+    data: LPARAM,
+) -> LRESULT {
     if code < 0 || data.0 == 0 {
         return call_next(code, message, data);
     }
@@ -192,12 +208,19 @@ fn emit(context: &HookContext, event: AltTabEvent) {
     }
     // SAFETY: The message carries no pointer and targets the captured UI thread.
     let _ = unsafe {
-        PostThreadMessageW(context.owner_thread, ALT_TAB_WAKE_MESSAGE, WPARAM(0), LPARAM(0))
+        PostThreadMessageW(
+            context.owner_thread,
+            ALT_TAB_WAKE_MESSAGE,
+            WPARAM(0),
+            LPARAM(0),
+        )
     };
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -239,7 +262,11 @@ struct Sequence {
 
 impl Default for Sequence {
     fn default() -> Self {
-        Self { modifiers: 0, status: SequenceStatus::Idle, captured: CapturedKey::None }
+        Self {
+            modifiers: 0,
+            status: SequenceStatus::Idle,
+            captured: CapturedKey::None,
+        }
     }
 }
 
@@ -271,7 +298,8 @@ impl Sequence {
             return self.alt(event.transition);
         }
         if event.key == VK_ESCAPE.0
-            && (self.status == SequenceStatus::Active || self.captured == CapturedKey::Escape)
+            && (self.status == SequenceStatus::Active
+                || self.captured == CapturedKey::Escape)
         {
             return self.escape(event.transition);
         }
@@ -304,11 +332,18 @@ impl Sequence {
         if transition == Transition::Up {
             let captured = self.captured == CapturedKey::Tab;
             self.captured = CapturedKey::None;
-            return if captured { Decision::Suppress } else { Decision::Pass };
+            return if captured {
+                Decision::Suppress
+            } else {
+                Decision::Pass
+            };
         }
         self.captured = CapturedKey::Tab;
-        let direction =
-            if self.modifier(SHIFT_DOWN) { Direction::Reverse } else { Direction::Forward };
+        let direction = if self.modifier(SHIFT_DOWN) {
+            Direction::Reverse
+        } else {
+            Direction::Forward
+        };
         if self.status == SequenceStatus::Active {
             Decision::Emit(AltTabEvent::Cycle(direction))
         } else {
@@ -324,7 +359,11 @@ impl Sequence {
         if transition == Transition::Up {
             let captured = self.captured == CapturedKey::Escape;
             self.captured = CapturedKey::None;
-            return if captured { Decision::Suppress } else { Decision::Pass };
+            return if captured {
+                Decision::Suppress
+            } else {
+                Decision::Pass
+            };
         }
         self.cancel();
         self.captured = CapturedKey::Escape;

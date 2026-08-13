@@ -33,7 +33,10 @@ impl RasterIcon {
         }
         let width = NonZeroU32::new(width).ok_or(RasterIconError::ZeroDimensions)?;
         let height = NonZeroU32::new(height).ok_or(RasterIconError::ZeroDimensions)?;
-        let stride = width.get().checked_mul(4).ok_or(RasterIconError::DimensionsTooLarge)?;
+        let stride = width
+            .get()
+            .checked_mul(4)
+            .ok_or(RasterIconError::DimensionsTooLarge)?;
         let expected = u64::from(width.get())
             .checked_mul(u64::from(height.get()))
             .and_then(|pixels| pixels.checked_mul(4))
@@ -45,11 +48,12 @@ impl RasterIcon {
                 actual: premultiplied_bgra.len(),
             });
         }
-        if let Some((pixel_index, _)) = premultiplied_bgra
-            .chunks_exact(4)
-            .enumerate()
-            .find(|(_, pixel)| pixel[0] > pixel[3] || pixel[1] > pixel[3] || pixel[2] > pixel[3])
-        {
+        let (pixels, remainder) = premultiplied_bgra.as_chunks::<4>();
+        debug_assert_eq!(remainder, []);
+
+        if let Some((pixel_index, _)) = pixels.iter().enumerate().find(|(_, pixel)| {
+            pixel[0] > pixel[3] || pixel[1] > pixel[3] || pixel[2] > pixel[3]
+        }) {
             return Err(RasterIconError::NotPremultiplied { pixel_index });
         }
 

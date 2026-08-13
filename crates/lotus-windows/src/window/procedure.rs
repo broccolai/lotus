@@ -11,24 +11,26 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_RETURN,
-    VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
+    VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT,
+    VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, DefWindowProcW, DestroyWindow, GWLP_USERDATA,
-    GetClientRect, GetWindowLongPtrW, HTCAPTION, HTCLIENT, IDC_ARROW, LoadCursorW, MA_NOACTIVATE,
-    MINMAXINFO, RegisterClassExW, SPI_SETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW,
-    SetWindowPos, UnregisterClassW, WA_INACTIVE, WM_ACTIVATE, WM_CANCELMODE, WM_CAPTURECHANGED,
-    WM_CHAR, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR,
-    WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WNDCLASSEXW,
+    GetClientRect, GetWindowLongPtrW, HTCAPTION, HTCLIENT, IDC_ARROW, LoadCursorW,
+    MA_NOACTIVATE, MINMAXINFO, RegisterClassExW, SPI_SETWORKAREA, SWP_NOACTIVATE,
+    SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, UnregisterClassW, WA_INACTIVE,
+    WM_ACTIVATE, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU,
+    WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WM_SETTINGCHANGE,
+    WM_SIZE, WM_TIMER, WNDCLASSEXW,
 };
 use windows::core::w;
 
 pub(crate) use super::events::{
-    ContextMenuEvent, CursorMove, DockContextRequest, PointerEvent, SearchEdit, SearchEvent,
-    SelectionDirection, SettingsEvent, SettingsKey, SignedPoint, SwitcherEvent, WindowEvent,
+    ContextMenuEvent, CursorMove, DockContextRequest, PointerEvent, SearchEdit,
+    SearchEvent, SelectionDirection, SettingsEvent, SettingsKey, SignedPoint,
+    SwitcherEvent, WindowEvent,
 };
 use crate::NativeError;
 
@@ -63,19 +65,31 @@ pub struct WindowState {
 
 impl WindowState {
     pub fn search() -> Self {
-        Self { kind: WindowKind::Search, ..Self::default() }
+        Self {
+            kind: WindowKind::Search,
+            ..Self::default()
+        }
     }
 
     pub fn settings() -> Self {
-        Self { kind: WindowKind::Settings, ..Self::default() }
+        Self {
+            kind: WindowKind::Settings,
+            ..Self::default()
+        }
     }
 
     pub fn context_menu() -> Self {
-        Self { kind: WindowKind::ContextMenu, ..Self::default() }
+        Self {
+            kind: WindowKind::ContextMenu,
+            ..Self::default()
+        }
     }
 
     pub fn switcher() -> Self {
-        Self { kind: WindowKind::Switcher, ..Self::default() }
+        Self {
+            kind: WindowKind::Switcher,
+            ..Self::default()
+        }
     }
 
     fn push(&mut self, event: WindowEvent) {
@@ -169,15 +183,14 @@ unsafe extern "system" fn window_procedure(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    catch_unwind(AssertUnwindSafe(|| dispatch(hwnd, message, wparam, lparam))).unwrap_or_else(
-        |_| {
+    catch_unwind(AssertUnwindSafe(|| dispatch(hwnd, message, wparam, lparam)))
+        .unwrap_or_else(|_| {
             // SAFETY: Posting a nonzero quit code asks the owning UI loop to unwind normally, so
             // its shell-state guards run. No Rust unwind is permitted across this ABI boundary.
             request_exit(WNDPROC_PANIC_EXIT_CODE);
             // SAFETY: The original message still receives valid default processing.
             unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
-        },
-    )
+        })
 }
 
 fn dispatch(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -208,16 +221,21 @@ fn dispatch(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT
             LRESULT(isize::try_from(MA_NOACTIVATE).unwrap_or_default())
         }
         WM_SETCURSOR
-            if low_word(lparam.0.cast_unsigned()) == HTCLIENT && apply_pointer_cursor(hwnd) =>
+            if low_word(lparam.0.cast_unsigned()) == HTCLIENT
+                && apply_pointer_cursor(hwnd) =>
         {
             LRESULT(1)
         }
         WM_NCHITTEST if is_settings_window(hwnd) => settings_header_hit_test(hwnd, lparam),
-        WM_ACTIVATE if is_search_window(hwnd) => dispatch_search_activation(hwnd, wparam, lparam),
+        WM_ACTIVATE if is_search_window(hwnd) => {
+            dispatch_search_activation(hwnd, wparam, lparam)
+        }
         WM_ACTIVATE if is_context_menu_window(hwnd) => {
             dispatch_context_menu_activation(hwnd, wparam, lparam)
         }
-        WM_KEYDOWN if is_search_window(hwnd) => dispatch_search_key(hwnd, message, wparam, lparam),
+        WM_KEYDOWN if is_search_window(hwnd) => {
+            dispatch_search_key(hwnd, message, wparam, lparam)
+        }
         WM_KEYDOWN if is_settings_window(hwnd) => {
             dispatch_settings_key(hwnd, message, wparam, lparam)
         }
@@ -235,7 +253,9 @@ fn dispatch(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT
             );
             LRESULT(0)
         }
-        WM_GETMINMAXINFO if is_settings_window(hwnd) => apply_settings_minimum_size(hwnd, lparam),
+        WM_GETMINMAXINFO if is_settings_window(hwnd) => {
+            apply_settings_minimum_size(hwnd, lparam)
+        }
         WM_SIZE => {
             apply_configured_region(hwnd);
             let (width, height) = size_from_lparam(lparam);
@@ -265,7 +285,12 @@ fn dispatch(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT
                 )
             };
             apply_configured_region(hwnd);
-            push_window_event(hwnd, WindowEvent::DpiChanged { dpi: dpi_from_wparam(wparam) });
+            push_window_event(
+                hwnd,
+                WindowEvent::DpiChanged {
+                    dpi: dpi_from_wparam(wparam),
+                },
+            );
             LRESULT(0)
         }
         message if is_dock_window(hwnd) && requests_placement_refresh(message, wparam) => {
@@ -298,12 +323,18 @@ fn apply_pointer_cursor(hwnd: HWND) -> bool {
 
 fn dispatch_close_message(hwnd: HWND) -> LRESULT {
     let event = match window_kind(hwnd) {
-        Some(WindowKind::Search) => Some(WindowEvent::Search(SearchEvent::DismissRequested)),
-        Some(WindowKind::Settings) => Some(WindowEvent::Settings(SettingsEvent::CloseRequested)),
+        Some(WindowKind::Search) => {
+            Some(WindowEvent::Search(SearchEvent::DismissRequested))
+        }
+        Some(WindowKind::Settings) => {
+            Some(WindowEvent::Settings(SettingsEvent::CloseRequested))
+        }
         Some(WindowKind::ContextMenu) => {
             Some(WindowEvent::ContextMenu(ContextMenuEvent::DismissRequested))
         }
-        Some(WindowKind::Switcher) => Some(WindowEvent::Switcher(SwitcherEvent::CloseRequested)),
+        Some(WindowKind::Switcher) => {
+            Some(WindowEvent::Switcher(SwitcherEvent::CloseRequested))
+        }
         Some(WindowKind::Dock) | None => None,
     };
     if let Some(event) = event {
@@ -337,11 +368,17 @@ fn dispatch_timer_message(hwnd: HWND, wparam: WPARAM) -> Option<LRESULT> {
         return Some(LRESULT(0));
     }
     if SEARCH_CLOCK_TIMER.matches(wparam.0) && is_search_window(hwnd) {
-        push_window_event(hwnd, WindowEvent::Search(SearchEvent::ClockRefreshRequested));
+        push_window_event(
+            hwnd,
+            WindowEvent::Search(SearchEvent::ClockRefreshRequested),
+        );
         return Some(LRESULT(0));
     }
     if SEARCH_FOCUS_TIMER.matches(wparam.0) && is_search_window(hwnd) {
-        push_window_event(hwnd, WindowEvent::Search(SearchEvent::FocusRefreshRequested));
+        push_window_event(
+            hwnd,
+            WindowEvent::Search(SearchEvent::FocusRefreshRequested),
+        );
         return Some(LRESULT(0));
     }
     None
@@ -401,7 +438,12 @@ fn with_window_state(hwnd: HWND, action: impl FnOnce(&mut WindowState)) {
     }
 }
 
-fn dispatch_settings_key(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+fn dispatch_settings_key(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     if let Some(key) = settings_key(wparam) {
         push_window_event(hwnd, WindowEvent::Settings(SettingsEvent::KeyPressed(key)));
         LRESULT(0)
@@ -411,7 +453,12 @@ fn dispatch_settings_key(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARA
     }
 }
 
-fn dispatch_search_key(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+fn dispatch_search_key(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     if let Some(event) = search_key_event(wparam) {
         push_window_event(hwnd, WindowEvent::Search(event));
         LRESULT(0)
@@ -423,7 +470,10 @@ fn dispatch_search_key(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM)
 
 fn dispatch_search_wheel(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     if let Some(direction) = wheel_selection_direction(wparam) {
-        push_window_event(hwnd, WindowEvent::Search(SearchEvent::MoveSelection(direction)));
+        push_window_event(
+            hwnd,
+            WindowEvent::Search(SearchEvent::MoveSelection(direction)),
+        );
     }
     LRESULT(0)
 }
@@ -443,21 +493,31 @@ fn dispatch_search_activation(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRE
 
 fn dispatch_context_menu_activation(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if low_word(wparam.0) == WA_INACTIVE {
-        push_window_event(hwnd, WindowEvent::ContextMenu(ContextMenuEvent::DismissRequested));
+        push_window_event(
+            hwnd,
+            WindowEvent::ContextMenu(ContextMenuEvent::DismissRequested),
+        );
     }
     // SAFETY: The popup retains standard top-level activation processing. `show` clears any
     // inactive event produced while the hidden window is positioned before revealing it.
     unsafe { DefWindowProcW(hwnd, WM_ACTIVATE, wparam, lparam) }
 }
 
-fn dispatch_context_menu_key(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+fn dispatch_context_menu_key(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     let Ok(key) = u16::try_from(wparam.0) else {
         // SAFETY: Unhandled keys retain normal popup processing.
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     };
     let event = match key {
         key if key == VK_ESCAPE.0 => ContextMenuEvent::DismissRequested,
-        key if key == VK_RETURN.0 || key == VK_SPACE.0 => ContextMenuEvent::SelectionRequested,
+        key if key == VK_RETURN.0 || key == VK_SPACE.0 => {
+            ContextMenuEvent::SelectionRequested
+        }
         key if key == VK_LEFT.0 || key == VK_UP.0 => {
             ContextMenuEvent::MoveSelection(SelectionDirection::Previous)
         }
@@ -486,7 +546,10 @@ fn apply_settings_minimum_size(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 
 fn settings_header_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let screen = signed_point_from_lparam(lparam);
-    let mut client = POINT { x: screen.x, y: screen.y };
+    let mut client = POINT {
+        x: screen.x,
+        y: screen.y,
+    };
     let mut bounds = RECT::default();
     // SAFETY: Both output structures are writable, and `hwnd` is the live settings window that
     // received WM_NCHITTEST. Failure conservatively leaves the point in the client area.
@@ -503,7 +566,14 @@ fn settings_header_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let close_left = bounds.right.saturating_sub(dpi.physical_i32(52));
     let draggable =
         client.x >= 0 && client.x < close_left && client.y >= 0 && client.y < header_bottom;
-    LRESULT(isize::try_from(if draggable { HTCAPTION } else { HTCLIENT }).unwrap_or_default())
+    LRESULT(
+        isize::try_from(if draggable {
+            HTCAPTION
+        } else {
+            HTCLIENT
+        })
+        .unwrap_or_default(),
+    )
 }
 
 fn is_search_window(hwnd: HWND) -> bool {
@@ -556,15 +626,21 @@ fn search_key_event_for(key: u16, control_pressed: bool) -> Option<SearchEvent> 
         key if key == VK_HOME.0 => {
             Some(SearchEvent::Edit(SearchEdit::MoveCursor(CursorMove::Home)))
         }
-        key if key == VK_END.0 => Some(SearchEvent::Edit(SearchEdit::MoveCursor(CursorMove::End))),
-        key if key == VK_LEFT.0 => {
-            Some(SearchEvent::Edit(SearchEdit::MoveCursor(CursorMove::Previous)))
+        key if key == VK_END.0 => {
+            Some(SearchEvent::Edit(SearchEdit::MoveCursor(CursorMove::End)))
         }
+        key if key == VK_LEFT.0 => Some(SearchEvent::Edit(SearchEdit::MoveCursor(
+            CursorMove::Previous,
+        ))),
         key if key == VK_RIGHT.0 => {
             Some(SearchEvent::Edit(SearchEdit::MoveCursor(CursorMove::Next)))
         }
-        key if key == VK_UP.0 => Some(SearchEvent::MoveSelection(SelectionDirection::Previous)),
-        key if key == VK_DOWN.0 => Some(SearchEvent::MoveSelection(SelectionDirection::Next)),
+        key if key == VK_UP.0 => {
+            Some(SearchEvent::MoveSelection(SelectionDirection::Previous))
+        }
+        key if key == VK_DOWN.0 => {
+            Some(SearchEvent::MoveSelection(SelectionDirection::Next))
+        }
         key if key == VK_ESCAPE.0 => Some(SearchEvent::DismissRequested),
         key if key == VK_RETURN.0 => Some(SearchEvent::SubmitRequested),
         _ => None,
@@ -576,14 +652,20 @@ fn settings_key(wparam: WPARAM) -> Option<SettingsKey> {
     settings_key_for(key, control_is_pressed(), shift_is_pressed())
 }
 
-fn settings_key_for(key: u16, control_pressed: bool, shift_pressed: bool) -> Option<SettingsKey> {
+fn settings_key_for(
+    key: u16,
+    control_pressed: bool,
+    shift_pressed: bool,
+) -> Option<SettingsKey> {
     if control_pressed && key == 0x53 {
         return Some(SettingsKey::Save);
     }
     match key {
         key if key == VK_ESCAPE.0 => Some(SettingsKey::Escape),
         key if key == VK_RETURN.0 => Some(SettingsKey::Enter),
-        key if key == VK_TAB.0 => Some(SettingsKey::Tab { reverse: shift_pressed }),
+        key if key == VK_TAB.0 => Some(SettingsKey::Tab {
+            reverse: shift_pressed,
+        }),
         key if key == VK_LEFT.0 => Some(SettingsKey::Left),
         key if key == VK_RIGHT.0 => Some(SettingsKey::Right),
         key if key == VK_UP.0 => Some(SettingsKey::Up),
@@ -619,7 +701,9 @@ fn decode_text_unit(pending_high_surrogate: &Cell<Option<u16>>, unit: u16) -> Op
         None
     } else if (0xDC00..=0xDFFF).contains(&unit) {
         pending_high_surrogate.replace(None).and_then(|high| {
-            char::decode_utf16([high, unit]).next().and_then(std::result::Result::ok)
+            char::decode_utf16([high, unit])
+                .next()
+                .and_then(std::result::Result::ok)
         })
     } else {
         pending_high_surrogate.set(None);
@@ -699,11 +783,20 @@ fn client_point_from_lparam(lparam: LPARAM) -> (i32, i32) {
 
 fn signed_point_from_lparam(lparam: LPARAM) -> SignedPoint {
     let packed = lparam.0.cast_unsigned();
-    let x = i16::from_ne_bytes(u16::try_from(packed & 0xFFFF).unwrap_or_default().to_ne_bytes());
-    let y = i16::from_ne_bytes(
-        u16::try_from((packed >> 16) & 0xFFFF).unwrap_or_default().to_ne_bytes(),
+    let x = i16::from_ne_bytes(
+        u16::try_from(packed & 0xFFFF)
+            .unwrap_or_default()
+            .to_ne_bytes(),
     );
-    SignedPoint { x: i32::from(x), y: i32::from(y) }
+    let y = i16::from_ne_bytes(
+        u16::try_from((packed >> 16) & 0xFFFF)
+            .unwrap_or_default()
+            .to_ne_bytes(),
+    );
+    SignedPoint {
+        x: i32::from(x),
+        y: i32::from(y),
+    }
 }
 
 fn context_request(hwnd: HWND, lparam: LPARAM) -> DockContextRequest {
@@ -712,12 +805,22 @@ fn context_request(hwnd: HWND, lparam: LPARAM) -> DockContextRequest {
     }
 
     let screen = signed_point_from_lparam(lparam);
-    let mut client = POINT { x: screen.x, y: screen.y };
+    let mut client = POINT {
+        x: screen.x,
+        y: screen.y,
+    };
     // SAFETY: `client` is live writable storage and `hwnd` is the window that
     // received WM_CONTEXTMENU. Failure leaves the original screen point, which
     // is still a deterministic fallback for event delivery.
     let converted = unsafe { ScreenToClient(hwnd, &raw mut client) }.as_bool();
-    let client = if converted { SignedPoint { x: client.x, y: client.y } } else { screen };
+    let client = if converted {
+        SignedPoint {
+            x: client.x,
+            y: client.y,
+        }
+    } else {
+        screen
+    };
     DockContextRequest::Pointer { screen, client }
 }
 
@@ -727,7 +830,8 @@ fn dpi_from_wparam(wparam: WPARAM) -> u32 {
 
 fn requests_placement_refresh(message: u32, wparam: WPARAM) -> bool {
     message == WM_DISPLAYCHANGE
-        || (message == WM_SETTINGCHANGE && u32::try_from(wparam.0).ok() == Some(SPI_SETWORKAREA.0))
+        || (message == WM_SETTINGCHANGE
+            && u32::try_from(wparam.0).ok() == Some(SPI_SETWORKAREA.0))
 }
 
 pub fn apply_rounded_region(hwnd: HWND, radius_dips: u32) {
@@ -740,8 +844,10 @@ pub fn apply_rounded_region(hwnd: HWND, radius_dips: u32) {
 
     let mut bounds = RECT::default();
     // SAFETY: `bounds` is valid writable storage and HWND is live while processing UI work.
-    if unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &raw mut bounds) }
-        .is_err()
+    if unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &raw mut bounds)
+    }
+    .is_err()
     {
         return;
     }

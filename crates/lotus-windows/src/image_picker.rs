@@ -7,8 +7,8 @@ use windows::Win32::Foundation::ERROR_CANCELLED;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
-    FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FileOpenDialog, IFileOpenDialog,
-    SIGDN_FILESYSPATH,
+    FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FileOpenDialog,
+    IFileOpenDialog, SIGDN_FILESYSPATH,
 };
 use windows::core::{Error as WindowsError, PCWSTR, w};
 
@@ -42,7 +42,10 @@ pub fn choose_image(owner: WindowHandle) -> Result<Option<PathBuf>, ImagePickerE
             pszName: w!("Image files"),
             pszSpec: w!("*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.ico"),
         },
-        COMDLG_FILTERSPEC { pszName: w!("All files"), pszSpec: w!("*.*") },
+        COMDLG_FILTERSPEC {
+            pszName: w!("All files"),
+            pszSpec: w!("*.*"),
+        },
     ];
     // SAFETY: Filter labels are static NUL-terminated UTF-16 strings, and the
     // dialog copies its configuration during these synchronous calls.

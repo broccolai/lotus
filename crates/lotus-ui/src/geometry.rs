@@ -12,7 +12,11 @@ pub struct NonZeroPhysicalSize(PhysicalSize);
 
 impl NonZeroPhysicalSize {
     pub const fn new(width: u32, height: u32) -> Option<Self> {
-        if width == 0 || height == 0 { None } else { Some(Self(PhysicalSize::new(width, height))) }
+        if width == 0 || height == 0 {
+            None
+        } else {
+            Some(Self(PhysicalSize::new(width, height)))
+        }
     }
 
     pub const fn width(self) -> u32 {
@@ -39,11 +43,19 @@ impl DpiScale {
     const DEFAULT: u32 = 96;
 
     pub const fn new(dpi: u32) -> Option<Self> {
-        if dpi == 0 { None } else { Some(Self(dpi)) }
+        if dpi == 0 {
+            None
+        } else {
+            Some(Self(dpi))
+        }
     }
 
     pub const fn from_system(dpi: u32) -> Self {
-        Self(if dpi == 0 { Self::DEFAULT } else { dpi })
+        Self(if dpi == 0 {
+            Self::DEFAULT
+        } else {
+            dpi
+        })
     }
 
     pub const fn dpi(self) -> u32 {

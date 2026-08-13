@@ -6,35 +6,18 @@ mod runtime_helpers;
 mod settings;
 mod switcher;
 
-use crate::graphics::assets::SvgAsset;
-use crate::graphics::context_menu_scene::{ContextMenuAction, ContextMenuScene, MenuDirection};
-use crate::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
-use crate::graphics::launcher_scene::{LauncherResult, LauncherScene};
-use crate::graphics::launcher_surface::LauncherCompositionSurfaceState;
-use crate::graphics::scene::{DockBadge, DockHitTarget, DockIcon, DockMetrics, DockScene};
-use crate::graphics::scene_adapter::{adapt_dock_items_with_native, resolve_icon_with_native};
-use crate::graphics::settings_scene::{
-    SettingsAction, SettingsKey as SceneSettingsKey, SettingsScene, SettingsSize, SettingsSlider,
-    SettingsUpdateActivity,
-};
-use crate::graphics::settings_surface::SettingsCompositionSurfaceState;
-use crate::graphics::switcher_scene::{SwitcherItem, SwitcherScene};
-use crate::graphics::switcher_surface::SwitcherCompositionSurfaceState;
-use crate::graphics::{CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize};
-use crate::window::{
-    ContextMenuEvent, ContextMenuWindow, CursorMove as WindowCursorMove, DockContextRequest,
-    DockWindow, PointerEvent, SearchEdit, SearchEvent, SearchWindow, SelectionDirection,
-    SettingsEvent, SettingsKey as WindowSettingsKey, SettingsWindow, SignedPoint, SwitcherEvent,
-    SwitcherWindow, WindowEvent,
-};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use context_menu::ContextMenuRuntime;
 use dock::DockRuntime;
 use launcher::LauncherRuntime;
 use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit, SelectionMove};
 use lotus_core::notification::NotificationSource;
 use lotus_core::settings::{
-    DockSettings, NotificationBadgeStyle, SettingsDecodeError, SettingsStore, SettingsStoreError,
-    decode_settings,
+    DockSettings, NotificationBadgeStyle, SettingsDecodeError, SettingsStore,
+    SettingsStoreError, decode_settings,
 };
 use lotus_core::window::WindowInfo;
 use lotus_search::controller::{SearchController, SearchPresentation};
@@ -75,16 +58,39 @@ use lotus_windows::windows_key::{
 use runtime::run_message_loop;
 use runtime_helpers::{
     apply_fullscreen_visibility, enable_optional_alt_tab, enable_optional_windows_key,
-    handle_alt_tab_events, handle_pointer_event, handle_search_event, handle_windows_key_events,
-    render_and_schedule, render_surface, resize_dock, resize_launcher_surface, resize_surface,
-    restart_current_process,
+    handle_alt_tab_events, handle_pointer_event, handle_search_event,
+    handle_windows_key_events, render_and_schedule, render_surface, resize_dock,
+    resize_launcher_surface, resize_surface, restart_current_process,
 };
 use settings::SettingsRuntime;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
 use switcher::{AuxiliaryWindows, SwitcherRuntime};
 use thiserror::Error;
+
+use crate::graphics::assets::SvgAsset;
+use crate::graphics::context_menu_scene::{
+    ContextMenuAction, ContextMenuScene, MenuDirection,
+};
+use crate::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
+use crate::graphics::launcher_scene::{LauncherResult, LauncherScene};
+use crate::graphics::launcher_surface::LauncherCompositionSurfaceState;
+use crate::graphics::scene::{DockBadge, DockHitTarget, DockIcon, DockMetrics, DockScene};
+use crate::graphics::scene_adapter::{
+    adapt_dock_items_with_native, resolve_icon_with_native,
+};
+use crate::graphics::settings_scene::{
+    SettingsAction, SettingsKey as SceneSettingsKey, SettingsScene, SettingsSize,
+    SettingsSlider, SettingsUpdateActivity,
+};
+use crate::graphics::settings_surface::SettingsCompositionSurfaceState;
+use crate::graphics::switcher_scene::{SwitcherItem, SwitcherScene};
+use crate::graphics::switcher_surface::SwitcherCompositionSurfaceState;
+use crate::graphics::{CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize};
+use crate::window::{
+    ContextMenuEvent, ContextMenuWindow, CursorMove as WindowCursorMove,
+    DockContextRequest, DockWindow, PointerEvent, SearchEdit, SearchEvent, SearchWindow,
+    SelectionDirection, SettingsEvent, SettingsKey as WindowSettingsKey, SettingsWindow,
+    SignedPoint, SwitcherEvent, SwitcherWindow, WindowEvent,
+};
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -170,7 +176,10 @@ pub fn run() -> Result<(), AppError> {
     )?;
     let taskbar_badges = enable_notification_badges(&mut dock_model);
     let search_window = dock.create_search_window()?;
-    lotus_windows::backdrop::apply_search_settings(search_window.handle(), dock_model.settings());
+    lotus_windows::backdrop::apply_search_settings(
+        search_window.handle(),
+        dock_model.settings(),
+    );
     let launcher = LauncherRuntime::new(
         search_window,
         dock_model.settings().search_result_limit,
@@ -192,22 +201,46 @@ pub fn run() -> Result<(), AppError> {
     let context_menu =
         ContextMenuRuntime::new(context_menu_window, &theme_for(dock_model.settings()))?;
     let switcher_window = dock.create_switcher_window()?;
-    lotus_windows::backdrop::apply_popup_settings(switcher_window.handle(), dock_model.settings());
+    lotus_windows::backdrop::apply_popup_settings(
+        switcher_window.handle(),
+        dock_model.settings(),
+    );
     let switcher = SwitcherRuntime::new(switcher_window, &theme_for(dock_model.settings()));
-    let mut auxiliary = AuxiliaryWindows { launcher, settings, context_menu, switcher };
-    let windows_key =
-        enable_optional_windows_key(dock_model.settings().search_open_with_windows_key, || {
+    let mut auxiliary = AuxiliaryWindows {
+        launcher,
+        settings,
+        context_menu,
+        switcher,
+    };
+    let windows_key = enable_optional_windows_key(
+        dock_model.settings().search_open_with_windows_key,
+        || {
             let mut controller = WindowsKeyController::new();
             let _enabled = controller.enable()?;
             Ok::<WindowsKeyController, WindowsKeyError>(controller)
-        });
+        },
+    );
     let alt_tab = enable_optional_alt_tab(dock_model.settings().alt_tab_enabled);
     resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
-    let _shell_integration = ShellIntegration::setup(dock_model.settings(), &dock).unwrap_or(None);
-    render_and_schedule(&dock, &mut graphics, &mut surface, dock_model.scene(), false)?;
-    apply_fullscreen_visibility(&dock, &window_tracker, &dock_model, &mut auxiliary.launcher)?;
+    let _shell_integration =
+        ShellIntegration::setup(dock_model.settings(), &dock).unwrap_or(None);
+    render_and_schedule(
+        &dock,
+        &mut graphics,
+        &mut surface,
+        dock_model.scene(),
+        false,
+    )?;
+    apply_fullscreen_visibility(
+        &dock,
+        &window_tracker,
+        &dock_model,
+        &mut auxiliary.launcher,
+    )?;
     if startup.open_settings {
-        auxiliary.settings.open(dock_model.settings(), &mut graphics)?;
+        auxiliary
+            .settings
+            .open(dock_model.settings(), &mut graphics)?;
     }
     let runtime = RuntimePolicy {
         windows_key: windows_key.as_ref(),
@@ -241,15 +274,17 @@ fn enable_notification_badges(model: &mut DockRuntime) -> Option<TaskbarBadgeCon
 }
 
 fn load_settings() -> Result<(DockSettings, SettingsStore), AppError> {
-    let local_app_data =
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from).ok_or(AppError::MissingLocalAppData)?;
+    let local_app_data = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or(AppError::MissingLocalAppData)?;
     let settings_directory = local_app_data.join("Lotus");
     let _ = fs::remove_file(settings_directory.join("lotus.log"));
     let store = SettingsStore::new(settings_directory);
 
     if !store.settings_path().exists() {
-        let shipped_defaults =
-            decode_settings(include_str!("../../lotus-core/assets/settings.default.json"))?;
+        let shipped_defaults = decode_settings(include_str!(
+            "../../lotus-core/assets/settings.default.json"
+        ))?;
         store.save(&shipped_defaults)?;
     }
 

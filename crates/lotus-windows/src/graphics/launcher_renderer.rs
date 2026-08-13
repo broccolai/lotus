@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::num::NonZeroU32;
 
+use lotus_ui::theme::Theme;
 use thiserror::Error;
 use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -11,15 +12,15 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT,
-    D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Image,
-    ID2D1SolidColorBrush,
+    D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
+    ID2D1Image, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
-    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
@@ -31,7 +32,6 @@ use super::launcher_scene::{LauncherLayout, LauncherScene, PixelRect};
 use super::scene::{DockIcon, RasterIcon, RasterIconId};
 use super::surface::SurfaceSize;
 use super::theme;
-use lotus_ui::theme::Theme;
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = color(0.0, 0.0, 0.0, 0.0);
@@ -93,7 +93,8 @@ impl LauncherRenderer {
         // SAFETY: Both typed device creation calls use live COM interfaces.
         let device = unsafe { factory.CreateDevice(&dxgi)? };
         // SAFETY: The device is live and returns an owned context.
-        let context = unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
+        let context =
+            unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
         // SAFETY: DirectWrite returns an owned typed shared factory.
         let write_factory: IDWriteFactory =
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
@@ -119,10 +120,13 @@ impl LauncherRenderer {
         )?;
         let query_format = text_format(&write_factory, 18.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         let title_format = text_format(&write_factory, 14.5, DWRITE_FONT_WEIGHT_NORMAL)?;
-        let initial_format = text_format(&write_factory, 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let initial_format =
+            text_format(&write_factory, 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let empty_format = text_format(&write_factory, 14.0, DWRITE_FONT_WEIGHT_NORMAL)?;
-        let footer_label_format = text_format(&write_factory, 12.5, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-        let footer_time_format = text_format(&write_factory, 12.5, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let footer_label_format =
+            text_format(&write_factory, 12.5, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let footer_time_format =
+            text_format(&write_factory, 12.5, DWRITE_FONT_WEIGHT_NORMAL)?;
         // SAFETY: The owned format is live and alignment values are valid.
         unsafe {
             title_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
@@ -177,14 +181,18 @@ impl LauncherRenderer {
         self.target = None;
     }
 
-    pub(super) fn attach_target(&mut self, chain: &IDXGISwapChain1) -> Result<(), WindowsError> {
+    pub(super) fn attach_target(
+        &mut self,
+        chain: &IDXGISwapChain1,
+    ) -> Result<(), WindowsError> {
         self.detach_target();
         // SAFETY: Buffer zero exists on the initialized composition swap chain.
         let surface: IDXGISurface = unsafe { chain.GetBuffer(0)? };
         let properties = target_properties();
         // SAFETY: Surface and properties are live through the synchronous call.
         let target = unsafe {
-            self.context.CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
+            self.context
+                .CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
         };
         // SAFETY: The bitmap belongs to this context and has TARGET enabled.
         unsafe { self.context.SetTarget(&target) };
@@ -212,7 +220,8 @@ impl LauncherRenderer {
             .zip(&layout.row_icons)
             .filter_map(|(entry, bounds)| entry.icon.as_ref().zip(*bounds))
             .map(|(icon, bounds)| {
-                self.icon(icon, scene.result_icon_size()).map(|bitmap| (bitmap, rect(bounds)))
+                self.icon(icon, scene.result_icon_size())
+                    .map(|bitmap| (bitmap, rect(bounds)))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let transparent = TRANSPARENT;
@@ -279,11 +288,18 @@ impl LauncherRenderer {
         })
     }
 
-    fn draw_chrome(&self, chrome: &LauncherChrome, scene: &LauncherScene, layout: &LauncherLayout) {
+    fn draw_chrome(
+        &self,
+        chrome: &LauncherChrome,
+        scene: &LauncherScene,
+        layout: &LauncherLayout,
+    ) {
         // SAFETY: The active draw target, retained brushes, formats, and geometry remain live.
         unsafe {
-            self.context.FillRectangle(&raw const chrome.panel, &self.panel);
-            self.context.FillRoundedRectangle(&raw const chrome.query_panel, &self.field);
+            self.context
+                .FillRectangle(&raw const chrome.panel, &self.panel);
+            self.context
+                .FillRoundedRectangle(&raw const chrome.query_panel, &self.field);
             self.context.DrawRoundedRectangle(
                 &raw const chrome.query_outline,
                 &self.field_border,
@@ -298,8 +314,11 @@ impl LauncherRenderer {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
-            let query_brush =
-                if scene.query().is_empty() { &self.placeholder_text } else { &self.query_text };
+            let query_brush = if scene.query().is_empty() {
+                &self.placeholder_text
+            } else {
+                &self.query_text
+            };
             self.context.DrawText(
                 &chrome.query_text,
                 &self.query_format,
@@ -308,7 +327,8 @@ impl LauncherRenderer {
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL,
             );
-            self.context.FillRectangle(&raw const chrome.caret, &self.caret);
+            self.context
+                .FillRectangle(&raw const chrome.caret, &self.caret);
             self.draw_row_states(layout, control_radius(scene));
         }
     }
@@ -322,13 +342,17 @@ impl LauncherRenderer {
                 .and_then(|index| layout.row_surfaces.get(index))
             {
                 let highlight = rounded(rect(*hovered), radius);
-                self.context.FillRoundedRectangle(&raw const highlight, &self.hovered);
+                self.context
+                    .FillRoundedRectangle(&raw const highlight, &self.hovered);
             }
-            if let Some(selected) = layout.selected.and_then(|index| layout.row_surfaces.get(index))
+            if let Some(selected) = layout
+                .selected
+                .and_then(|index| layout.row_surfaces.get(index))
             {
                 let highlight = rounded(rect(*selected), radius);
                 let outline = rounded(inset_all(rect(*selected), 0.5), radius - 0.5);
-                self.context.FillRoundedRectangle(&raw const highlight, &self.selected);
+                self.context
+                    .FillRoundedRectangle(&raw const highlight, &self.selected);
                 self.context.DrawRoundedRectangle(
                     &raw const outline,
                     &self.selected_border,
@@ -403,11 +427,14 @@ impl LauncherRenderer {
         // live for all synchronous Direct2D/DirectWrite calls.
         unsafe {
             if let Some(thumb) = layout.scrollbar_thumb {
-                let radius = f32::from(u16::try_from(thumb.width).unwrap_or(u16::MAX)) / 2.0;
+                let radius =
+                    f32::from(u16::try_from(thumb.width).unwrap_or(u16::MAX)) / 2.0;
                 let thumb = rounded(rect(thumb), radius);
-                self.context.FillRoundedRectangle(&raw const thumb, &self.placeholder_text);
+                self.context
+                    .FillRoundedRectangle(&raw const thumb, &self.placeholder_text);
             }
-            self.context.FillRectangle(&raw const separator, &self.field_border);
+            self.context
+                .FillRectangle(&raw const separator, &self.field_border);
             self.context.DrawText(
                 &utf16("Lotus"),
                 &self.footer_label_format,
@@ -578,7 +605,12 @@ const fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
 }
 
 fn surface_rect(size: SurfaceSize) -> D2D_RECT_F {
-    D2D_RECT_F { left: 0.0, top: 0.0, right: as_f32(size.width()), bottom: as_f32(size.height()) }
+    D2D_RECT_F {
+        left: 0.0,
+        top: 0.0,
+        right: as_f32(size.width()),
+        bottom: as_f32(size.height()),
+    }
 }
 fn rect(value: PixelRect) -> D2D_RECT_F {
     D2D_RECT_F {
@@ -589,7 +621,11 @@ fn rect(value: PixelRect) -> D2D_RECT_F {
     }
 }
 fn rounded(rect: D2D_RECT_F, radius: f32) -> D2D1_ROUNDED_RECT {
-    D2D1_ROUNDED_RECT { rect, radiusX: radius, radiusY: radius }
+    D2D1_ROUNDED_RECT {
+        rect,
+        radiusX: radius,
+        radiusY: radius,
+    }
 }
 fn inset_all(mut rect: D2D_RECT_F, amount: f32) -> D2D_RECT_F {
     rect.left += amount;
@@ -643,14 +679,23 @@ fn caret_rect(
         layout.GetMetrics(&raw mut metrics)?;
         metrics
     };
-    let left = (query.left + metrics.widthIncludingTrailingWhitespace + 1.0).min(query.right);
-    Ok(D2D_RECT_F { left, top: query.top + 13.0, right: left + 1.0, bottom: query.bottom - 13.0 })
+    let left =
+        (query.left + metrics.widthIncludingTrailingWhitespace + 1.0).min(query.right);
+    Ok(D2D_RECT_F {
+        left,
+        top: query.top + 13.0,
+        right: left + 1.0,
+        bottom: query.bottom - 13.0,
+    })
 }
 fn utf16(value: &str) -> Vec<u16> {
     value.encode_utf16().collect()
 }
 
-#[allow(clippy::cast_precision_loss, reason = "launcher dimensions remain below f32 exact range")]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "launcher dimensions remain below f32 exact range"
+)]
 const fn as_f32(value: u32) -> f32 {
     value as f32
 }

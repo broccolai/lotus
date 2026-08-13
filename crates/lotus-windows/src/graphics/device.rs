@@ -15,7 +15,8 @@ use windows::core::{Error as WindowsError, HRESULT, Interface};
 
 use crate::NativeError;
 
-const FEATURE_LEVELS: [D3D_FEATURE_LEVEL; 2] = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
+const FEATURE_LEVELS: [D3D_FEATURE_LEVEL; 2] =
+    [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DeviceDriver {
@@ -41,7 +42,10 @@ impl GraphicsDevice {
         match Self::create_with_driver(DeviceDriver::Hardware) {
             Ok(device) => Ok(device),
             Err(hardware) => Self::create_with_driver(DeviceDriver::Warp).map_err(|warp| {
-                GraphicsDeviceError::CreationFailed { hardware: hardware.into(), warp: warp.into() }
+                GraphicsDeviceError::CreationFailed {
+                    hardware: hardware.into(),
+                    warp: warp.into(),
+                }
             }),
         }
     }
@@ -82,7 +86,9 @@ impl GraphicsDevice {
             )?;
         }
 
-        Ok(Self { device: device.ok_or_else(unexpected_missing_interface)? })
+        Ok(Self {
+            device: device.ok_or_else(unexpected_missing_interface)?,
+        })
     }
 }
 
@@ -156,8 +162,13 @@ impl DeviceLost {
 
 #[derive(Debug, Error)]
 pub enum GraphicsDeviceError {
-    #[error("hardware D3D11 creation failed ({hardware}); WARP creation also failed ({warp})")]
-    CreationFailed { hardware: NativeError, warp: NativeError },
+    #[error(
+        "hardware D3D11 creation failed ({hardware}); WARP creation also failed ({warp})"
+    )]
+    CreationFailed {
+        hardware: NativeError,
+        warp: NativeError,
+    },
 }
 
 fn unexpected_missing_interface() -> WindowsError {

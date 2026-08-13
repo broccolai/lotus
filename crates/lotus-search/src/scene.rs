@@ -34,18 +34,24 @@ pub struct LauncherResult<Asset> {
 
 impl<Asset> LauncherResult<Asset> {
     pub fn new(title: impl Into<String>) -> Self {
-        Self { title: title.into(), icon: None }
+        Self {
+            title: title.into(),
+            icon: None,
+        }
     }
 
     pub fn with_icon(title: impl Into<String>, icon: Icon<Asset>) -> Self {
-        Self { title: title.into(), icon: Some(icon) }
+        Self {
+            title: title.into(),
+            icon: Some(icon),
+        }
     }
 
     pub fn initial(&self) -> String {
-        self.title
-            .chars()
-            .next()
-            .map_or_else(|| "?".to_owned(), |character| character.to_uppercase().collect())
+        self.title.chars().next().map_or_else(
+            || "?".to_owned(),
+            |character| character.to_uppercase().collect(),
+        )
     }
 }
 
@@ -187,7 +193,8 @@ impl<Asset> LauncherScene<Asset> {
     }
 
     pub fn presentation(&self) -> LauncherPresentation {
-        let scale_linear = f32::from(self.presentation_progress) / f32::from(COMPLETE_PROGRESS);
+        let scale_linear =
+            f32::from(self.presentation_progress) / f32::from(COMPLETE_PROGRESS);
         let opacity_linear = (scale_linear * (140.0 / 120.0)).min(1.0);
         let scale_eased = ease_out_cubic(scale_linear);
         LauncherPresentation {
@@ -224,23 +231,50 @@ impl<Asset> LauncherScene<Asset> {
             height: self.scale(QUERY_HEIGHT_DIP),
         };
         let results_top = self.scale(RESULTS_TOP_DIP);
+        let rows = self.result_rows(size, results_top);
+        let footer = self.footer_layout(size);
+        let empty_state = self.empty_state(size, results_top, footer.separator.top);
+        let scrollbar_thumb = self.scrollbar_thumb(size, results_top, footer.separator.top);
+
+        LauncherLayout {
+            size,
+            query,
+            rows: rows.bounds,
+            row_surfaces: rows.surfaces,
+            row_contents: rows.contents,
+            row_icon_cells: rows.icon_cells,
+            row_icons: rows.icons,
+            row_texts: rows.texts,
+            empty_state,
+            footer_separator: footer.separator,
+            footer_label: footer.label,
+            footer_time: footer.time,
+            scrollbar_thumb,
+            selected: self.selected,
+            hovered: self.hovered,
+        }
+    }
+
+    fn result_rows(&self, size: LauncherSize, results_top: u32) -> LauncherRows {
         let row_slot_height = self.scale(ROW_SLOT_HEIGHT_DIP);
-        let rows: Vec<PixelRect> = self
+        let bounds = self
             .results
             .iter()
             .enumerate()
             .map(|(index, _)| PixelRect {
                 left: 0,
                 top: results_top.saturating_add(
-                    u32::try_from(index).unwrap_or(u32::MAX).saturating_mul(row_slot_height),
+                    u32::try_from(index)
+                        .unwrap_or(u32::MAX)
+                        .saturating_mul(row_slot_height),
                 ),
                 width: size.width(),
                 height: row_slot_height,
             })
-            .collect();
+            .collect::<Vec<_>>();
         let margin_x = self.scale(ROW_MARGIN_X_DIP);
         let margin_y = self.scale(ROW_MARGIN_Y_DIP);
-        let row_surfaces = rows
+        let surfaces = bounds
             .iter()
             .map(|row| PixelRect {
                 left: margin_x,
@@ -251,18 +285,22 @@ impl<Asset> LauncherScene<Asset> {
             .collect::<Vec<_>>();
         let content_inset_x = self.scale(ROW_BORDER_DIP.saturating_add(ROW_PADDING_X_DIP));
         let content_inset_y = self.scale(ROW_BORDER_DIP.saturating_add(ROW_PADDING_Y_DIP));
-        let row_contents = row_surfaces
+        let contents = surfaces
             .iter()
             .map(|surface| PixelRect {
                 left: surface.left.saturating_add(content_inset_x),
                 top: surface.top.saturating_add(content_inset_y),
-                width: surface.width.saturating_sub(content_inset_x.saturating_mul(2)),
-                height: surface.height.saturating_sub(content_inset_y.saturating_mul(2)),
+                width: surface
+                    .width
+                    .saturating_sub(content_inset_x.saturating_mul(2)),
+                height: surface
+                    .height
+                    .saturating_sub(content_inset_y.saturating_mul(2)),
             })
             .collect::<Vec<_>>();
         let icon_cell_size = self.scale(ICON_CELL_DIP);
         let icon_size = self.scale(RESULT_ICON_DIP);
-        let row_icon_cells = row_contents
+        let icon_cells = contents
             .iter()
             .map(|content| PixelRect {
                 left: content.left,
@@ -271,21 +309,25 @@ impl<Asset> LauncherScene<Asset> {
                 height: content.height,
             })
             .collect::<Vec<_>>();
-        let row_icons: Vec<Option<PixelRect>> = self
+        let icons = self
             .results
             .iter()
-            .zip(&row_icon_cells)
+            .zip(&icon_cells)
             .map(|(result, cell)| {
                 result.icon.as_ref().map(|_| PixelRect {
-                    left: cell.left.saturating_add((cell.width.saturating_sub(icon_size)) / 2),
-                    top: cell.top.saturating_add((cell.height.saturating_sub(icon_size)) / 2),
+                    left: cell
+                        .left
+                        .saturating_add((cell.width.saturating_sub(icon_size)) / 2),
+                    top: cell
+                        .top
+                        .saturating_add((cell.height.saturating_sub(icon_size)) / 2),
                     width: icon_size,
                     height: icon_size,
                 })
             })
-            .collect();
+            .collect::<Vec<_>>();
         let icon_column = self.scale(ICON_COLUMN_DIP);
-        let row_texts = row_contents
+        let texts = contents
             .iter()
             .map(|content| PixelRect {
                 left: content.left.saturating_add(icon_column),
@@ -294,25 +336,14 @@ impl<Asset> LauncherScene<Asset> {
                 height: content.height,
             })
             .collect::<Vec<_>>();
-        let footer = self.footer_layout(size);
-        let empty_state = self.empty_state(size, results_top, footer.separator.top);
-        let scrollbar_thumb = self.scrollbar_thumb(size, results_top, footer.separator.top);
-        LauncherLayout {
-            size,
-            query,
-            rows,
-            row_surfaces,
-            row_contents,
-            row_icon_cells,
-            row_icons,
-            row_texts,
-            empty_state,
-            footer_separator: footer.separator,
-            footer_label: footer.label,
-            footer_time: footer.time,
-            scrollbar_thumb,
-            selected: self.selected,
-            hovered: self.hovered,
+
+        LauncherRows {
+            bounds,
+            surfaces,
+            contents,
+            icon_cells,
+            icons,
+            texts,
         }
     }
 
@@ -339,7 +370,8 @@ impl<Asset> LauncherScene<Asset> {
         let travel = track_height.saturating_sub(thumb_height);
         let maximum_start = self.total_results.saturating_sub(visible);
         let offset = u32::try_from(
-            u64::from(travel) * u64::try_from(self.first_visible_result).unwrap_or(u64::MAX)
+            u64::from(travel)
+                * u64::try_from(self.first_visible_result).unwrap_or(u64::MAX)
                 / u64::try_from(maximum_start).unwrap_or(1),
         )
         .unwrap_or(travel);
@@ -361,17 +393,29 @@ impl<Asset> LauncherScene<Asset> {
         let top = size.height().saturating_sub(height);
         let separator_inset = self.scale(FOOTER_SEPARATOR_INSET_DIP);
         let horizontal_inset = self.scale(FOOTER_HORIZONTAL_INSET_DIP);
-        let text_width = size.width().saturating_sub(horizontal_inset.saturating_mul(2)) / 2;
+        let text_width = size
+            .width()
+            .saturating_sub(horizontal_inset.saturating_mul(2))
+            / 2;
         LauncherFooterLayout {
             separator: PixelRect {
                 left: separator_inset,
                 top,
-                width: size.width().saturating_sub(separator_inset.saturating_mul(2)),
+                width: size
+                    .width()
+                    .saturating_sub(separator_inset.saturating_mul(2)),
                 height: self.scale(1),
             },
-            label: PixelRect { left: horizontal_inset, top, width: text_width, height },
+            label: PixelRect {
+                left: horizontal_inset,
+                top,
+                width: text_width,
+                height,
+            },
             time: PixelRect {
-                left: size.width().saturating_sub(horizontal_inset.saturating_add(text_width)),
+                left: size
+                    .width()
+                    .saturating_sub(horizontal_inset.saturating_add(text_width)),
                 top,
                 width: text_width,
                 height,
@@ -398,6 +442,15 @@ struct LauncherFooterLayout {
     separator: PixelRect,
     label: PixelRect,
     time: PixelRect,
+}
+
+struct LauncherRows {
+    bounds: Vec<PixelRect>,
+    surfaces: Vec<PixelRect>,
+    contents: Vec<PixelRect>,
+    icon_cells: Vec<PixelRect>,
+    icons: Vec<Option<PixelRect>>,
+    texts: Vec<PixelRect>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

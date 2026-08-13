@@ -9,9 +9,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId,
-    IDC_ARROW, IDC_HAND, IDC_SIZEWE, KillTimer, LoadCursorW, MSG, PostQuitMessage, SM_CXDRAG,
-    SM_CYDRAG, SetCursor, SetForegroundWindow, SetTimer, TranslateMessage,
+    BringWindowToTop, DispatchMessageW, GetForegroundWindow, GetMessageW,
+    GetWindowThreadProcessId, IDC_ARROW, IDC_HAND, IDC_SIZEWE, KillTimer, LoadCursorW, MSG,
+    PostQuitMessage, SM_CXDRAG, SM_CYDRAG, SetCursor, SetForegroundWindow, SetTimer,
+    TranslateMessage,
 };
 
 use crate::NativeError;
@@ -68,7 +69,11 @@ pub(crate) fn claim_keyboard_focus(hwnd: HWND) -> FocusClaim {
     let current_thread = unsafe { GetCurrentThreadId() };
     let _attachment = InputQueueAttachment::new(current_thread, foreground_thread);
 
-    if focus_once(hwnd) { FocusClaim::Owned } else { FocusClaim::Denied }
+    if focus_once(hwnd) {
+        FocusClaim::Owned
+    } else {
+        FocusClaim::Denied
+    }
 }
 
 pub(crate) fn activate_window(hwnd: HWND) -> FocusClaim {
@@ -78,10 +83,15 @@ pub(crate) fn activate_window(hwnd: HWND) -> FocusClaim {
     let target_thread = window_thread(hwnd);
     // SAFETY: Reading the caller's thread ID has no preconditions.
     let current_thread = unsafe { GetCurrentThreadId() };
-    let _foreground_attachment = InputQueueAttachment::new(current_thread, foreground_thread);
+    let _foreground_attachment =
+        InputQueueAttachment::new(current_thread, foreground_thread);
     let _target_attachment = InputQueueAttachment::new(current_thread, target_thread);
 
-    if focus_once(hwnd) { FocusClaim::Owned } else { FocusClaim::Denied }
+    if focus_once(hwnd) {
+        FocusClaim::Owned
+    } else {
+        FocusClaim::Denied
+    }
 }
 
 fn window_thread(hwnd: HWND) -> u32 {
@@ -105,7 +115,9 @@ fn focus_once(hwnd: HWND) -> bool {
 
 fn owns_keyboard_focus(hwnd: HWND) -> bool {
     // SAFETY: These calls only inspect foreground and calling-thread input state.
-    unsafe { GetForegroundWindow() == hwnd && GetActiveWindow() == hwnd && GetFocus() == hwnd }
+    unsafe {
+        GetForegroundWindow() == hwnd && GetActiveWindow() == hwnd && GetFocus() == hwnd
+    }
 }
 
 struct InputQueueAttachment {
@@ -121,7 +133,11 @@ impl InputQueueAttachment {
             && source != target
             // SAFETY: Both IDs identify live GUI threads observed immediately before this call.
             && unsafe { AttachThreadInput(source, target, true) }.as_bool();
-        Self { source, target, attached }
+        Self {
+            source,
+            target,
+            attached,
+        }
     }
 }
 
@@ -247,9 +263,15 @@ pub(crate) fn drag_threshold(hwnd: HWND) -> (u32, u32) {
     // SAFETY: All three calls are read-only queries against a live HWND and its effective DPI.
     let (horizontal, vertical) = unsafe {
         let dpi = GetDpiForWindow(hwnd).max(1);
-        (GetSystemMetricsForDpi(SM_CXDRAG, dpi), GetSystemMetricsForDpi(SM_CYDRAG, dpi))
+        (
+            GetSystemMetricsForDpi(SM_CXDRAG, dpi),
+            GetSystemMetricsForDpi(SM_CYDRAG, dpi),
+        )
     };
-    (u32::try_from(horizontal).unwrap_or(1).max(1), u32::try_from(vertical).unwrap_or(1).max(1))
+    (
+        u32::try_from(horizontal).unwrap_or(1).max(1),
+        u32::try_from(vertical).unwrap_or(1).max(1),
+    )
 }
 
 #[allow(

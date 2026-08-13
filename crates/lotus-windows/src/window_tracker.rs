@@ -16,12 +16,13 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_NAMECHANGE,
-    EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, EnumWindows, GA_ROOT, GW_OWNER, GWL_EXSTYLE,
-    GetAncestor, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, IsZoomed,
-    KillTimer, OBJID_WINDOW, PostThreadMessageW, SetTimer, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_TIMER, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
+    EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, EnumWindows,
+    GA_ROOT, GW_OWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetForegroundWindow,
+    GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsWindowVisible, IsZoomed, KillTimer, OBJID_WINDOW,
+    PostThreadMessageW, SetTimer, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
+    WM_TIMER, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, Error, Result as WindowsResult};
 
@@ -54,12 +55,15 @@ pub enum WindowTrackerEvent {
 impl WindowTracker {
     pub fn start() -> Result<Self, NativeError> {
         // SAFETY: These identifiers are immutable properties of the calling process and thread.
-        let (own_process_id, thread_id) = unsafe { (GetCurrentProcessId(), GetCurrentThreadId()) };
+        let (own_process_id, thread_id) =
+            unsafe { (GetCurrentProcessId(), GetCurrentThreadId()) };
         if CALLBACK_THREAD
             .compare_exchange(0, thread_id, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return Err(Error::new(E_FAIL, "a Lotus window tracker is already active").into());
+            return Err(
+                Error::new(E_FAIL, "a Lotus window tracker is already active").into(),
+            );
         }
 
         let mut tracker = Self {
@@ -113,9 +117,9 @@ impl WindowTracker {
                 self.refresh()?;
                 Ok(Some(WindowTrackerEvent::SnapshotRefreshed))
             }
-            WM_TIMER if self.reconcile_timer_id == parameter => {
-                Ok(self.refresh_if_changed()?.then_some(WindowTrackerEvent::SnapshotRefreshed))
-            }
+            WM_TIMER if self.reconcile_timer_id == parameter => Ok(self
+                .refresh_if_changed()?
+                .then_some(WindowTrackerEvent::SnapshotRefreshed)),
             _ => Ok(None),
         }
     }
@@ -168,7 +172,11 @@ fn create_thread_timer(interval_ms: u32) -> Result<usize, NativeError> {
     // SAFETY: A null HWND creates a timer for this thread's existing message queue. Lotus consumes
     // its WM_TIMER message directly and does not install an unmanaged callback.
     let timer_id = unsafe { SetTimer(None, 0, interval_ms, None) };
-    if timer_id == 0 { Err(Error::from_thread().into()) } else { Ok(timer_id) }
+    if timer_id == 0 {
+        Err(Error::from_thread().into())
+    } else {
+        Ok(timer_id)
+    }
 }
 
 const TRACKED_EVENTS: [u32; 6] = [
@@ -197,7 +205,11 @@ impl OwnedWinEventHook {
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
             )
         };
-        if hook.is_invalid() { Err(Error::from_thread().into()) } else { Ok(Self(hook)) }
+        if hook.is_invalid() {
+            Err(Error::from_thread().into())
+        } else {
+            Ok(Self(hook))
+        }
     }
 }
 
@@ -232,13 +244,18 @@ unsafe extern "system" fn win_event_callback(
 
     // SAFETY: `thread_id` belongs to the tracker that installed this callback and owns an active
     // GUI message queue. The custom message contains no borrowed pointers.
-    if unsafe { PostThreadMessageW(thread_id, REFRESH_MESSAGE, WPARAM(0), LPARAM(0)) }.is_err() {
+    if unsafe { PostThreadMessageW(thread_id, REFRESH_MESSAGE, WPARAM(0), LPARAM(0)) }
+        .is_err()
+    {
         NOTIFICATION_QUEUED.store(false, Ordering::Release);
     }
 }
 
 fn enumerate_windows(own_process_id: u32) -> WindowsResult<Vec<WindowInfo>> {
-    let mut state = EnumerationState { own_process_id, windows: Vec::new() };
+    let mut state = EnumerationState {
+        own_process_id,
+        windows: Vec::new(),
+    };
     // SAFETY: EnumWindows invokes the callback synchronously while `state` remains live.
     unsafe { EnumWindows(Some(visit_window), pointer_lparam(&raw mut state))? };
     Ok(state.windows)
@@ -272,7 +289,12 @@ fn window_info(hwnd: HWND, own_process_id: u32) -> Option<WindowInfo> {
 
     let title = window_title(hwnd);
     let executable_path = window_icon_identity(&title, process_image_path(process_id)?);
-    Some(WindowInfo { id: window_id(hwnd)?, process_id, title, executable_path })
+    Some(WindowInfo {
+        id: window_id(hwnd)?,
+        process_id,
+        title,
+        executable_path,
+    })
 }
 
 fn window_icon_identity(title: &str, executable_path: PathBuf) -> PathBuf {
@@ -297,7 +319,8 @@ fn observe_fullscreen_window(own_process_id: u32) -> Option<WindowId> {
     let mut process_id = 0;
     // SAFETY: `process_id` is valid writable storage and querying does not mutate the window.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut process_id)) };
-    let eligible = process_id != 0 && process_id != own_process_id && should_include_window(hwnd);
+    let eligible =
+        process_id != 0 && process_id != own_process_id && should_include_window(hwnd);
     let window = window_bounds(hwnd)?;
     let monitor = monitor_bounds(hwnd)?;
     // SAFETY: This read-only query accepts the live foreground HWND.
@@ -325,17 +348,30 @@ fn monitor_bounds(hwnd: HWND) -> Option<RECT> {
     if monitor.is_invalid() {
         return None;
     }
-    let mut info = MONITORINFO { cbSize: u32_size::<MONITORINFO>(), ..MONITORINFO::default() };
+    let mut info = MONITORINFO {
+        cbSize: u32_size::<MONITORINFO>(),
+        ..MONITORINFO::default()
+    };
     // SAFETY: The monitor handle is valid and `info` has the required size initialized.
-    unsafe { GetMonitorInfoW(monitor, &raw mut info) }.as_bool().then_some(info.rcMonitor)
+    unsafe { GetMonitorInfoW(monitor, &raw mut info) }
+        .as_bool()
+        .then_some(info.rcMonitor)
 }
 
 const fn screen_rect(rect: RECT) -> ScreenRect {
-    ScreenRect { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+    ScreenRect {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    }
 }
 
 fn window_id(hwnd: HWND) -> Option<WindowId> {
-    (!hwnd.0.is_null()).then(|| u64::try_from(hwnd.0.addr()).ok()).flatten().map(WindowId::new)
+    (!hwnd.0.is_null())
+        .then(|| u64::try_from(hwnd.0.addr()).ok())
+        .flatten()
+        .map(WindowId::new)
 }
 
 fn hwnd_from_window_id(window: WindowId) -> Option<HWND> {
@@ -400,7 +436,9 @@ fn should_include_window(hwnd: HWND) -> bool {
 fn window_title(hwnd: HWND) -> String {
     // SAFETY: Querying the title length does not mutate the candidate HWND.
     let length = unsafe { GetWindowTextLengthW(hwnd) };
-    let capacity = usize::try_from(length.max(0)).unwrap_or_default().saturating_add(1);
+    let capacity = usize::try_from(length.max(0))
+        .unwrap_or_default()
+        .saturating_add(1);
     let mut buffer = vec![0_u16; capacity];
     // SAFETY: `buffer` is writable and includes room for the terminating null character.
     let copied = unsafe { GetWindowTextW(hwnd, &mut buffer) };
@@ -417,7 +455,8 @@ fn window_class(hwnd: HWND) -> String {
 pub(crate) fn process_image_path(process_id: u32) -> Option<PathBuf> {
     // SAFETY: The requested access is read-only and the PID came from a current top-level HWND.
     let process =
-        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }.ok()?;
+        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
+            .ok()?;
     let process = OwnedHandle(process);
     let mut buffer = vec![0_u16; IMAGE_PATH_CAPACITY];
     let mut length = u32::try_from(buffer.len()).ok()?;

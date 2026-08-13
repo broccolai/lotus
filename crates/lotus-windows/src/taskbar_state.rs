@@ -74,7 +74,12 @@ struct StateJournal<B: TaskbarStateApi> {
 impl<B: TaskbarStateApi> StateJournal<B> {
     fn enable(mut backend: B) -> Result<Self, TaskbarStateError> {
         let original = backend.state()?;
-        let mut journal = Self { backend, original, modified: false, restored: false };
+        let mut journal = Self {
+            backend,
+            original,
+            modified: false,
+            restored: false,
+        };
         let _ = journal.ensure_autohide()?;
         Ok(journal)
     }
@@ -131,7 +136,9 @@ impl TaskbarStateApi for ShellTaskbarState {
         // captured state flags plus, when requested, ABS_AUTOHIDE.
         let accepted = unsafe { SHAppBarMessage(ABM_SETSTATE, &raw mut data) };
         if accepted == 0 {
-            return Err(TaskbarStateError::SetRejected { requested: state.bits() });
+            return Err(TaskbarStateError::SetRejected {
+                requested: state.bits(),
+            });
         }
         Ok(())
     }

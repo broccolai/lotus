@@ -1,10 +1,11 @@
+use lotus_core::settings::DockSettings;
+use lotus_settings::appearance::theme_for;
+use lotus_ui::theme::Theme;
+
 use super::{
     AppError, ContextMenuCompositionSurfaceState, ContextMenuEvent, ContextMenuScene,
     ContextMenuWindow, DeviceState, NonZeroPhysicalSize, SignedPoint, SurfaceError,
 };
-use lotus_core::settings::DockSettings;
-use lotus_settings::appearance::theme_for;
-use lotus_ui::theme::Theme;
 
 pub(super) struct ContextMenuRuntime {
     pub(super) window: ContextMenuWindow,
@@ -18,7 +19,12 @@ impl ContextMenuRuntime {
         let mut scene =
             ContextMenuScene::new(window.dpi()).ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(*theme);
-        Ok(Self { window, scene, surface: None, visible: false })
+        Ok(Self {
+            window,
+            scene,
+            surface: None,
+            visible: false,
+        })
     }
 
     pub(super) fn apply_settings(&mut self, settings: &DockSettings) {
@@ -65,7 +71,10 @@ impl ContextMenuRuntime {
         if !self.visible {
             return Ok(());
         }
-        let surface = self.surface.as_mut().ok_or(AppError::InvalidContextMenuScene)?;
+        let surface = self
+            .surface
+            .as_mut()
+            .ok_or(AppError::InvalidContextMenuScene)?;
         match surface.render_scene(&self.scene) {
             Ok(_) => Ok(()),
             Err(SurfaceError::DeviceLost(_)) => {
@@ -81,7 +90,9 @@ impl ContextMenuRuntime {
     }
 
     pub(super) fn resize(&mut self, width: u32, height: u32) -> Result<(), AppError> {
-        let Some(size) = NonZeroPhysicalSize::new(width, height) else { return Ok(()) };
+        let Some(size) = NonZeroPhysicalSize::new(width, height) else {
+            return Ok(());
+        };
         if let Some(surface) = &mut self.surface {
             surface.resize(size)?;
         }

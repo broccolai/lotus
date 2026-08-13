@@ -1,7 +1,7 @@
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    IDYES, MB_DEFBUTTON2, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO,
-    MessageBoxW,
+    IDYES, MB_DEFBUTTON2, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
+    MB_YESNO, MessageBoxW,
 };
 use windows::core::HSTRING;
 
@@ -20,18 +20,37 @@ pub fn show_information(owner: WindowHandle, title: &str, message: &str) {
     let message = HSTRING::from(message);
     // SAFETY: Strings remain live for the synchronous dialog and `owner` is a live Lotus HWND.
     unsafe {
-        let _ = MessageBoxW(Some(owner.raw()), &message, &title, MB_OK | MB_ICONINFORMATION);
+        let _ = MessageBoxW(
+            Some(owner.raw()),
+            &message,
+            &title,
+            MB_OK | MB_ICONINFORMATION,
+        );
     }
 }
 
 pub fn confirm_install_update(owner: WindowHandle, version: &str, installed: bool) -> bool {
-    let title = HSTRING::from(if installed { "Update Lotus" } else { "Install Lotus" });
-    let action = if installed { "Download and install" } else { "Install" };
-    let message =
-        HSTRING::from(format!("{action} Lotus {version}?\n\nLotus will restart when it is ready."));
+    let title = HSTRING::from(if installed {
+        "Update Lotus"
+    } else {
+        "Install Lotus"
+    });
+    let action = if installed {
+        "Download and install"
+    } else {
+        "Install"
+    };
+    let message = HSTRING::from(format!(
+        "{action} Lotus {version}?\n\nLotus will restart when it is ready."
+    ));
     // SAFETY: Strings remain live for the synchronous dialog and `owner` is a live Lotus HWND.
     unsafe {
-        MessageBoxW(Some(owner.raw()), &message, &title, MB_YESNO | MB_ICONINFORMATION) == IDYES
+        MessageBoxW(
+            Some(owner.raw()),
+            &message,
+            &title,
+            MB_YESNO | MB_ICONINFORMATION,
+        ) == IDYES
     }
 }
 
@@ -50,7 +69,11 @@ pub fn confirm_shutdown(owner: WindowHandle) -> bool {
     let message = HSTRING::from("Shut down this PC now?");
     // SAFETY: Strings remain live for the synchronous dialog and `owner` is Lotus's dock HWND.
     unsafe {
-        MessageBoxW(Some(owner.raw()), &message, &title, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2)
-            == IDYES
+        MessageBoxW(
+            Some(owner.raw()),
+            &message,
+            &title,
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+        ) == IDYES
     }
 }

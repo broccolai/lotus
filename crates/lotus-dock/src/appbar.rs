@@ -96,7 +96,12 @@ impl AppBarLayout {
         )?;
 
         Ok(Self {
-            reserved_rect: ScreenRect { left, top: reserved_top, right, bottom },
+            reserved_rect: ScreenRect {
+                left,
+                top: reserved_top,
+                right,
+                bottom,
+            },
             content_rect: ScreenRect {
                 left: content_left,
                 top: content_top,
@@ -123,7 +128,8 @@ fn physical_dimension(value: u32, label: &str) -> Result<i32> {
     if value == 0 {
         return Err(invalid_geometry(&format!("{label} must be positive")));
     }
-    i32::try_from(value).map_err(|_| invalid_geometry(&format!("{label} exceeds Win32 limits")))
+    i32::try_from(value)
+        .map_err(|_| invalid_geometry(&format!("{label} exceeds Win32 limits")))
 }
 
 fn checked_i32(value: i64, message: &str) -> Result<i32> {

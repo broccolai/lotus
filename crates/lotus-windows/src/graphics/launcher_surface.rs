@@ -6,16 +6,18 @@ use windows::Win32::Graphics::DirectComposition::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG, IDXGIAdapter, IDXGIDevice, IDXGIFactory2, IDXGISwapChain1,
+    DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG, IDXGIAdapter, IDXGIDevice, IDXGIFactory2,
+    IDXGISwapChain1,
 };
 use windows::core::{Error as WindowsError, Interface};
 
-use crate::WindowHandle;
-
 use super::device::{DeviceLost, GraphicsDevice};
-use super::launcher_renderer::{LauncherDrawResult, LauncherRenderer, LauncherRendererError};
+use super::launcher_renderer::{
+    LauncherDrawResult, LauncherRenderer, LauncherRendererError,
+};
 use super::launcher_scene::LauncherScene;
 use super::surface::{FrameResult, SurfaceError, SurfaceSize, swap_chain_description};
+use crate::WindowHandle;
 
 pub struct LauncherCompositionSurface {
     hwnd: HWND,
@@ -51,7 +53,8 @@ impl LauncherCompositionSurface {
             )?
         };
         // SAFETY: The live DXGI device supports DirectComposition ownership.
-        let composition_device: IDCompositionDevice = unsafe { DCompositionCreateDevice(&dxgi)? };
+        let composition_device: IDCompositionDevice =
+            unsafe { DCompositionCreateDevice(&dxgi)? };
         // SAFETY: HWND ownership remains with the caller and outlives this surface.
         let target = unsafe { composition_device.CreateTargetForHwnd(hwnd, true)? };
         // SAFETY: The live composition device returns an owned visual.
@@ -102,7 +105,10 @@ impl LauncherCompositionSurface {
         self.renderer.attach_target(&self.swap_chain)
     }
 
-    fn render(&mut self, scene: &LauncherScene) -> Result<FrameResult, LauncherRendererError> {
+    fn render(
+        &mut self,
+        scene: &LauncherScene,
+    ) -> Result<FrameResult, LauncherRendererError> {
         let presentation = scene.presentation();
         let center_x = as_f32(self.size.width()) * 0.5;
         let center_y = as_f32(self.size.height()) * 0.08;
@@ -120,7 +126,9 @@ impl LauncherCompositionSurface {
             LauncherDrawResult::Complete => {
                 // SAFETY: The live swap chain is owned by this surface.
                 unsafe { self.swap_chain.Present(1, DXGI_PRESENT(0)).ok()? };
-                Ok(FrameResult::Presented { needs_animation: scene.needs_animation() })
+                Ok(FrameResult::Presented {
+                    needs_animation: scene.needs_animation(),
+                })
             }
             LauncherDrawResult::RecreateTarget => {
                 // SAFETY: The retained D3D device is live; this checks removal.
@@ -137,14 +145,21 @@ impl LauncherCompositionSurface {
     }
 }
 
-#[allow(clippy::cast_precision_loss, reason = "surface dimensions stay below f32 exact range")]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "surface dimensions stay below f32 exact range"
+)]
 const fn as_f32(value: u32) -> f32 {
     value as f32
 }
 
 pub enum LauncherCompositionSurfaceState {
     Ready(Box<LauncherCompositionSurface>),
-    Lost { hwnd: HWND, size: SurfaceSize, reason: DeviceLost },
+    Lost {
+        hwnd: HWND,
+        size: SurfaceSize,
+        reason: DeviceLost,
+    },
 }
 
 impl LauncherCompositionSurfaceState {
@@ -172,7 +187,10 @@ impl LauncherCompositionSurfaceState {
         Ok(())
     }
 
-    pub fn render_scene(&mut self, scene: &LauncherScene) -> Result<FrameResult, SurfaceError> {
+    pub fn render_scene(
+        &mut self,
+        scene: &LauncherScene,
+    ) -> Result<FrameResult, SurfaceError> {
         let Self::Ready(surface) = self else {
             return Err(SurfaceError::DeviceLost(
                 self.loss().expect("launcher surface is known to be lost"),
@@ -182,7 +200,9 @@ impl LauncherCompositionSurfaceState {
         let size = surface.size;
         match surface.render(scene) {
             Ok(frame) => Ok(frame),
-            Err(LauncherRendererError::Windows(error)) => self.handle_error(hwnd, size, error),
+            Err(LauncherRendererError::Windows(error)) => {
+                self.handle_error(hwnd, size, error)
+            }
             Err(error) => Err(error.into()),
         }
     }

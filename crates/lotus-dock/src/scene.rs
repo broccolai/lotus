@@ -31,11 +31,19 @@ pub struct DockItem<Asset> {
 
 impl<Asset> DockItem<Asset> {
     pub const fn new(icon: Asset) -> Self {
-        Self { source_index: 0, icon: DockIcon::Embedded(icon), badge: None }
+        Self {
+            source_index: 0,
+            icon: DockIcon::Embedded(icon),
+            badge: None,
+        }
     }
 
     pub const fn with_source_index(source_index: usize, icon: DockIcon<Asset>) -> Self {
-        Self { source_index, icon, badge: None }
+        Self {
+            source_index,
+            icon,
+            badge: None,
+        }
     }
 
     pub const fn embedded(source_index: usize, icon: Asset) -> Self {
@@ -73,7 +81,12 @@ impl DockMetrics {
         let Some(icon_size) = NonZeroU32::new(icon_size) else {
             return None;
         };
-        Some(Self { icon_size, item_spacing, horizontal_padding, vertical_padding })
+        Some(Self {
+            icon_size,
+            item_spacing,
+            horizontal_padding,
+            vertical_padding,
+        })
     }
 
     pub const fn defaults() -> Self {
@@ -169,7 +182,10 @@ impl<Asset: Clone> DockScene<Asset> {
     pub fn replace_items(&mut self, items: Vec<DockItem<Asset>>) {
         self.items = items;
         if self.drag.is_some_and(|drag| {
-            !self.items.iter().any(|item| item.source_index == drag.source_index)
+            !self
+                .items
+                .iter()
+                .any(|item| item.source_index == drag.source_index)
         }) {
             self.drag = None;
         }
@@ -204,12 +220,20 @@ impl<Asset: Clone> DockScene<Asset> {
     }
 
     pub fn begin_drag(&mut self, source_index: usize, x: i32, y: i32) -> bool {
-        if !self.items.iter().any(|item| item.source_index == source_index) {
+        if !self
+            .items
+            .iter()
+            .any(|item| item.source_index == source_index)
+        {
             return false;
         }
         replace_if_changed(
             &mut self.drag,
-            Some(DockDragState { source_index, pointer_x: x, pointer_y: y }),
+            Some(DockDragState {
+                source_index,
+                pointer_x: x,
+                pointer_y: y,
+            }),
         )
     }
 
@@ -231,12 +255,19 @@ impl<Asset: Clone> DockScene<Asset> {
         self.drag
     }
 
-    pub fn drag_insertion_slot(&self, surface_width: u32, surface_height: u32) -> Option<usize> {
+    pub fn drag_insertion_slot(
+        &self,
+        surface_width: u32,
+        surface_height: u32,
+    ) -> Option<usize> {
         let drag = self.drag?;
         if !self.drag_drop_eligible(surface_height) {
             return None;
         }
-        Some(self.layout(surface_width, surface_height).insertion_slot(drag.pointer_x))
+        Some(
+            self.layout(surface_width, surface_height)
+                .insertion_slot(drag.pointer_x),
+        )
     }
 
     pub fn drag_drop_eligible(&self, surface_height: u32) -> bool {
@@ -251,9 +282,13 @@ impl<Asset: Clone> DockScene<Asset> {
     pub fn desired_size(&self) -> DockSize {
         let metrics = self.scaled_metrics();
         let item_count = u32::try_from(self.items.len()).unwrap_or(u32::MAX);
-        let slot_width = metrics.icon_size.saturating_add(metrics.spacing.saturating_mul(2));
+        let slot_width = metrics
+            .icon_size
+            .saturating_add(metrics.spacing.saturating_mul(2));
         let item_strip_width = item_count.saturating_mul(slot_width);
-        let show_desktop_width = self.show_desktop_button.then_some(metrics.show_desktop_width);
+        let show_desktop_width = self
+            .show_desktop_button
+            .then_some(metrics.show_desktop_width);
         let width = metrics
             .horizontal_padding
             .saturating_mul(2)
@@ -263,8 +298,13 @@ impl<Asset: Clone> DockScene<Asset> {
             .saturating_add(metrics.divider_width)
             .saturating_add(metrics.spacing)
             .saturating_add(show_desktop_width.unwrap_or_default());
-        let height = metrics.icon_size.saturating_add(metrics.vertical_padding.saturating_mul(2));
-        DockSize { width: nonzero_or_one(width), height: nonzero_or_one(height) }
+        let height = metrics
+            .icon_size
+            .saturating_add(metrics.vertical_padding.saturating_mul(2));
+        DockSize {
+            width: nonzero_or_one(width),
+            height: nonzero_or_one(height),
+        }
     }
 
     pub fn layout(&self, surface_width: u32, surface_height: u32) -> DockLayout<Asset> {
@@ -274,11 +314,20 @@ impl<Asset: Clone> DockScene<Asset> {
         let content_top = surface_height.saturating_sub(desired.height()) / 2;
         let icon_top = content_top.saturating_add(metrics.vertical_padding);
         let mut cursor = content_left.saturating_add(metrics.horizontal_padding);
-        let slot_width = metrics.icon_size.saturating_add(metrics.spacing.saturating_mul(2));
-        let jirachi_hit_bounds =
-            PixelRect { left: cursor, top: icon_top, width: slot_width, height: metrics.icon_size };
-        let jirachi =
-            PixelRect::square(cursor.saturating_add(metrics.spacing), icon_top, metrics.icon_size);
+        let slot_width = metrics
+            .icon_size
+            .saturating_add(metrics.spacing.saturating_mul(2));
+        let jirachi_hit_bounds = PixelRect {
+            left: cursor,
+            top: icon_top,
+            width: slot_width,
+            height: metrics.icon_size,
+        };
+        let jirachi = PixelRect::square(
+            cursor.saturating_add(metrics.spacing),
+            icon_top,
+            metrics.icon_size,
+        );
         cursor = cursor.saturating_add(slot_width);
         let divider = PixelRect {
             left: cursor.saturating_add(metrics.spacing),
@@ -386,7 +435,12 @@ pub struct PixelRect {
 
 impl PixelRect {
     const fn square(left: u32, top: u32, side: u32) -> Self {
-        Self { left, top, width: side, height: side }
+        Self {
+            left,
+            top,
+            width: side,
+            height: side,
+        }
     }
 
     const fn contains(self, x: u32, y: u32) -> bool {
@@ -418,25 +472,30 @@ pub struct DockLayout<Asset> {
 
 impl<Asset> DockLayout<Asset> {
     pub fn hit_test(&self, x: u32, y: u32) -> Option<DockHitTarget> {
-        self.items.iter().find(|item| item.hit_bounds.contains(x, y)).map_or_else(
-            || {
-                self.jirachi_hit_bounds.contains(x, y).then_some(DockHitTarget::Jirachi).or_else(
-                    || {
-                        self.show_desktop
-                            .filter(|bounds| bounds.contains(x, y))
-                            .map(|_| DockHitTarget::ShowDesktop)
-                    },
-                )
-            },
-            |item| Some(DockHitTarget::Item(item.source_index)),
-        )
+        self.items
+            .iter()
+            .find(|item| item.hit_bounds.contains(x, y))
+            .map_or_else(
+                || {
+                    self.jirachi_hit_bounds
+                        .contains(x, y)
+                        .then_some(DockHitTarget::Jirachi)
+                        .or_else(|| {
+                            self.show_desktop
+                                .filter(|bounds| bounds.contains(x, y))
+                                .map(|_| DockHitTarget::ShowDesktop)
+                        })
+                },
+                |item| Some(DockHitTarget::Item(item.source_index)),
+            )
     }
 
     pub fn insertion_slot(&self, x: i32) -> usize {
         self.items
             .iter()
             .position(|item| {
-                i64::from(x) < i64::from(item.bounds.left.saturating_add(item.bounds.width / 2))
+                i64::from(x)
+                    < i64::from(item.bounds.left.saturating_add(item.bounds.width / 2))
             })
             .unwrap_or(self.items.len())
     }

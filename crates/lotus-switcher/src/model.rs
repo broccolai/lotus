@@ -21,9 +21,13 @@ impl<K: Copy + Eq> RecentOrder<K> {
     }
 
     pub fn arrange<T>(&mut self, mut items: Vec<T>, identity: impl Fn(&T) -> K) -> Vec<T> {
-        self.items.retain(|recent| items.iter().any(|item| identity(item) == *recent));
+        self.items
+            .retain(|recent| items.iter().any(|item| identity(item) == *recent));
         items.sort_by_key(|item| {
-            self.items.iter().position(|recent| *recent == identity(item)).unwrap_or(usize::MAX)
+            self.items
+                .iter()
+                .position(|recent| *recent == identity(item))
+                .unwrap_or(usize::MAX)
         });
         items
     }
@@ -50,7 +54,9 @@ impl<T> SwitcherSession<T> {
     pub fn cycle(&mut self, direction: Direction) {
         self.selected = match direction {
             Direction::Forward => (self.selected + 1) % self.items.len(),
-            Direction::Reverse => self.selected.checked_sub(1).unwrap_or(self.items.len() - 1),
+            Direction::Reverse => {
+                self.selected.checked_sub(1).unwrap_or(self.items.len() - 1)
+            }
         };
     }
 

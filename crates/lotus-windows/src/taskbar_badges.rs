@@ -13,12 +13,14 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationPropertyChangedEventHandler,
-    IUIAutomationPropertyChangedEventHandler_Impl, TreeScope_Descendants, TreeScope_Subtree,
-    UIA_AutomationIdPropertyId, UIA_HelpTextPropertyId, UIA_PROPERTY_ID,
+    CUIAutomation, IUIAutomation, IUIAutomationElement,
+    IUIAutomationPropertyChangedEventHandler,
+    IUIAutomationPropertyChangedEventHandler_Impl, TreeScope_Descendants,
+    TreeScope_Subtree, UIA_AutomationIdPropertyId, UIA_HelpTextPropertyId, UIA_PROPERTY_ID,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowExW, FindWindowW, GetWindowThreadProcessId, PostThreadMessageW, WM_APP,
+    EnumWindows, FindWindowExW, FindWindowW, GetWindowThreadProcessId, PostThreadMessageW,
+    WM_APP,
 };
 use windows::core::{BOOL, Error as WindowsError, PCWSTR, Ref, implement, w};
 
@@ -37,14 +39,20 @@ impl TaskbarBadgeController {
         let apartment = ComApartment::enter()?;
         // SAFETY: CUIAutomation is an in-process COM class and COM is initialized above.
         let automation = unsafe {
-            CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?
+            CoCreateInstance::<_, IUIAutomation>(
+                &CUIAutomation,
+                None,
+                CLSCTX_INPROC_SERVER,
+            )?
         };
         let taskbar = taskbar_window()?;
         let host = taskbar_content_host(taskbar)?;
         // SAFETY: `host` is a live taskbar child HWND discovered immediately above.
         let root = unsafe { automation.ElementFromHandle(host)? };
-        let handler: IUIAutomationPropertyChangedEventHandler =
-            BadgeChangeHandler { owner_thread: current_thread_id() }.into();
+        let handler: IUIAutomationPropertyChangedEventHandler = BadgeChangeHandler {
+            owner_thread: current_thread_id(),
+        }
+        .into();
         // SAFETY: The automation client, root, and handler are retained together until Drop.
         unsafe {
             automation.AddPropertyChangedEventHandlerNativeArray(
@@ -55,7 +63,12 @@ impl TaskbarBadgeController {
                 &[UIA_HelpTextPropertyId, UIA_AutomationIdPropertyId],
             )?;
         }
-        Ok(Self { automation, root, handler, _apartment: apartment })
+        Ok(Self {
+            automation,
+            root,
+            handler,
+            _apartment: apartment,
+        })
     }
 
     pub fn snapshot(&self) -> Result<Vec<NotificationSource>, WindowsError> {
@@ -83,7 +96,8 @@ impl TaskbarBadgeController {
                 continue;
             }
             let exact_count = discord_badge_count(&self.automation, &automation_id);
-            let Some(count) = exact_count.or_else(|| badge_count(&automation_id, &help_text))
+            let Some(count) =
+                exact_count.or_else(|| badge_count(&automation_id, &help_text))
             else {
                 continue;
             };
@@ -105,8 +119,10 @@ impl TaskbarBadgeController {
 impl Drop for TaskbarBadgeController {
     fn drop(&mut self) {
         // SAFETY: This removes the exact root and handler registration created by `start`.
-        let _ =
-            unsafe { self.automation.RemovePropertyChangedEventHandler(&self.root, &self.handler) };
+        let _ = unsafe {
+            self.automation
+                .RemovePropertyChangedEventHandler(&self.root, &self.handler)
+        };
     }
 }
 
@@ -122,7 +138,9 @@ impl IUIAutomationPropertyChangedEventHandler_Impl for BadgeChangeHandler_Impl {
         property_id: UIA_PROPERTY_ID,
         _new_value: &VARIANT,
     ) -> windows::core::Result<()> {
-        if property_id == UIA_HelpTextPropertyId || property_id == UIA_AutomationIdPropertyId {
+        if property_id == UIA_HelpTextPropertyId
+            || property_id == UIA_AutomationIdPropertyId
+        {
             post_badge_wake(self.owner_thread);
         }
         Ok(())
@@ -134,7 +152,8 @@ pub const fn is_taskbar_badge_wake(message: u32) -> bool {
 }
 
 fn badge_count(automation_id: &str, description: &str) -> Option<u32> {
-    if description.eq_ignore_ascii_case("no notifications") || description.trim().is_empty() {
+    if description.eq_ignore_ascii_case("no notifications") || description.trim().is_empty()
+    {
         return None;
     }
     let number = description
@@ -173,15 +192,25 @@ fn discord_window_badge_count(automation: &IUIAutomation, window: HWND) -> Optio
     let length = unsafe { elements.Length() }.ok()?;
     for index in 0..length {
         // SAFETY: `index` is bounded by the array length returned above.
-        let Ok(element) = (unsafe { elements.GetElement(index) }) else { continue };
+        let Ok(element) = (unsafe { elements.GetElement(index) }) else {
+            continue;
+        };
         // SAFETY: UI Automation owns the returned BSTR and windows-rs copies it safely.
-        let Ok(value) = (unsafe { element.CurrentName() }) else { continue };
+        let Ok(value) = (unsafe { element.CurrentName() }) else {
+            continue;
+        };
         let value = value.to_string();
-        let Ok(count) = value.parse::<u32>() else { continue };
+        let Ok(count) = value.parse::<u32>() else {
+            continue;
+        };
         // SAFETY: `element` belongs to this tree and the parent query is read-only.
-        let Ok(parent) = (unsafe { walker.GetParentElement(&element) }) else { continue };
+        let Ok(parent) = (unsafe { walker.GetParentElement(&element) }) else {
+            continue;
+        };
         // SAFETY: UI Automation owns the returned BSTR and windows-rs copies it safely.
-        let Ok(parent_class) = (unsafe { parent.CurrentClassName() }) else { continue };
+        let Ok(parent_class) = (unsafe { parent.CurrentClassName() }) else {
+            continue;
+        };
         let parent_class = parent_class.to_string();
         if parent_class.starts_with("lowerBadge_") {
             return Some(count);
@@ -201,10 +230,17 @@ fn is_supported_application(automation_id: &str, name: &str) -> bool {
 }
 
 fn discord_windows(executable_name: &str) -> Vec<HWND> {
-    let mut state = WindowSearch { executable_name, results: Vec::new() };
+    let mut state = WindowSearch {
+        executable_name,
+        results: Vec::new(),
+    };
     // SAFETY: EnumWindows invokes the callback synchronously while `state` remains live.
-    let _ =
-        unsafe { EnumWindows(Some(find_window), LPARAM((&raw mut state).addr().cast_signed())) };
+    let _ = unsafe {
+        EnumWindows(
+            Some(find_window),
+            LPARAM((&raw mut state).addr().cast_signed()),
+        )
+    };
     state.results
 }
 
@@ -220,7 +256,10 @@ unsafe extern "system" fn find_window(window: HWND, parameter: LPARAM) -> BOOL {
     // SAFETY: EnumWindows supplied a valid HWND and the process ID pointer is writable.
     unsafe { GetWindowThreadProcessId(window, Some(&raw mut process_id)) };
     let matches = crate::window_tracker::process_image_path(process_id)
-        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .is_some_and(|name| name.eq_ignore_ascii_case(state.executable_name));
     if matches {
         state.results.push(window);
@@ -260,7 +299,9 @@ fn current_thread_id() -> u32 {
 
 fn post_badge_wake(owner_thread: u32) {
     // SAFETY: The UI thread remains alive for the controller lifetime and receives value data only.
-    let _ = unsafe { PostThreadMessageW(owner_thread, BADGE_WAKE_MESSAGE, WPARAM(0), LPARAM(0)) };
+    let _ = unsafe {
+        PostThreadMessageW(owner_thread, BADGE_WAKE_MESSAGE, WPARAM(0), LPARAM(0))
+    };
 }
 
 struct ComApartment {
@@ -274,7 +315,9 @@ impl ComApartment {
         if result.is_ok() {
             Ok(Self { uninitialize: true })
         } else if result == RPC_E_CHANGED_MODE {
-            Ok(Self { uninitialize: false })
+            Ok(Self {
+                uninitialize: false,
+            })
         } else {
             Err(result.into())
         }
@@ -296,11 +339,26 @@ mod tests {
 
     #[test]
     fn taskbar_badge_contract_handles_supported_apps() {
-        assert_eq!(badge_count("Appid: com.squirrel.Discord.Discord", "9 notifications"), Some(10));
-        assert_eq!(badge_count("Appid: com.squirrel.slack.slack", "50 notifications"), Some(50));
-        assert!(is_supported_application("Appid: com.squirrel.Discord.Discord", "Discord"));
-        assert!(is_supported_application("Appid: com.squirrel.slack.slack", "Slack"));
+        assert_eq!(
+            badge_count("Appid: com.squirrel.Discord.Discord", "9 notifications"),
+            Some(10)
+        );
+        assert_eq!(
+            badge_count("Appid: com.squirrel.slack.slack", "50 notifications"),
+            Some(50)
+        );
+        assert!(is_supported_application(
+            "Appid: com.squirrel.Discord.Discord",
+            "Discord"
+        ));
+        assert!(is_supported_application(
+            "Appid: com.squirrel.slack.slack",
+            "Slack"
+        ));
         assert!(!is_supported_application("Appid: com.example.Mail", "Mail"));
-        assert_eq!(taskbar_display_name("Discord - 1 running window"), "Discord");
+        assert_eq!(
+            taskbar_display_name("Discord - 1 running window"),
+            "Discord"
+        );
     }
 }

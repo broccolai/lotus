@@ -1,15 +1,14 @@
 use std::fmt::Write as _;
+use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, Cursor, Write};
-use std::path::Path;
-use std::{fs, path::PathBuf};
+use std::path::{Path, PathBuf};
 
 use atomic_write_file::AtomicWriteFile;
 use image::{DynamicImage, ImageFormat, RgbaImage};
+use lotus_ui::icon::{RasterIcon, RasterIconError};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-
-use lotus_ui::icon::{RasterIcon, RasterIconError};
 
 const MAX_DIMENSION: u32 = 512;
 
@@ -53,8 +52,10 @@ pub fn import_custom_image(
     }
 
     let directory = settings_directory.join("assets");
-    fs::create_dir_all(&directory)
-        .map_err(|source| CustomImageError::Store { path: directory.clone(), source })?;
+    fs::create_dir_all(&directory).map_err(|source| CustomImageError::Store {
+        path: directory.clone(),
+        source,
+    })?;
     let destination = directory.join(format!("mascot-{identity}.png"));
     if destination.exists() {
         return Ok(destination);
@@ -62,19 +63,28 @@ pub fn import_custom_image(
 
     let mut encoded = Cursor::new(Vec::new());
     DynamicImage::ImageRgba8(image).write_to(&mut encoded, ImageFormat::Png)?;
-    let mut output = AtomicWriteFile::open(&destination)
-        .map_err(|source| CustomImageError::Store { path: destination.clone(), source })?;
+    let mut output =
+        AtomicWriteFile::open(&destination).map_err(|source| CustomImageError::Store {
+            path: destination.clone(),
+            source,
+        })?;
     output
         .write_all(encoded.get_ref())
-        .map_err(|source| CustomImageError::Store { path: destination.clone(), source })?;
-    output
-        .commit()
-        .map_err(|source| CustomImageError::Store { path: destination.clone(), source })?;
+        .map_err(|source| CustomImageError::Store {
+            path: destination.clone(),
+            source,
+        })?;
+    output.commit().map_err(|source| CustomImageError::Store {
+        path: destination.clone(),
+        source,
+    })?;
     Ok(destination)
 }
 
 fn decode(path: &Path) -> Result<RgbaImage, image::ImageError> {
-    Ok(image::open(path)?.thumbnail(MAX_DIMENSION, MAX_DIMENSION).to_rgba8())
+    Ok(image::open(path)?
+        .thumbnail(MAX_DIMENSION, MAX_DIMENSION)
+        .to_rgba8())
 }
 
 fn premultiply_rgba_to_bgra(pixels: &mut [u8]) {

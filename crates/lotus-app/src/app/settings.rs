@@ -1,9 +1,10 @@
+use lotus_windows::interaction::PointerCursor;
+use lotus_windows::update::{Release, UpdateChecker, UpdateResult, UpdateStartError};
+
 use super::{
     AppError, DeviceState, DockSettings, SettingsCompositionSurfaceState, SettingsEvent,
     SettingsScene, SettingsSize, SettingsUpdateActivity, SettingsWindow, SurfaceError,
 };
-use lotus_windows::interaction::PointerCursor;
-use lotus_windows::update::{Release, UpdateChecker, UpdateResult, UpdateStartError};
 
 pub(super) struct SettingsRuntime {
     pub(super) window: SettingsWindow,
@@ -44,13 +45,17 @@ impl SettingsRuntime {
         self.scene.mark_applied(applied.clone());
         let _ = self.scene.set_dpi(self.window.dpi());
         let (width, height) = self.window.client_size()?;
-        let size = SettingsSize::new(width, height).ok_or(AppError::InvalidSettingsScene)?;
+        let size =
+            SettingsSize::new(width, height).ok_or(AppError::InvalidSettingsScene)?;
         if let Some(surface) = &mut self.surface {
             surface.resize(size)?;
         } else {
             let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            self.surface =
-                Some(SettingsCompositionSurfaceState::create(device, self.window.handle(), size)?);
+            self.surface = Some(SettingsCompositionSurfaceState::create(
+                device,
+                self.window.handle(),
+                size,
+            )?);
         }
         self.window.show()?;
         self.visible = true;
@@ -71,7 +76,9 @@ impl SettingsRuntime {
     pub(super) fn start_update_check(&mut self) -> Result<bool, UpdateStartError> {
         let started = self.update_checker.start_check(env!("CARGO_PKG_VERSION"))?;
         if started {
-            let _ = self.scene.set_update_activity(SettingsUpdateActivity::Checking);
+            let _ = self
+                .scene
+                .set_update_activity(SettingsUpdateActivity::Checking);
         }
         Ok(started)
     }
@@ -82,7 +89,9 @@ impl SettingsRuntime {
     ) -> Result<bool, UpdateStartError> {
         let started = self.update_checker.start_download(release)?;
         if started {
-            let _ = self.scene.set_update_activity(SettingsUpdateActivity::Installing);
+            let _ = self
+                .scene
+                .set_update_activity(SettingsUpdateActivity::Installing);
         }
         Ok(started)
     }
@@ -95,7 +104,10 @@ impl SettingsRuntime {
         if !self.visible {
             return Ok(());
         }
-        let surface = self.surface.as_mut().ok_or(AppError::InvalidSettingsScene)?;
+        let surface = self
+            .surface
+            .as_mut()
+            .ok_or(AppError::InvalidSettingsScene)?;
         match surface.render_scene(&self.scene) {
             Ok(_) => Ok(()),
             Err(SurfaceError::DeviceLost(_)) => {
@@ -116,8 +128,12 @@ impl SettingsRuntime {
         width: u32,
         height: u32,
     ) -> Result<(), AppError> {
-        let Some(size) = SettingsSize::new(width, height) else { return Ok(()) };
-        let Some(surface) = &mut self.surface else { return Ok(()) };
+        let Some(size) = SettingsSize::new(width, height) else {
+            return Ok(());
+        };
+        let Some(surface) = &mut self.surface else {
+            return Ok(());
+        };
         match surface.resize(size) {
             Ok(()) => self.render(graphics),
             Err(SurfaceError::DeviceLost(_)) => {

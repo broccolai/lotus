@@ -3,6 +3,7 @@ use std::ffi::c_void;
 use std::num::NonZeroU32;
 
 use lotus_ui::geometry::PhysicalRect;
+use lotus_ui::theme::Theme;
 use thiserror::Error;
 use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -10,9 +11,10 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1,
-    ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush,
+    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+    D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext,
+    ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
@@ -22,7 +24,6 @@ use super::context_menu_scene::{ContextMenuAction, ContextMenuScene};
 use super::device::GraphicsDevice;
 use super::surface::SurfaceSize;
 use super::theme;
-use lotus_ui::theme::Theme;
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = rgba8(0, 0, 0, 0);
@@ -55,7 +56,8 @@ impl ContextMenuRenderer {
         // SAFETY: The live DXGI device is compatible with the Direct2D factory.
         let device = unsafe { factory.CreateDevice(&dxgi)? };
         // SAFETY: The live device returns an owned drawing context.
-        let context = unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
+        let context =
+            unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
         let theme = Theme::default();
         let mut renderer = Self {
             _factory: factory,
@@ -77,14 +79,18 @@ impl ContextMenuRenderer {
         self.target = None;
     }
 
-    pub(super) fn attach_target(&mut self, chain: &IDXGISwapChain1) -> Result<(), WindowsError> {
+    pub(super) fn attach_target(
+        &mut self,
+        chain: &IDXGISwapChain1,
+    ) -> Result<(), WindowsError> {
         self.detach_target();
         // SAFETY: Buffer zero exists on the initialized composition swap chain.
         let surface: IDXGISurface = unsafe { chain.GetBuffer(0)? };
         let properties = target_properties();
         // SAFETY: Surface and properties remain live through bitmap creation.
         let target = unsafe {
-            self.context.CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
+            self.context
+                .CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
         };
         // SAFETY: The bitmap belongs to this context and has TARGET enabled.
         unsafe { self.context.SetTarget(&target) };
@@ -101,7 +107,8 @@ impl ContextMenuRenderer {
         let theme = scene.theme();
         theme::set(&self.panel, theme.chrome_overlay);
         theme::set(&self.highlight, theme.control_hover);
-        let icon_size = NonZeroU32::new((20 * scene.dpi()).div_ceil(96)).unwrap_or(NonZeroU32::MIN);
+        let icon_size =
+            NonZeroU32::new((20 * scene.dpi()).div_ceil(96)).unwrap_or(NonZeroU32::MIN);
         for (action, _) in scene.items() {
             self.ensure_icon(action_asset(action), icon_size)?;
         }
@@ -118,12 +125,14 @@ impl ContextMenuRenderer {
         let result = unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&raw const transparent));
-            self.context.FillRoundedRectangle(&raw const panel, &self.panel);
+            self.context
+                .FillRoundedRectangle(&raw const panel, &self.panel);
             for (action, bounds) in scene.items() {
                 let bounds = rect(bounds);
                 if scene.highlighted(action) {
                     let highlight = rounded(bounds, scale(scene, theme.radii.control));
-                    self.context.FillRoundedRectangle(&raw const highlight, &self.highlight);
+                    self.context
+                        .FillRoundedRectangle(&raw const highlight, &self.highlight);
                 }
                 let icon_extent = as_f32(icon_size.get());
                 let icon_bounds = D2D_RECT_F {
@@ -167,7 +176,10 @@ impl ContextMenuRenderer {
         // SAFETY: The raster owns tightly packed premultiplied BGRA8 pixels for this size.
         let bitmap = unsafe {
             self.context.CreateBitmap(
-                D2D_SIZE_U { width: raster.size().width(), height: raster.size().height() },
+                D2D_SIZE_U {
+                    width: raster.size().width(),
+                    height: raster.size().height(),
+                },
                 Some(raster.pixels().as_ptr().cast::<c_void>()),
                 raster.stride()?,
                 &raw const properties,
@@ -182,7 +194,9 @@ impl ContextMenuRenderer {
         asset: SvgAsset,
         size: NonZeroU32,
     ) -> Result<&ID2D1Bitmap1, ContextMenuRendererError> {
-        self.icons.get(&(asset, size)).ok_or(ContextMenuRendererError::BitmapCacheInvariant)
+        self.icons
+            .get(&(asset, size))
+            .ok_or(ContextMenuRendererError::BitmapCacheInvariant)
     }
 }
 
@@ -240,7 +254,11 @@ fn rect(value: PhysicalRect) -> D2D_RECT_F {
 }
 
 const fn rounded(rect: D2D_RECT_F, radius: f32) -> D2D1_ROUNDED_RECT {
-    D2D1_ROUNDED_RECT { rect, radiusX: radius, radiusY: radius }
+    D2D1_ROUNDED_RECT {
+        rect,
+        radiusX: radius,
+        radiusY: radius,
+    }
 }
 
 const fn action_asset(action: ContextMenuAction) -> SvgAsset {
@@ -257,7 +275,10 @@ fn scale(scene: &ContextMenuScene, dips: f32) -> f32 {
     as_f32(scene.dpi()) * dips / TARGET_DPI
 }
 
-#[allow(clippy::cast_precision_loss, reason = "menu dimensions remain below f32 exact range")]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "menu dimensions remain below f32 exact range"
+)]
 const fn as_f32(value: u32) -> f32 {
     value as f32
 }

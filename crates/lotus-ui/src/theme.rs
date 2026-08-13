@@ -26,14 +26,16 @@ impl Color {
     #[must_use]
     pub fn from_hex(value: &str) -> Option<Self> {
         let hex = value.trim().strip_prefix('#')?;
-        if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
             return None;
         }
         let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
         let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
         let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
-        let alpha =
-            hex.get(6..8).map_or(Some(u8::MAX), |alpha| u8::from_str_radix(alpha, 16).ok())?;
+        let alpha = hex
+            .get(6..8)
+            .map_or(Some(u8::MAX), |alpha| u8::from_str_radix(alpha, 16).ok())?;
         Some(Self::rgba(red, green, blue, alpha))
     }
 
@@ -94,8 +96,10 @@ pub struct Theme {
 impl Theme {
     #[must_use]
     pub fn new(background: &str, accent: &str, window_radius: u32) -> Self {
-        let canvas = Color::from_hex(background).unwrap_or_else(|| Color::rgb(0x11, 0x14, 0x1A));
-        let accent = Color::from_hex(accent).unwrap_or_else(|| Color::rgb(0xF5, 0xA5, 0xA5));
+        let canvas =
+            Color::from_hex(background).unwrap_or_else(|| Color::rgb(0x11, 0x14, 0x1A));
+        let accent =
+            Color::from_hex(accent).unwrap_or_else(|| Color::rgb(0xF5, 0xA5, 0xA5));
         let white = Color::rgb(u8::MAX, u8::MAX, u8::MAX);
         let window = f32::from(u16::try_from(window_radius).unwrap_or(u16::MAX));
         Self {

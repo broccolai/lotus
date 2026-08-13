@@ -8,7 +8,10 @@ pub struct DragThreshold {
 
 impl From<(u32, u32)> for DragThreshold {
     fn from((horizontal, vertical): (u32, u32)) -> Self {
-        Self { horizontal: horizontal.max(1), vertical: vertical.max(1) }
+        Self {
+            horizontal: horizontal.max(1),
+            vertical: vertical.max(1),
+        }
     }
 }
 
@@ -26,7 +29,10 @@ pub struct DockInteraction {
 
 impl DockInteraction {
     pub fn new(threshold: (u32, u32)) -> Self {
-        Self { threshold: threshold.into(), candidate: None }
+        Self {
+            threshold: threshold.into(),
+            candidate: None,
+        }
     }
 
     pub fn set_drag_threshold(&mut self, threshold: (u32, u32)) {
@@ -46,8 +52,11 @@ impl DockInteraction {
         } else if let Some(candidate) = self.candidate
             && threshold_crossed(candidate, x, y, self.threshold)
         {
-            changed |=
-                scene.begin_drag(candidate.source_index, candidate.origin_x, candidate.origin_y);
+            changed |= scene.begin_drag(
+                candidate.source_index,
+                candidate.origin_x,
+                candidate.origin_y,
+            );
             changed |= scene.update_drag(x, y);
         }
         changed
@@ -61,9 +70,11 @@ impl DockInteraction {
         y: i32,
     ) -> bool {
         self.candidate = match target {
-            Some(DockHitTarget::Item(source_index)) => {
-                Some(DragCandidate { source_index, origin_x: x, origin_y: y })
-            }
+            Some(DockHitTarget::Item(source_index)) => Some(DragCandidate {
+                source_index,
+                origin_x: x,
+                origin_y: y,
+            }),
             Some(DockHitTarget::Jirachi | DockHitTarget::ShowDesktop) | None => None,
         };
         scene.set_hovered(target) | scene.set_pressed(target)
@@ -85,17 +96,29 @@ pub fn map_visual_insertion_slot(
     visual_slot: usize,
 ) -> Option<usize> {
     if visual_slot > visible_source_indices.len()
-        || visible_source_indices.iter().any(|source| *source >= item_count)
+        || visible_source_indices
+            .iter()
+            .any(|source| *source >= item_count)
     {
         return None;
     }
     if let Some(source) = visible_source_indices.get(visual_slot) {
         return Some(*source);
     }
-    Some(visible_source_indices.last().map_or(0, |source| source.saturating_add(1)).min(item_count))
+    Some(
+        visible_source_indices
+            .last()
+            .map_or(0, |source| source.saturating_add(1))
+            .min(item_count),
+    )
 }
 
-fn threshold_crossed(candidate: DragCandidate, x: i32, y: i32, threshold: DragThreshold) -> bool {
+fn threshold_crossed(
+    candidate: DragCandidate,
+    x: i32,
+    y: i32,
+    threshold: DragThreshold,
+) -> bool {
     candidate.origin_x.abs_diff(x) >= threshold.horizontal
         || candidate.origin_y.abs_diff(y) >= threshold.vertical
 }

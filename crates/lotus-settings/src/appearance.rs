@@ -28,9 +28,11 @@ impl SurfacePreset {
     }
 
     pub fn selected(settings: &DockSettings) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|preset| preset.color().eq_ignore_ascii_case(&settings.background_color))
+        Self::ALL.into_iter().find(|preset| {
+            preset
+                .color()
+                .eq_ignore_ascii_case(&settings.background_color)
+        })
     }
 }
 
@@ -44,7 +46,13 @@ pub enum AccentPreset {
 }
 
 impl AccentPreset {
-    pub const ALL: [Self; 5] = [Self::Blossom, Self::Peach, Self::Lavender, Self::Sky, Self::Mint];
+    pub const ALL: [Self; 5] = [
+        Self::Blossom,
+        Self::Peach,
+        Self::Lavender,
+        Self::Sky,
+        Self::Mint,
+    ];
 
     pub const fn name(self) -> &'static str {
         match self {
@@ -74,5 +82,9 @@ impl AccentPreset {
 }
 
 pub fn theme_for(settings: &DockSettings) -> Theme {
-    Theme::new(&settings.background_color, &settings.accent_color, settings.corner_radius)
+    Theme::new(
+        &settings.background_color,
+        &settings.accent_color,
+        settings.corner_radius,
+    )
 }

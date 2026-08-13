@@ -1,12 +1,10 @@
 use std::ffi::{OsStr, OsString};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc;
-use std::thread;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
+use std::{fs, thread};
 
 use thiserror::Error;
 use windows::Win32::Foundation::{
@@ -19,8 +17,8 @@ use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWi
 use windows::Win32::UI::WindowsAndMessaging::{
     EVENT_OBJECT_CREATE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, FindWindowExW,
     FindWindowW, GetClassNameW, GetMessageW, IsWindow, IsWindowVisible, MSG, OBJID_WINDOW,
-    PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindowAsync,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_QUIT,
+    PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SW_HIDE, SW_SHOWNOACTIVATE,
+    ShowWindowAsync, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_QUIT,
 };
 use windows::core::{Error, PCWSTR, w};
 
@@ -75,7 +73,10 @@ impl ExclusiveTaskbarGuard {
         let started = Instant::now();
         loop {
             if control_directory.join(READY_FILE).is_file() {
-                return Ok(Self { child, control_directory });
+                return Ok(Self {
+                    child,
+                    control_directory,
+                });
             }
             if child.try_wait()?.is_some() {
                 cleanup_control_directory(&control_directory);
@@ -101,19 +102,27 @@ impl Drop for ExclusiveTaskbarGuard {
 }
 
 pub fn run_guardian_if_requested() -> bool {
-    let Ok(request) = guardian_request(std::env::args_os().skip(1)) else { return true };
-    let Some((parent_process_id, control_directory)) = request else { return false };
+    let Ok(request) = guardian_request(std::env::args_os().skip(1)) else {
+        return true;
+    };
+    let Some((parent_process_id, control_directory)) = request else {
+        return false;
+    };
     let _ = run_guardian(parent_process_id, &control_directory);
     true
 }
 
-fn guardian_request<I, S>(arguments: I) -> Result<Option<(u32, PathBuf)>, ExclusiveTaskbarError>
+fn guardian_request<I, S>(
+    arguments: I,
+) -> Result<Option<(u32, PathBuf)>, ExclusiveTaskbarError>
 where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
     let mut arguments = arguments.into_iter().map(Into::into);
-    let Some(first) = arguments.next() else { return Ok(None) };
+    let Some(first) = arguments.next() else {
+        return Ok(None);
+    };
     if !argument_eq(&first, GUARDIAN_ARGUMENT) {
         return Ok(None);
     }
@@ -179,7 +188,11 @@ impl TaskbarEventObserver {
             .name("lotus-taskbar-events".into())
             .spawn(move || taskbar_event_loop(&ready_tx, &thread_stop))?;
         match ready_rx.recv_timeout(START_TIMEOUT) {
-            Ok(Ok(thread_id)) => Ok(Self { thread_id, thread: Some(thread), stop }),
+            Ok(Ok(thread_id)) => Ok(Self {
+                thread_id,
+                thread: Some(thread),
+                stop,
+            }),
             Ok(Err(error)) => {
                 let _ = thread.join();
                 Err(ExclusiveTaskbarError::EventObserver(error.into()))
@@ -189,7 +202,9 @@ impl TaskbarEventObserver {
                 let thread_id = EVENT_THREAD_ID.load(Ordering::Acquire);
                 if thread_id != 0 {
                     // SAFETY: A nonzero published ID belongs to the event thread's live queue.
-                    let _ = unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
+                    let _ = unsafe {
+                        PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0))
+                    };
                 }
                 let _ = thread.join();
                 Err(ExclusiveTaskbarError::EventObserverStopped)
@@ -198,7 +213,9 @@ impl TaskbarEventObserver {
     }
 
     fn is_finished(&self) -> bool {
-        self.thread.as_ref().is_none_or(thread::JoinHandle::is_finished)
+        self.thread
+            .as_ref()
+            .is_none_or(thread::JoinHandle::is_finished)
     }
 }
 
@@ -206,7 +223,8 @@ impl Drop for TaskbarEventObserver {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         // SAFETY: `thread_id` was published only after the observer created its message queue.
-        let _ = unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        let _ =
+            unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -221,10 +239,14 @@ fn taskbar_event_loop(ready: &mpsc::SyncSender<Result<u32, Error>>, stop: &Atomi
     let thread_id = unsafe { GetCurrentThreadId() };
     EVENT_THREAD_ID.store(thread_id, Ordering::Release);
 
-    let hooks = [EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, EVENT_OBJECT_LOCATIONCHANGE]
-        .into_iter()
-        .map(OwnedWinEventHook::install)
-        .collect::<Result<Vec<_>, _>>();
+    let hooks = [
+        EVENT_OBJECT_CREATE,
+        EVENT_OBJECT_SHOW,
+        EVENT_OBJECT_LOCATIONCHANGE,
+    ]
+    .into_iter()
+    .map(OwnedWinEventHook::install)
+    .collect::<Result<Vec<_>, _>>();
     let hooks = match hooks {
         Ok(hooks) => hooks,
         Err(error) => {
@@ -278,7 +300,11 @@ impl OwnedWinEventHook {
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
             )
         };
-        if hook.is_invalid() { Err(Error::from_thread()) } else { Ok(Self(hook)) }
+        if hook.is_invalid() {
+            Err(Error::from_thread())
+        } else {
+            Ok(Self(hook))
+        }
     }
 }
 
@@ -308,7 +334,12 @@ unsafe extern "system" fn taskbar_event_callback(
     // SAFETY: The observer thread publishes its ID after creating a message queue. The HWND is
     // an opaque integer value and contains no borrowed process memory.
     let _ = unsafe {
-        PostThreadMessageW(thread_id, TASKBAR_EVENT_MESSAGE, WPARAM(hwnd.0.addr()), LPARAM(0))
+        PostThreadMessageW(
+            thread_id,
+            TASKBAR_EVENT_MESSAGE,
+            WPARAM(hwnd.0.addr()),
+            LPARAM(0),
+        )
     };
 }
 
@@ -341,8 +372,15 @@ impl TaskbarWindows {
             return;
         }
         let address = hwnd.0.addr();
-        if !self.entries.iter().any(|entry| entry.hwnd.0.addr() == address) {
-            self.entries.push(TaskbarWindow { hwnd, was_visible: true });
+        if !self
+            .entries
+            .iter()
+            .any(|entry| entry.hwnd.0.addr() == address)
+        {
+            self.entries.push(TaskbarWindow {
+                hwnd,
+                was_visible: true,
+            });
         }
         // SAFETY: Hiding an exact taskbar-class HWND is reversible and its visibility is journaled.
         let _ = unsafe { ShowWindowAsync(hwnd, SW_HIDE) };
@@ -364,7 +402,9 @@ fn is_taskbar_window(hwnd: HWND) -> bool {
     let mut class_name = [0u16; 32];
     // SAFETY: `class_name` is writable for the duration of this synchronous query.
     let length = unsafe { GetClassNameW(hwnd, &mut class_name) };
-    let Ok(length) = usize::try_from(length) else { return false };
+    let Ok(length) = usize::try_from(length) else {
+        return false;
+    };
     matches!(
         String::from_utf16_lossy(&class_name[..length]).as_str(),
         "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
@@ -412,7 +452,9 @@ impl Drop for ProcessHandle {
 }
 
 fn argument_eq(argument: &OsStr, expected: &str) -> bool {
-    argument.to_str().is_some_and(|value| value.eq_ignore_ascii_case(expected))
+    argument
+        .to_str()
+        .is_some_and(|value| value.eq_ignore_ascii_case(expected))
 }
 
 fn control_directory() -> PathBuf {
