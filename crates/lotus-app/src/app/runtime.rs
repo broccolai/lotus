@@ -2,18 +2,19 @@ use lotus_settings::scene::SettingsPointerStyle;
 use lotus_windows::interaction::{NativeMessage, PointerCursor};
 
 use super::{
-    AppError, AuxiliaryWindows, CompositionSurfaceState, ContextMenuAction,
+    AppError, AuxiliaryWindows, CommandId, CompositionSurfaceState, ContextMenuAction,
     ContextMenuEvent, DeviceState, DockContextRequest, DockHitTarget, DockRuntime,
     DockWindow, MenuDirection, PointerEvent, RuntimePolicy, SceneSettingsKey,
     SelectionDirection, SettingsAction, SettingsEvent, SettingsRuntime,
     SettingsUpdateActivity, SurfaceSize, UpdateResult, UpdateStatus, WindowEvent,
     WindowSettingsKey, WindowTracker, WindowTrackerEvent, apply_fullscreen_visibility,
-    confirm_install_update, confirm_shutdown, handle_alt_tab_events, handle_pointer_event,
-    handle_search_event, handle_windows_key_events, is_alt_tab_wake, is_installed,
-    is_search_catalog_wake, is_taskbar_badge_wake, is_update_wake, is_windows_key_wake,
-    launch_current_installer, launch_installer, launch_target, next_message,
-    render_and_schedule, render_surface, request_exit, resize_dock, resize_surface,
-    restart_current_process, show_error, show_information, startup_registration,
+    confirm_install_update, confirm_restart, confirm_shutdown, handle_alt_tab_events,
+    handle_pointer_event, handle_search_event, handle_windows_key_events, is_alt_tab_wake,
+    is_installed, is_search_catalog_wake, is_taskbar_badge_wake, is_update_wake,
+    is_windows_key_wake, launch_current_installer, launch_installer, launch_target,
+    next_message, render_and_schedule, render_surface, request_exit, resize_dock,
+    resize_surface, restart_current_process, show_error, show_information,
+    startup_registration,
 };
 
 pub(super) fn run_message_loop(
@@ -92,14 +93,16 @@ fn process_message(
         handle_window_event(event, dock, graphics, surface, dock_model, auxiliary)?;
     }
     for event in auxiliary.launcher.drain_events() {
-        handle_search_event(
+        if let Some(command) = handle_search_event(
             event,
             dock,
             graphics,
             surface,
             dock_model,
             &mut auxiliary.launcher,
-        )?;
+        )? {
+            execute_search_command(command, dock, graphics, dock_model, auxiliary)?;
+        }
     }
     for event in auxiliary.context_menu.drain_events() {
         handle_context_menu_event(event, dock, graphics, dock_model, auxiliary)?;
@@ -154,6 +157,82 @@ fn process_message(
         let dock_animation = render_surface(graphics, surface, dock_model.scene())?;
         let launcher_animation = auxiliary.launcher.render(graphics)?;
         dock.set_animation_active(dock_animation || launcher_animation)?;
+    }
+    Ok(())
+}
+
+fn execute_search_command(
+    command: CommandId,
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    dock_model: &DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
+    match command {
+        CommandId::OpenSettings => {
+            auxiliary.settings.open(dock_model.settings(), graphics)?;
+        }
+        CommandId::OpenVolumeMixer => {
+            if let Err(error) = launch_target("sndvol.exe", None) {
+                show_error(
+                    dock.handle(),
+                    "Lotus",
+                    &format!("Lotus could not open the Windows volume mixer.\n\n{error}"),
+                );
+            }
+        }
+        CommandId::OpenNotificationArea => {
+            if let Err(error) = lotus_windows::tray::open_overflow() {
+                show_error(
+                    dock.handle(),
+                    "Lotus",
+                    &format!(
+                        "Lotus could not open the Windows notification area.\n\n{error}"
+                    ),
+                );
+            }
+        }
+        CommandId::ShowDesktop => {
+            if let Err(error) = lotus_windows::desktop::toggle() {
+                show_error(
+                    dock.handle(),
+                    "Lotus",
+                    &format!("Lotus could not show the desktop.\n\n{error}"),
+                );
+            }
+        }
+        CommandId::LockComputer => {
+            if let Err(error) = lotus_windows::desktop::lock() {
+                show_error(
+                    dock.handle(),
+                    "Lotus",
+                    &format!("Lotus could not lock Windows.\n\n{error}"),
+                );
+            }
+        }
+        CommandId::RestartComputer => {
+            if confirm_restart(dock.handle())
+                && let Err(error) = launch_target("shutdown.exe", Some("/r /t 0"))
+            {
+                show_error(
+                    dock.handle(),
+                    "Lotus",
+                    &format!("Lotus could not restart Windows.\n\n{error}"),
+                );
+            }
+        }
+        CommandId::ShutDownComputer => {
+            if confirm_shutdown(dock.handle())
+                && let Err(error) = launch_target("shutdown.exe", Some("/s /t 0"))
+            {
+                show_error(
+                    dock.handle(),
+                    "Lotus",
+                    &format!("Lotus could not shut down Windows.\n\n{error}"),
+                );
+            }
+        }
+        CommandId::QuitLotus => request_exit(0),
     }
     Ok(())
 }

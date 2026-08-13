@@ -65,8 +65,16 @@ fn show_error_for(owner: HWND, title: &str, message: &str) {
 }
 
 pub fn confirm_shutdown(owner: WindowHandle) -> bool {
+    confirm_power_action(owner, "Shut down this PC now?")
+}
+
+pub fn confirm_restart(owner: WindowHandle) -> bool {
+    confirm_power_action(owner, "Restart this PC now?")
+}
+
+fn confirm_power_action(owner: WindowHandle, message: &str) -> bool {
     let title = HSTRING::from("Lotus");
-    let message = HSTRING::from("Shut down this PC now?");
+    let message = HSTRING::from(message);
     // SAFETY: Strings remain live for the synchronous dialog and `owner` is Lotus's dock HWND.
     unsafe {
         MessageBoxW(

@@ -24,12 +24,22 @@ const ICON_COLUMN_DIP: u32 = 38;
 const ICON_CELL_DIP: u32 = 28;
 const MAX_RESULTS: usize = 5;
 const RESULT_ICON_DIP: u32 = 26;
+const COMMAND_BADGE_WIDTH_DIP: u32 = 52;
+const COMMAND_BADGE_HEIGHT_DIP: u32 = 24;
+const COMMAND_BADGE_GAP_DIP: u32 = 8;
 const COMPLETE_PROGRESS: u16 = 1_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LauncherResultKind {
+    Application,
+    Command,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LauncherResult<Asset> {
     pub title: String,
     pub icon: Option<Icon<Asset>>,
+    pub kind: LauncherResultKind,
 }
 
 impl<Asset> LauncherResult<Asset> {
@@ -37,6 +47,7 @@ impl<Asset> LauncherResult<Asset> {
         Self {
             title: title.into(),
             icon: None,
+            kind: LauncherResultKind::Application,
         }
     }
 
@@ -44,6 +55,15 @@ impl<Asset> LauncherResult<Asset> {
         Self {
             title: title.into(),
             icon: Some(icon),
+            kind: LauncherResultKind::Application,
+        }
+    }
+
+    pub fn command(title: impl Into<String>, icon: Icon<Asset>) -> Self {
+        Self {
+            title: title.into(),
+            icon: Some(icon),
+            kind: LauncherResultKind::Command,
         }
     }
 
@@ -141,6 +161,10 @@ impl<Asset> LauncherScene<Asset> {
 
     pub fn results(&self) -> &[LauncherResult<Asset>] {
         &self.results
+    }
+
+    pub fn is_command_mode(&self) -> bool {
+        self.query.trim_start().starts_with('>')
     }
 
     pub const fn selected(&self) -> Option<usize> {
@@ -245,6 +269,7 @@ impl<Asset> LauncherScene<Asset> {
             row_icon_cells: rows.icon_cells,
             row_icons: rows.icons,
             row_texts: rows.texts,
+            command_badges: rows.badges,
             empty_state,
             footer_separator: footer.separator,
             footer_label: footer.label,
@@ -327,12 +352,35 @@ impl<Asset> LauncherScene<Asset> {
             })
             .collect::<Vec<_>>();
         let icon_column = self.scale(ICON_COLUMN_DIP);
+        let badge_width = self.scale(COMMAND_BADGE_WIDTH_DIP);
+        let badge_height = self.scale(COMMAND_BADGE_HEIGHT_DIP);
+        let badge_gap = self.scale(COMMAND_BADGE_GAP_DIP);
+        let badges = self
+            .results
+            .iter()
+            .zip(&contents)
+            .map(|(result, content)| {
+                (result.kind == LauncherResultKind::Command).then_some(PixelRect {
+                    left: content
+                        .left
+                        .saturating_add(content.width.saturating_sub(badge_width)),
+                    top: content
+                        .top
+                        .saturating_add(content.height.saturating_sub(badge_height) / 2),
+                    width: badge_width,
+                    height: badge_height,
+                })
+            })
+            .collect::<Vec<_>>();
         let texts = contents
             .iter()
-            .map(|content| PixelRect {
+            .zip(&badges)
+            .map(|(content, badge)| PixelRect {
                 left: content.left.saturating_add(icon_column),
                 top: content.top,
-                width: content.width.saturating_sub(icon_column),
+                width: content.width.saturating_sub(icon_column).saturating_sub(
+                    badge.map_or(0, |_| badge_width.saturating_add(badge_gap)),
+                ),
                 height: content.height,
             })
             .collect::<Vec<_>>();
@@ -344,6 +392,7 @@ impl<Asset> LauncherScene<Asset> {
             icon_cells,
             icons,
             texts,
+            badges,
         }
     }
 
@@ -451,6 +500,7 @@ struct LauncherRows {
     icon_cells: Vec<PixelRect>,
     icons: Vec<Option<PixelRect>>,
     texts: Vec<PixelRect>,
+    badges: Vec<Option<PixelRect>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -487,6 +537,7 @@ pub struct LauncherLayout {
     pub row_icon_cells: Vec<PixelRect>,
     pub row_icons: Vec<Option<PixelRect>>,
     pub row_texts: Vec<PixelRect>,
+    pub command_badges: Vec<Option<PixelRect>>,
     pub empty_state: Option<PixelRect>,
     pub footer_separator: PixelRect,
     pub footer_label: PixelRect,

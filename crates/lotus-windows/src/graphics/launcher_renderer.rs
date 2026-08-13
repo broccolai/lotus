@@ -76,6 +76,7 @@ pub(super) struct LauncherRenderer {
     empty_format: IDWriteTextFormat,
     footer_label_format: IDWriteTextFormat,
     footer_time_format: IDWriteTextFormat,
+    command_format: IDWriteTextFormat,
     assets: SvgAssetCache,
     embedded_icons: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
     raster_icons: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
@@ -127,6 +128,8 @@ impl LauncherRenderer {
             text_format(&write_factory, 12.5, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let footer_time_format =
             text_format(&write_factory, 12.5, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let command_format =
+            text_format(&write_factory, 10.5, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         // SAFETY: The owned format is live and alignment values are valid.
         unsafe {
             title_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
@@ -141,6 +144,8 @@ impl LauncherRenderer {
             footer_label_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             footer_time_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING)?;
             footer_time_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            command_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            command_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         }
         let mut result = Self {
             _factory: factory,
@@ -167,6 +172,7 @@ impl LauncherRenderer {
             empty_format,
             footer_label_format,
             footer_time_format,
+            command_format,
             assets: SvgAssetCache::create()?,
             embedded_icons: HashMap::new(),
             raster_icons: HashMap::new(),
@@ -274,7 +280,7 @@ impl LauncherRenderer {
             query_outline: rounded(inset_all(query_rect, 0.5), control_radius - 0.5),
             search_bounds: search_glyph_rect(query_rect),
             query_text: utf16(if scene.query().is_empty() {
-                "Search applications…"
+                "Search apps or type > for actions"
             } else {
                 scene.query()
             }),
@@ -404,11 +410,28 @@ impl LauncherRenderer {
                     D2D1_DRAW_TEXT_OPTIONS_CLIP,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
+                if let Some(badge) = layout.command_badges[index] {
+                    let badge = rounded(rect(badge), 6.0);
+                    self.context
+                        .FillRoundedRectangle(&raw const badge, &self.selected);
+                    self.context.DrawText(
+                        &utf16("RUN"),
+                        &self.command_format,
+                        &raw const badge.rect,
+                        &self.caret,
+                        D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
             }
             if let Some(empty_state) = layout.empty_state {
                 let bounds = rect(empty_state);
                 self.context.DrawText(
-                    &utf16("No applications found"),
+                    &utf16(if scene.is_command_mode() {
+                        "No matching actions"
+                    } else {
+                        "No applications found"
+                    }),
                     &self.empty_format,
                     &raw const bounds,
                     &self.placeholder_text,
@@ -436,7 +459,11 @@ impl LauncherRenderer {
             self.context
                 .FillRectangle(&raw const separator, &self.field_border);
             self.context.DrawText(
-                &utf16("Lotus"),
+                &utf16(if scene.is_command_mode() {
+                    "Lotus Actions"
+                } else {
+                    "Lotus"
+                }),
                 &self.footer_label_format,
                 &raw const label,
                 &self.caret,

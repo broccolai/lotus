@@ -15,6 +15,12 @@ const FLUENT_TRAY_SVG: &[u8] =
     include_bytes!("../../assets/fluent/chevron-up-24-regular.svg");
 const FLUENT_DISMISS_SVG: &[u8] =
     include_bytes!("../../assets/fluent/dismiss-24-regular.svg");
+const FLUENT_DESKTOP_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/desktop-24-regular.svg");
+const FLUENT_LOCK_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/lock-closed-24-regular.svg");
+const FLUENT_RESTART_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/arrow-clockwise-24-regular.svg");
 const MAX_RASTER_DIMENSION: u32 = 4_096;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -25,16 +31,22 @@ pub enum SvgAsset {
     FluentSettings,
     FluentTray,
     FluentDismiss,
+    FluentDesktop,
+    FluentLock,
+    FluentRestart,
 }
 
 impl SvgAsset {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::LotusPixel,
         Self::FluentPower,
         Self::FluentVolume,
         Self::FluentSettings,
         Self::FluentTray,
         Self::FluentDismiss,
+        Self::FluentDesktop,
+        Self::FluentLock,
+        Self::FluentRestart,
     ];
 
     const fn source(self) -> &'static [u8] {
@@ -45,6 +57,9 @@ impl SvgAsset {
             Self::FluentSettings => FLUENT_SETTINGS_SVG,
             Self::FluentTray => FLUENT_TRAY_SVG,
             Self::FluentDismiss => FLUENT_DISMISS_SVG,
+            Self::FluentDesktop => FLUENT_DESKTOP_SVG,
+            Self::FluentLock => FLUENT_LOCK_SVG,
+            Self::FluentRestart => FLUENT_RESTART_SVG,
         }
     }
 
@@ -56,6 +71,9 @@ impl SvgAsset {
                 | Self::FluentSettings
                 | Self::FluentTray
                 | Self::FluentDismiss
+                | Self::FluentDesktop
+                | Self::FluentLock
+                | Self::FluentRestart
         )
     }
 }

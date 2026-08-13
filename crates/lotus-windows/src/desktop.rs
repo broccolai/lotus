@@ -1,6 +1,7 @@
 use std::mem::size_of;
 
 use thiserror::Error;
+use windows::Win32::System::Shutdown::LockWorkStation;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
     KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_LWIN,
@@ -37,6 +38,12 @@ pub fn toggle() -> Result<(), ShowDesktopError> {
     } else {
         Err(ShowDesktopError { inserted, expected })
     }
+}
+
+pub fn lock() -> windows::core::Result<()> {
+    // SAFETY: LockWorkStation has no arguments or caller-owned memory and reports failure
+    // through GetLastError, which windows-rs converts into a Result.
+    unsafe { LockWorkStation() }
 }
 
 const fn key(virtual_key: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {

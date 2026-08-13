@@ -2,12 +2,12 @@ use lotus_settings::appearance::theme_for;
 use lotus_ui::theme::Theme;
 
 use super::{
-    AppError, DeviceState, DockIcon, DockRuntime, DockSettings, DockWindow, Duration,
-    LauncherCompositionSurfaceState, LauncherResult, LauncherScene, NativeIconCache, Path,
-    SearchCatalogCache, SearchController, SearchEvent, SearchPresentation,
-    SearchUsageStore, SearchWindow, SelectionDirection, SelectionMove, SurfaceError,
-    SurfaceSize, WindowHandle, launch_target, local_time_24h, resize_launcher_surface,
-    show_error,
+    AppError, CommandId, DeviceState, DockIcon, DockRuntime, DockSettings, DockWindow,
+    Duration, LauncherCompositionSurfaceState, LauncherResult, LauncherScene,
+    NativeIconCache, Path, SearchCatalogCache, SearchController, SearchEvent,
+    SearchPresentation, SearchUsageStore, SearchWindow, SelectionDirection, SelectionMove,
+    SurfaceError, SurfaceSize, SvgAsset, WindowHandle, launch_target, local_time_24h,
+    resize_launcher_surface, show_error,
 };
 
 pub(super) struct LauncherRuntime {
@@ -154,12 +154,7 @@ impl LauncherRuntime {
     }
 
     pub(super) fn rebuild_scene(&mut self, dpi: u32) -> Result<(), AppError> {
-        let iconless_results = self
-            .controller
-            .results()
-            .iter()
-            .map(|entry| LauncherResult::new(&entry.name))
-            .collect::<Vec<_>>();
+        let iconless_results = self.iconless_results();
         let icon_size = LauncherScene::new(
             dpi,
             self.controller.query(),
@@ -169,23 +164,7 @@ impl LauncherRuntime {
         .ok_or(AppError::InvalidLauncherScene)?
         .result_icon_size()
         .get();
-        let results = self
-            .controller
-            .results()
-            .iter()
-            .map(|entry| {
-                let icon = self
-                    .native_icons
-                    .icon(Path::new(&entry.icon_source), icon_size)
-                    .ok()
-                    .flatten()
-                    .map(DockIcon::Raster);
-                icon.map_or_else(
-                    || LauncherResult::new(&entry.name),
-                    |icon| LauncherResult::with_icon(&entry.name, icon),
-                )
-            })
-            .collect();
+        let results = self.results_with_icons(icon_size);
         let mut scene = LauncherScene::new(
             dpi,
             self.controller.query(),
@@ -203,6 +182,46 @@ impl LauncherRuntime {
         let _ = scene.set_presentation_progress(self.presentation.progress());
         self.scene = Some(scene);
         Ok(())
+    }
+
+    fn iconless_results(&self) -> Vec<LauncherResult> {
+        if self.controller.is_command_mode() {
+            return self
+                .controller
+                .commands()
+                .iter()
+                .map(|entry| LauncherResult::command(entry.title, command_icon(entry.id)))
+                .collect();
+        }
+
+        self.controller
+            .results()
+            .iter()
+            .map(|entry| LauncherResult::new(&entry.name))
+            .collect()
+    }
+
+    fn results_with_icons(&mut self, icon_size: u32) -> Vec<LauncherResult> {
+        if self.controller.is_command_mode() {
+            return self.iconless_results();
+        }
+
+        self.controller
+            .results()
+            .iter()
+            .map(|entry| {
+                let icon = self
+                    .native_icons
+                    .icon(Path::new(&entry.icon_source), icon_size)
+                    .ok()
+                    .flatten()
+                    .map(DockIcon::Raster);
+                icon.map_or_else(
+                    || LauncherResult::new(&entry.name),
+                    |icon| LauncherResult::with_icon(&entry.name, icon),
+                )
+            })
+            .collect()
     }
 
     pub(super) fn move_selection(
@@ -236,10 +255,13 @@ impl LauncherRuntime {
         Ok(changed)
     }
 
-    pub(super) fn submit(&mut self, owner: WindowHandle) {
+    pub(super) fn submit(&mut self, owner: WindowHandle) -> Option<CommandId> {
+        let command = self.controller.selected_command();
         let selected = self.controller.selected_entry().cloned();
         self.hide();
-        if let Some(entry) = selected {
+        if command.is_none()
+            && let Some(entry) = selected
+        {
             match launch_target(&entry.launch_target, None) {
                 Ok(()) => {
                     let _ = self.controller.record_launch(&entry.launch_target);
@@ -253,6 +275,7 @@ impl LauncherRuntime {
                 }
             }
         }
+        command
     }
 
     pub(super) fn advance_animation(&mut self) {
@@ -324,4 +347,18 @@ impl LauncherRuntime {
         }
         Ok(())
     }
+}
+
+const fn command_icon(command: CommandId) -> DockIcon {
+    let asset = match command {
+        CommandId::OpenSettings => SvgAsset::FluentSettings,
+        CommandId::OpenVolumeMixer => SvgAsset::FluentVolume,
+        CommandId::OpenNotificationArea => SvgAsset::FluentTray,
+        CommandId::ShowDesktop => SvgAsset::FluentDesktop,
+        CommandId::LockComputer => SvgAsset::FluentLock,
+        CommandId::RestartComputer => SvgAsset::FluentRestart,
+        CommandId::ShutDownComputer => SvgAsset::FluentPower,
+        CommandId::QuitLotus => SvgAsset::FluentDismiss,
+    };
+    DockIcon::Embedded(asset)
 }

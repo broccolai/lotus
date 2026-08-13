@@ -1,10 +1,10 @@
 use super::{
-    AltTabController, AltTabEvent, AppError, CompositionSurfaceState, DeviceState,
-    DockHitTarget, DockRuntime, DockScene, DockWindow, LauncherCompositionSurfaceState,
-    LauncherRuntime, ModelCursorMove, PointerEvent, QueryEdit, RestartError, SearchEdit,
-    SearchEvent, SurfaceError, SurfaceSize, SwitcherRuntime, WindowCursorMove,
-    WindowTracker, WindowsKeyController, WindowsKeyEvent, launch_target, local_time_24h,
-    read_text,
+    AltTabController, AltTabEvent, AppError, CommandId, CompositionSurfaceState,
+    DeviceState, DockHitTarget, DockRuntime, DockScene, DockWindow,
+    LauncherCompositionSurfaceState, LauncherRuntime, ModelCursorMove, PointerEvent,
+    QueryEdit, RestartError, SearchEdit, SearchEvent, SurfaceError, SurfaceSize,
+    SwitcherRuntime, WindowCursorMove, WindowTracker, WindowsKeyController,
+    WindowsKeyEvent, launch_target, local_time_24h, read_text,
 };
 
 pub(super) fn restart_current_process() -> Result<(), RestartError> {
@@ -185,8 +185,9 @@ pub(super) fn handle_search_event(
     dock_surface: &mut CompositionSurfaceState,
     dock_model: &DockRuntime,
     launcher: &mut LauncherRuntime,
-) -> Result<(), AppError> {
+) -> Result<Option<CommandId>, AppError> {
     let mut scene_changed = false;
+    let mut command = None;
     match event {
         SearchEvent::TextInput(character) => {
             launcher.controller.push_character(character);
@@ -212,7 +213,7 @@ pub(super) fn handle_search_event(
             scene_changed = true;
         }
         SearchEvent::DismissRequested => launcher.hide(),
-        SearchEvent::SubmitRequested => launcher.submit(dock.handle()),
+        SearchEvent::SubmitRequested => command = launcher.submit(dock.handle()),
         SearchEvent::Resized { width, height } => {
             if let (Some(size), Some(surface)) =
                 (SurfaceSize::new(width, height), launcher.surface.as_mut())
@@ -247,7 +248,7 @@ pub(super) fn handle_search_event(
                 && let Some(index) = launcher.result_at(x, y)
             {
                 let _ = launcher.select_result(index)?;
-                launcher.submit(dock.handle());
+                command = launcher.submit(dock.handle());
             }
         }
     }
@@ -258,7 +259,7 @@ pub(super) fn handle_search_event(
     let dock_animation = render_surface(graphics, dock_surface, dock_model.scene())?;
     let launcher_animation = launcher.render(graphics)?;
     dock.set_animation_active(dock_animation || launcher_animation)?;
-    Ok(())
+    Ok(command)
 }
 
 pub(super) fn launcher_submission_coordinates(event: &SearchEvent) -> Option<(i32, i32)> {

@@ -20,6 +20,7 @@ use lotus_core::settings::{
     SettingsStoreError, decode_settings,
 };
 use lotus_core::window::WindowInfo;
+use lotus_search::command::CommandId;
 use lotus_search::controller::{SearchController, SearchPresentation};
 use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
@@ -34,7 +35,7 @@ use lotus_windows::appbar::ShellIntegration;
 use lotus_windows::clipboard::read_text;
 use lotus_windows::clock::local_time_24h;
 use lotus_windows::dialog::{
-    confirm_install_update, confirm_shutdown, show_error, show_information,
+    confirm_install_update, confirm_restart, confirm_shutdown, show_error, show_information,
 };
 use lotus_windows::dpi::enable_per_monitor_v2;
 use lotus_windows::interaction::{next_message, request_exit};
