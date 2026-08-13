@@ -21,6 +21,8 @@ const FLUENT_LOCK_SVG: &[u8] =
     include_bytes!("../../assets/fluent/lock-closed-24-regular.svg");
 const FLUENT_RESTART_SVG: &[u8] =
     include_bytes!("../../assets/fluent/arrow-clockwise-24-regular.svg");
+const FLUENT_SEARCH_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/search-24-regular.svg");
 const MAX_RASTER_DIMENSION: u32 = 4_096;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -34,10 +36,11 @@ pub enum SvgAsset {
     FluentDesktop,
     FluentLock,
     FluentRestart,
+    FluentSearch,
 }
 
 impl SvgAsset {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::LotusPixel,
         Self::FluentPower,
         Self::FluentVolume,
@@ -47,6 +50,7 @@ impl SvgAsset {
         Self::FluentDesktop,
         Self::FluentLock,
         Self::FluentRestart,
+        Self::FluentSearch,
     ];
 
     const fn source(self) -> &'static [u8] {
@@ -60,6 +64,7 @@ impl SvgAsset {
             Self::FluentDesktop => FLUENT_DESKTOP_SVG,
             Self::FluentLock => FLUENT_LOCK_SVG,
             Self::FluentRestart => FLUENT_RESTART_SVG,
+            Self::FluentSearch => FLUENT_SEARCH_SVG,
         }
     }
 
@@ -74,6 +79,7 @@ impl SvgAsset {
                 | Self::FluentDesktop
                 | Self::FluentLock
                 | Self::FluentRestart
+                | Self::FluentSearch
         )
     }
 }

@@ -66,10 +66,8 @@ pub(super) struct LauncherRenderer {
     query_text: ID2D1SolidColorBrush,
     placeholder_text: ID2D1SolidColorBrush,
     caret: ID2D1SolidColorBrush,
-    search_glyph: ID2D1SolidColorBrush,
     result_text: ID2D1SolidColorBrush,
     initial_text: ID2D1SolidColorBrush,
-    search_format: IDWriteTextFormat,
     query_format: IDWriteTextFormat,
     title_format: IDWriteTextFormat,
     initial_format: IDWriteTextFormat,
@@ -110,15 +108,8 @@ impl LauncherRenderer {
         let query_text = brush(&context, &theme::d2d(theme.text))?;
         let placeholder_text = brush(&context, &theme::d2d(theme.text_muted))?;
         let caret = brush(&context, &theme::d2d(theme.accent))?;
-        let search_glyph = brush(&context, &theme::d2d(theme.text_muted))?;
         let result_text = brush(&context, &theme::d2d(theme.text))?;
         let initial_text = brush(&context, &theme::d2d(theme.text))?;
-        let search_format = text_format_family(
-            &write_factory,
-            w!("Segoe Fluent Icons"),
-            17.0,
-            DWRITE_FONT_WEIGHT_NORMAL,
-        )?;
         let query_format = text_format(&write_factory, 18.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         let title_format = text_format(&write_factory, 14.5, DWRITE_FONT_WEIGHT_NORMAL)?;
         let initial_format =
@@ -133,8 +124,6 @@ impl LauncherRenderer {
         // SAFETY: The owned format is live and alignment values are valid.
         unsafe {
             title_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
-            search_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-            search_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             query_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             title_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             initial_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
@@ -162,10 +151,8 @@ impl LauncherRenderer {
             query_text,
             placeholder_text,
             caret,
-            search_glyph,
             result_text,
             initial_text,
-            search_format,
             query_format,
             title_format,
             initial_format,
@@ -220,6 +207,10 @@ impl LauncherRenderer {
                 self.ensure_icon(icon, scene.result_icon_size())?;
             }
         }
+        let search_icon = DockIcon::Embedded(SvgAsset::FluentSearch);
+        let search_icon_size = search_icon_size(scene);
+        self.ensure_icon(&search_icon, search_icon_size)?;
+        let search_bitmap = self.icon(&search_icon, search_icon_size)?.clone();
         let icon_draws = scene
             .results()
             .iter()
@@ -235,7 +226,7 @@ impl LauncherRenderer {
         let result = unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&raw const transparent));
-            self.draw_chrome(&chrome, scene, &layout);
+            self.draw_chrome(&chrome, scene, &layout, &search_bitmap);
             self.draw_results(scene, &layout, &icon_draws);
             self.draw_footer(scene, &layout);
             self.context.EndDraw(None, None)
@@ -259,7 +250,6 @@ impl LauncherRenderer {
         theme::set(&self.query_text, value.text);
         theme::set(&self.placeholder_text, value.text_muted);
         theme::set(&self.caret, value.accent);
-        theme::set(&self.search_glyph, value.text_muted);
         theme::set(&self.result_text, value.text);
         theme::set(&self.initial_text, value.text);
     }
@@ -299,6 +289,7 @@ impl LauncherRenderer {
         chrome: &LauncherChrome,
         scene: &LauncherScene,
         layout: &LauncherLayout,
+        search_bitmap: &ID2D1Bitmap1,
     ) {
         // SAFETY: The active draw target, retained brushes, formats, and geometry remain live.
         unsafe {
@@ -312,13 +303,13 @@ impl LauncherRenderer {
                 1.0,
                 None,
             );
-            self.context.DrawText(
-                &utf16("\u{E721}"),
-                &self.search_format,
-                &raw const chrome.search_bounds,
-                &self.search_glyph,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
+            self.context.DrawBitmap(
+                search_bitmap,
+                Some(&raw const chrome.search_bounds),
+                scene.theme().text_muted.alpha,
+                windows::Win32::Graphics::Direct2D::D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                None,
+                None,
             );
             let query_brush = if scene.query().is_empty() {
                 &self.placeholder_text
@@ -678,12 +669,25 @@ fn control_radius(scene: &LauncherScene) -> f32 {
 
 fn search_glyph_rect(query: D2D_RECT_F) -> D2D_RECT_F {
     let scale = (query.bottom - query.top) / 50.0;
+    let size = 17.0 * scale;
+    let top = query.top + ((query.bottom - query.top) - size) / 2.0;
     D2D_RECT_F {
         left: query.left + 14.0 * scale,
-        top: query.top,
-        right: query.left + 31.0 * scale,
-        bottom: query.bottom,
+        top,
+        right: query.left + 14.0 * scale + size,
+        bottom: top + size,
     }
+}
+
+fn search_icon_size(scene: &LauncherScene) -> NonZeroU32 {
+    let pixels = scene
+        .dpi()
+        .saturating_mul(17)
+        .saturating_add(48)
+        .checked_div(96)
+        .unwrap_or(1)
+        .max(1);
+    NonZeroU32::new(pixels).unwrap_or(NonZeroU32::MIN)
 }
 
 fn caret_rect(
