@@ -33,6 +33,7 @@ const COMPLETE_PROGRESS: u16 = 1_000;
 pub enum LauncherResultKind {
     Application,
     Command,
+    Calculator,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +65,14 @@ impl<Asset> LauncherResult<Asset> {
             title: title.into(),
             icon: Some(icon),
             kind: LauncherResultKind::Command,
+        }
+    }
+
+    pub fn calculator(title: impl Into<String>, icon: Icon<Asset>) -> Self {
+        Self {
+            title: title.into(),
+            icon: Some(icon),
+            kind: LauncherResultKind::Calculator,
         }
     }
 
@@ -165,6 +174,12 @@ impl<Asset> LauncherScene<Asset> {
 
     pub fn is_command_mode(&self) -> bool {
         self.query.trim_start().starts_with('>')
+    }
+
+    pub fn is_calculator_mode(&self) -> bool {
+        self.results
+            .first()
+            .is_some_and(|result| result.kind == LauncherResultKind::Calculator)
     }
 
     pub const fn selected(&self) -> Option<usize> {
@@ -269,7 +284,7 @@ impl<Asset> LauncherScene<Asset> {
             row_icon_cells: rows.icon_cells,
             row_icons: rows.icons,
             row_texts: rows.texts,
-            command_badges: rows.badges,
+            action_badges: rows.badges,
             empty_state,
             footer_separator: footer.separator,
             footer_label: footer.label,
@@ -360,7 +375,7 @@ impl<Asset> LauncherScene<Asset> {
             .iter()
             .zip(&contents)
             .map(|(result, content)| {
-                (result.kind == LauncherResultKind::Command).then_some(PixelRect {
+                (result.kind != LauncherResultKind::Application).then_some(PixelRect {
                     left: content
                         .left
                         .saturating_add(content.width.saturating_sub(badge_width)),
@@ -537,7 +552,7 @@ pub struct LauncherLayout {
     pub row_icon_cells: Vec<PixelRect>,
     pub row_icons: Vec<Option<PixelRect>>,
     pub row_texts: Vec<PixelRect>,
-    pub command_badges: Vec<Option<PixelRect>>,
+    pub action_badges: Vec<Option<PixelRect>>,
     pub empty_state: Option<PixelRect>,
     pub footer_separator: PixelRect,
     pub footer_label: PixelRect,

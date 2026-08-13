@@ -4,6 +4,7 @@ use std::time::Instant;
 use lotus_core::launcher_model::{LauncherModel, QueryEdit, SelectionMove};
 use lotus_core::search::{ApplicationEntry, SearchCatalog, SearchUsage};
 
+use crate::calculator::{Calculation, calculate};
 use crate::command::{CommandEntry, CommandId, command_query, matching_commands};
 use crate::usage::SearchUsageStore;
 
@@ -17,6 +18,7 @@ pub struct SearchController {
     command_results: Vec<CommandEntry>,
     command_selected: Option<usize>,
     command_visible_start: usize,
+    calculation: Option<Calculation>,
     result_limit: usize,
 }
 
@@ -33,6 +35,7 @@ impl SearchController {
             command_results: Vec::new(),
             command_selected: None,
             command_visible_start: 0,
+            calculation: None,
             result_limit,
         }
     }
@@ -42,7 +45,7 @@ impl SearchController {
             self.catalog_generation = generation;
         }
         self.model.reset(catalog);
-        self.refresh_commands();
+        self.refresh_special_results();
     }
 
     pub fn refresh_catalog(&mut self, generation: u64, catalog: SearchCatalog) -> bool {
@@ -56,13 +59,13 @@ impl SearchController {
 
     pub fn push_character(&mut self, character: char) {
         self.model.push_character(character);
-        self.refresh_commands();
+        self.refresh_special_results();
     }
 
     pub fn edit_query(&mut self, edit: QueryEdit) -> bool {
         let changed = self.model.edit_query(edit);
         if changed {
-            self.refresh_commands();
+            self.refresh_special_results();
         }
         changed
     }
@@ -70,7 +73,7 @@ impl SearchController {
     pub fn insert_text(&mut self, text: &str) -> bool {
         let changed = self.model.insert_text(text);
         if changed {
-            self.refresh_commands();
+            self.refresh_special_results();
         }
         changed
     }
@@ -80,12 +83,18 @@ impl SearchController {
             self.move_command_selection(direction);
             return;
         }
+        if self.is_calculator_mode() {
+            return;
+        }
         self.model.move_selection(direction);
     }
 
     pub fn select_index(&mut self, index: usize) -> bool {
         if self.is_command_mode() {
             return self.select_command(index);
+        }
+        if self.is_calculator_mode() {
+            return false;
         }
         self.model.select_index(index)
     }
@@ -124,6 +133,10 @@ impl SearchController {
         command_query(self.model.query()).is_some()
     }
 
+    pub fn is_calculator_mode(&self) -> bool {
+        !self.is_command_mode() && self.calculation.is_some()
+    }
+
     pub fn selected_index(&self) -> Option<usize> {
         if self.is_command_mode() {
             return self
@@ -131,12 +144,17 @@ impl SearchController {
                 .and_then(|index| index.checked_sub(self.command_visible_start))
                 .filter(|index| *index < self.commands().len());
         }
+        if self.is_calculator_mode() {
+            return Some(0);
+        }
         self.model.selected_index()
     }
 
     pub fn visible_start(&self) -> usize {
         if self.is_command_mode() {
             self.command_visible_start
+        } else if self.is_calculator_mode() {
+            0
         } else {
             self.model.visible_start()
         }
@@ -145,13 +163,15 @@ impl SearchController {
     pub fn total_results(&self) -> usize {
         if self.is_command_mode() {
             self.command_results.len()
+        } else if self.is_calculator_mode() {
+            1
         } else {
             self.model.total_results()
         }
     }
 
     pub fn selected_entry(&self) -> Option<&ApplicationEntry> {
-        (!self.is_command_mode())
+        (!self.is_command_mode() && !self.is_calculator_mode())
             .then(|| self.model.selected_entry())
             .flatten()
     }
@@ -164,6 +184,12 @@ impl SearchController {
             })
             .flatten()
             .map(|entry| entry.id)
+    }
+
+    pub fn selected_calculation(&self) -> Option<&Calculation> {
+        self.is_calculator_mode()
+            .then_some(self.calculation.as_ref())
+            .flatten()
     }
 
     pub fn record_launch(&mut self, launch_target: &str) -> io::Result<()> {
@@ -184,6 +210,13 @@ impl SearchController {
         self.command_results = matching_commands(query);
         self.command_selected = (!self.command_results.is_empty()).then_some(0);
         self.command_visible_start = 0;
+    }
+
+    fn refresh_special_results(&mut self) {
+        self.refresh_commands();
+        self.calculation = (!self.is_command_mode())
+            .then(|| calculate(self.model.query()))
+            .flatten();
     }
 
     fn move_command_selection(&mut self, direction: SelectionMove) {

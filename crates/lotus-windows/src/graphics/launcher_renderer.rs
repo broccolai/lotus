@@ -28,7 +28,7 @@ use windows::core::{Error as WindowsError, PCWSTR, w};
 
 use super::assets::{AssetError, RasterSize, SvgAsset, SvgAssetCache};
 use super::device::GraphicsDevice;
-use super::launcher_scene::{LauncherLayout, LauncherScene, PixelRect};
+use super::launcher_scene::{LauncherLayout, LauncherResultKind, LauncherScene, PixelRect};
 use super::scene::{DockIcon, RasterIcon, RasterIconId};
 use super::surface::SurfaceSize;
 use super::theme;
@@ -401,12 +401,16 @@ impl LauncherRenderer {
                     D2D1_DRAW_TEXT_OPTIONS_CLIP,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
-                if let Some(badge) = layout.command_badges[index] {
+                if let Some(badge) = layout.action_badges[index] {
                     let badge = rounded(rect(badge), 6.0);
                     self.context
                         .FillRoundedRectangle(&raw const badge, &self.selected);
                     self.context.DrawText(
-                        &utf16("RUN"),
+                        &utf16(match entry.kind {
+                            LauncherResultKind::Command => "RUN",
+                            LauncherResultKind::Calculator => "COPY",
+                            LauncherResultKind::Application => "",
+                        }),
                         &self.command_format,
                         &raw const badge.rect,
                         &self.caret,
@@ -452,6 +456,8 @@ impl LauncherRenderer {
             self.context.DrawText(
                 &utf16(if scene.is_command_mode() {
                     "Lotus Actions"
+                } else if scene.is_calculator_mode() {
+                    "Lotus Calculator"
                 } else {
                     "Lotus"
                 }),

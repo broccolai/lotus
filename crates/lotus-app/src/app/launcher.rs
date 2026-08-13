@@ -22,6 +22,11 @@ pub(super) struct LauncherRuntime {
     theme: Theme,
 }
 
+pub(super) enum LauncherSubmission {
+    Command(CommandId),
+    Calculation(String),
+}
+
 impl LauncherRuntime {
     pub(super) fn new(
         window: SearchWindow,
@@ -185,6 +190,12 @@ impl LauncherRuntime {
     }
 
     fn iconless_results(&self) -> Vec<LauncherResult> {
+        if let Some(calculation) = self.controller.selected_calculation() {
+            return vec![LauncherResult::calculator(
+                format!("= {}", calculation.value),
+                DockIcon::Embedded(SvgAsset::FluentCalculator),
+            )];
+        }
         if self.controller.is_command_mode() {
             return self
                 .controller
@@ -255,11 +266,19 @@ impl LauncherRuntime {
         Ok(changed)
     }
 
-    pub(super) fn submit(&mut self, owner: WindowHandle) -> Option<CommandId> {
-        let command = self.controller.selected_command();
+    pub(super) fn submit(&mut self, owner: WindowHandle) -> Option<LauncherSubmission> {
+        let submission = self
+            .controller
+            .selected_command()
+            .map(LauncherSubmission::Command)
+            .or_else(|| {
+                self.controller.selected_calculation().map(|calculation| {
+                    LauncherSubmission::Calculation(calculation.value.clone())
+                })
+            });
         let selected = self.controller.selected_entry().cloned();
         self.hide();
-        if command.is_none()
+        if submission.is_none()
             && let Some(entry) = selected
         {
             match launch_target(&entry.launch_target, None) {
@@ -275,7 +294,7 @@ impl LauncherRuntime {
                 }
             }
         }
-        command
+        submission
     }
 
     pub(super) fn advance_animation(&mut self) {

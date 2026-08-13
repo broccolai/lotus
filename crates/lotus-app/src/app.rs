@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use context_menu::ContextMenuRuntime;
 use dock::DockRuntime;
-use launcher::LauncherRuntime;
+use launcher::{LauncherRuntime, LauncherSubmission};
 use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit, SelectionMove};
 use lotus_core::notification::NotificationSource;
 use lotus_core::settings::{
@@ -32,7 +32,7 @@ use lotus_windows::activation::{
 };
 use lotus_windows::alt_tab::{AltTabController, AltTabEvent, is_alt_tab_wake};
 use lotus_windows::appbar::ShellIntegration;
-use lotus_windows::clipboard::read_text;
+use lotus_windows::clipboard::{read_text, write_text};
 use lotus_windows::clock::local_time_24h;
 use lotus_windows::dialog::{
     confirm_install_update, confirm_restart, confirm_shutdown, show_error, show_information,

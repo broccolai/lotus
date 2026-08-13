@@ -6,6 +6,8 @@ use thiserror::Error;
 use tiny_skia::{Pixmap, Transform};
 
 const LOTUS_PIXEL_SVG: &[u8] = include_bytes!("../../assets/ui/lotus-pixel.svg");
+const FLUENT_CALCULATOR_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/calculator-24-regular.svg");
 const FLUENT_POWER_SVG: &[u8] = include_bytes!("../../assets/fluent/power-24-regular.svg");
 const FLUENT_VOLUME_SVG: &[u8] =
     include_bytes!("../../assets/fluent/speaker-2-24-regular.svg");
@@ -28,6 +30,7 @@ const MAX_RASTER_DIMENSION: u32 = 4_096;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SvgAsset {
     LotusPixel,
+    FluentCalculator,
     FluentPower,
     FluentVolume,
     FluentSettings,
@@ -40,8 +43,9 @@ pub enum SvgAsset {
 }
 
 impl SvgAsset {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::LotusPixel,
+        Self::FluentCalculator,
         Self::FluentPower,
         Self::FluentVolume,
         Self::FluentSettings,
@@ -56,6 +60,7 @@ impl SvgAsset {
     const fn source(self) -> &'static [u8] {
         match self {
             Self::LotusPixel => LOTUS_PIXEL_SVG,
+            Self::FluentCalculator => FLUENT_CALCULATOR_SVG,
             Self::FluentPower => FLUENT_POWER_SVG,
             Self::FluentVolume => FLUENT_VOLUME_SVG,
             Self::FluentSettings => FLUENT_SETTINGS_SVG,
@@ -71,7 +76,8 @@ impl SvgAsset {
     const fn is_interface_symbol(self) -> bool {
         matches!(
             self,
-            Self::FluentPower
+            Self::FluentCalculator
+                | Self::FluentPower
                 | Self::FluentVolume
                 | Self::FluentSettings
                 | Self::FluentTray

@@ -1,4 +1,6 @@
-pub use lotus_search::scene::{LauncherLayout, LauncherSize, PixelRect};
+pub use lotus_search::scene::{
+    LauncherLayout, LauncherResultKind, LauncherSize, PixelRect,
+};
 
 use super::assets::SvgAsset;
 

@@ -1,10 +1,10 @@
 use super::{
-    AltTabController, AltTabEvent, AppError, CommandId, CompositionSurfaceState,
-    DeviceState, DockHitTarget, DockRuntime, DockScene, DockWindow,
-    LauncherCompositionSurfaceState, LauncherRuntime, ModelCursorMove, PointerEvent,
-    QueryEdit, RestartError, SearchEdit, SearchEvent, SurfaceError, SurfaceSize,
-    SwitcherRuntime, WindowCursorMove, WindowTracker, WindowsKeyController,
-    WindowsKeyEvent, launch_target, local_time_24h, read_text,
+    AltTabController, AltTabEvent, AppError, CompositionSurfaceState, DeviceState,
+    DockHitTarget, DockRuntime, DockScene, DockWindow, LauncherCompositionSurfaceState,
+    LauncherRuntime, LauncherSubmission, ModelCursorMove, PointerEvent, QueryEdit,
+    RestartError, SearchEdit, SearchEvent, SurfaceError, SurfaceSize, SwitcherRuntime,
+    WindowCursorMove, WindowTracker, WindowsKeyController, WindowsKeyEvent, launch_target,
+    local_time_24h, read_text,
 };
 
 pub(super) fn restart_current_process() -> Result<(), RestartError> {
@@ -185,7 +185,7 @@ pub(super) fn handle_search_event(
     dock_surface: &mut CompositionSurfaceState,
     dock_model: &DockRuntime,
     launcher: &mut LauncherRuntime,
-) -> Result<Option<CommandId>, AppError> {
+) -> Result<Option<LauncherSubmission>, AppError> {
     let mut scene_changed = false;
     let mut command = None;
     match event {

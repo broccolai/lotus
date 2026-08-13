@@ -4,8 +4,8 @@ use lotus_windows::interaction::{NativeMessage, PointerCursor};
 use super::{
     AppError, AuxiliaryWindows, CommandId, CompositionSurfaceState, ContextMenuAction,
     ContextMenuEvent, DeviceState, DockContextRequest, DockHitTarget, DockRuntime,
-    DockWindow, MenuDirection, PointerEvent, RuntimePolicy, SceneSettingsKey,
-    SelectionDirection, SettingsAction, SettingsEvent, SettingsRuntime,
+    DockWindow, LauncherSubmission, MenuDirection, PointerEvent, RuntimePolicy,
+    SceneSettingsKey, SelectionDirection, SettingsAction, SettingsEvent, SettingsRuntime,
     SettingsUpdateActivity, SurfaceSize, UpdateResult, UpdateStatus, WindowEvent,
     WindowSettingsKey, WindowTracker, WindowTrackerEvent, apply_fullscreen_visibility,
     confirm_install_update, confirm_restart, confirm_shutdown, handle_alt_tab_events,
@@ -14,7 +14,7 @@ use super::{
     is_windows_key_wake, launch_current_installer, launch_installer, launch_target,
     next_message, render_and_schedule, render_surface, request_exit, resize_dock,
     resize_surface, restart_current_process, show_error, show_information,
-    startup_registration,
+    startup_registration, write_text,
 };
 
 pub(super) fn run_message_loop(
@@ -93,7 +93,7 @@ fn process_message(
         handle_window_event(event, dock, graphics, surface, dock_model, auxiliary)?;
     }
     for event in auxiliary.launcher.drain_events() {
-        if let Some(command) = handle_search_event(
+        if let Some(submission) = handle_search_event(
             event,
             dock,
             graphics,
@@ -101,7 +101,7 @@ fn process_message(
             dock_model,
             &mut auxiliary.launcher,
         )? {
-            execute_search_command(command, dock, graphics, dock_model, auxiliary)?;
+            execute_search_submission(submission, dock, graphics, dock_model, auxiliary)?;
         }
     }
     for event in auxiliary.context_menu.drain_events() {
@@ -159,6 +159,30 @@ fn process_message(
         dock.set_animation_active(dock_animation || launcher_animation)?;
     }
     Ok(())
+}
+
+fn execute_search_submission(
+    submission: LauncherSubmission,
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    dock_model: &DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
+    match submission {
+        LauncherSubmission::Command(command) => {
+            execute_search_command(command, dock, graphics, dock_model, auxiliary)
+        }
+        LauncherSubmission::Calculation(value) => {
+            if let Err(error) = write_text(&value) {
+                show_error(
+                    dock.handle(),
+                    "Lotus Calculator",
+                    &format!("Lotus could not copy the result.\n\n{error}"),
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 fn execute_search_command(
