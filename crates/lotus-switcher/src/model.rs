@@ -4,6 +4,31 @@ pub enum Direction {
     Reverse,
 }
 
+pub struct RecentOrder<K> {
+    items: Vec<K>,
+}
+
+impl<K> Default for RecentOrder<K> {
+    fn default() -> Self {
+        Self { items: Vec::new() }
+    }
+}
+
+impl<K: Copy + Eq> RecentOrder<K> {
+    pub fn record(&mut self, item: K) {
+        self.items.retain(|candidate| *candidate != item);
+        self.items.insert(0, item);
+    }
+
+    pub fn arrange<T>(&mut self, mut items: Vec<T>, identity: impl Fn(&T) -> K) -> Vec<T> {
+        self.items.retain(|recent| items.iter().any(|item| identity(item) == *recent));
+        items.sort_by_key(|item| {
+            self.items.iter().position(|recent| *recent == identity(item)).unwrap_or(usize::MAX)
+        });
+        items
+    }
+}
+
 pub struct SwitcherSession<T> {
     items: Vec<T>,
     selected: usize,
@@ -39,5 +64,20 @@ impl<T> SwitcherSession<T> {
 
     pub fn items(&self) -> &[T] {
         &self.items
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RecentOrder;
+
+    #[test]
+    fn quick_switch_returns_to_the_previously_used_window() {
+        let mut recent = RecentOrder::default();
+        recent.record(3);
+        assert_eq!(recent.arrange(vec![1, 2, 3], |item| *item), vec![3, 1, 2]);
+
+        recent.record(1);
+        assert_eq!(recent.arrange(vec![1, 2, 3], |item| *item), vec![1, 3, 2]);
     }
 }

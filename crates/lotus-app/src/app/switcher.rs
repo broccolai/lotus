@@ -1,8 +1,8 @@
 use super::{
     AppError, ContextMenuRuntime, DeviceState, DockSettings, LauncherRuntime, NativeIconCache,
-    NonZeroPhysicalSize, SettingsRuntime, SurfaceError, SwitcherCompositionSurfaceState,
-    SwitcherEvent, SwitcherItem, SwitcherScene, SwitcherSession, SwitcherWindow, WindowInfo,
-    resolve_icon_with_native, switch_window,
+    NonZeroPhysicalSize, RecentOrder, SettingsRuntime, SurfaceError,
+    SwitcherCompositionSurfaceState, SwitcherEvent, SwitcherItem, SwitcherScene, SwitcherSession,
+    SwitcherWindow, WindowInfo, resolve_icon_with_native, switch_window,
 };
 use lotus_settings::appearance::theme_for;
 use lotus_ui::theme::Theme;
@@ -24,6 +24,7 @@ pub(super) struct SwitcherRuntime {
     pub(super) session: Option<SwitcherSession<WindowInfo>>,
     pub(super) native_icons: NativeIconCache,
     pub(super) name_overrides: std::collections::BTreeMap<String, String>,
+    recent_windows: RecentOrder<lotus_core::window::WindowId>,
     theme: Theme,
 }
 
@@ -36,6 +37,7 @@ impl SwitcherRuntime {
             session: None,
             native_icons: NativeIconCache::default(),
             name_overrides: std::collections::BTreeMap::new(),
+            recent_windows: RecentOrder::default(),
             theme: *theme,
         }
     }
@@ -48,16 +50,15 @@ impl SwitcherRuntime {
         settings: &DockSettings,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        let mut windows = windows
+        let windows = windows
             .iter()
             .filter(|window| !executable_is_hidden(window, &settings.hidden_executables))
             .cloned()
             .collect::<Vec<_>>();
-        if let Some(foreground) = foreground
-            && let Some(index) = windows.iter().position(|window| window.id == foreground)
-        {
-            windows.rotate_left(index);
+        if let Some(foreground) = foreground {
+            self.recent_windows.record(foreground);
         }
+        let windows = self.recent_windows.arrange(windows, |window| window.id);
         let Some(session) = SwitcherSession::begin(windows, direction) else { return Ok(()) };
         self.name_overrides = settings.application_name_overrides.clone();
         self.theme = theme_for(settings);
@@ -91,6 +92,7 @@ impl SwitcherRuntime {
         let selected = self.session.as_ref().map(|session| session.selected().id);
         self.hide();
         if let Some(selected) = selected {
+            self.recent_windows.record(selected);
             let _ = switch_window(selected);
         }
     }

@@ -8,13 +8,14 @@ use thiserror::Error;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Shell::{SHELLEXECUTEINFOW, ShellExecuteExW};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, IsIconic, IsWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOWNORMAL,
-    SetForegroundWindow, ShowWindow, SwitchToThisWindow,
+    GetForegroundWindow, IsIconic, IsWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOWNORMAL, ShowWindow,
+    SwitchToThisWindow,
 };
 use windows::core::PCWSTR;
 
 use super::launch::expand_environment_variables;
 use crate::NativeError;
+use crate::interaction::activate_window;
 
 #[derive(Debug, Error)]
 pub enum ActivationError {
@@ -73,9 +74,7 @@ fn focus(window: WindowId) -> Result<(), ActivationError> {
         let _was_visible = unsafe { ShowWindow(hwnd, SW_RESTORE) };
     }
 
-    // SAFETY: `hwnd` remains a valid borrowed top-level window handle. Windows
-    // applies its foreground-lock policy and reports denial as FALSE.
-    if unsafe { SetForegroundWindow(hwnd) }.as_bool() {
+    if activate_window(hwnd).is_owned() {
         Ok(())
     } else {
         Err(ActivationError::ForegroundDenied(window))
@@ -98,8 +97,11 @@ pub fn switch_window(window: WindowId) -> Result<(), ActivationError> {
     // SAFETY: `hwnd` is a live borrowed top-level window. Passing true selects
     // the native Alt/Ctrl+Tab switching behavior documented by Windows.
     unsafe { SwitchToThisWindow(hwnd, true) };
-    // SAFETY: GetForegroundWindow returns a borrowed handle or null.
-    if unsafe { GetForegroundWindow() } == hwnd { Ok(()) } else { focus(window) }
+    if activate_window(hwnd).is_owned() {
+        Ok(())
+    } else {
+        Err(ActivationError::ForegroundDenied(window))
+    }
 }
 
 fn existing_window(window: WindowId) -> Result<HWND, ActivationError> {

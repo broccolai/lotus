@@ -71,6 +71,27 @@ pub(crate) fn claim_keyboard_focus(hwnd: HWND) -> FocusClaim {
     if focus_once(hwnd) { FocusClaim::Owned } else { FocusClaim::Denied }
 }
 
+pub(crate) fn activate_window(hwnd: HWND) -> FocusClaim {
+    // SAFETY: The queried HWND and thread identifiers are borrowed only for this activation.
+    let foreground = unsafe { GetForegroundWindow() };
+    let foreground_thread = window_thread(foreground);
+    let target_thread = window_thread(hwnd);
+    // SAFETY: Reading the caller's thread ID has no preconditions.
+    let current_thread = unsafe { GetCurrentThreadId() };
+    let _foreground_attachment = InputQueueAttachment::new(current_thread, foreground_thread);
+    let _target_attachment = InputQueueAttachment::new(current_thread, target_thread);
+
+    if focus_once(hwnd) { FocusClaim::Owned } else { FocusClaim::Denied }
+}
+
+fn window_thread(hwnd: HWND) -> u32 {
+    if hwnd.is_invalid() {
+        return 0;
+    }
+    // SAFETY: The borrowed HWND is used only for this immediate thread-id query.
+    unsafe { GetWindowThreadProcessId(hwnd, None) }
+}
+
 fn focus_once(hwnd: HWND) -> bool {
     // SAFETY: Each operation targets the same live top-level HWND on its owning UI thread.
     unsafe {

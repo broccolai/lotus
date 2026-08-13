@@ -40,7 +40,7 @@ use lotus_core::window::WindowInfo;
 use lotus_search::controller::{SearchController, SearchPresentation};
 use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
-use lotus_switcher::model::SwitcherSession;
+use lotus_switcher::model::{RecentOrder, SwitcherSession};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::{
