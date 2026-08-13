@@ -1,6 +1,6 @@
 [package]
 name = "lotus-ui"
-version = "0.8.0"
+version.workspace = true
 description = "Shared native interaction and visual primitives for Lotus"
 edition.workspace = true
 rust-version.workspace = true

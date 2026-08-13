@@ -1,6 +1,6 @@
 [package]
 name = "lotus-app"
-version = "0.8.0"
+version.workspace = true
 description = "Lotus process lifecycle and feature composition"
 edition.workspace = true
 rust-version.workspace = true

@@ -83,13 +83,12 @@ pub(super) fn handle_alt_tab_events(
 pub(super) fn apply_fullscreen_visibility(
     dock: &DockWindow,
     tracker: &WindowTracker,
-    shell_fullscreen: bool,
     model: &DockRuntime,
     launcher: &mut LauncherRuntime,
 ) -> Result<(), AppError> {
     let visible = dock_visible(
         model.settings().hide_when_fullscreen,
-        shell_fullscreen || tracker.fullscreen_window().is_some(),
+        tracker.fullscreen_on_same_monitor(dock.handle()),
     );
     if !visible {
         launcher.hide();

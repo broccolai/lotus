@@ -4,9 +4,9 @@ use super::{
     PointerEvent, RuntimePolicy, SceneSettingsKey, SelectionDirection, SettingsAction,
     SettingsEvent, SettingsRuntime, SettingsUpdateActivity, SurfaceSize, UpdateResult,
     UpdateStatus, WindowEvent, WindowSettingsKey, WindowTracker, WindowTrackerEvent,
-    apply_fullscreen_visibility, confirm_install_update, confirm_shutdown, fullscreen_notification,
-    handle_alt_tab_events, handle_pointer_event, handle_search_event, handle_windows_key_events,
-    is_alt_tab_wake, is_installed, is_search_catalog_wake, is_taskbar_badge_wake, is_update_wake,
+    apply_fullscreen_visibility, confirm_install_update, confirm_shutdown, handle_alt_tab_events,
+    handle_pointer_event, handle_search_event, handle_windows_key_events, is_alt_tab_wake,
+    is_installed, is_search_catalog_wake, is_taskbar_badge_wake, is_update_wake,
     is_windows_key_wake, launch_current_installer, launch_installer, launch_target, next_message,
     render_and_schedule, render_surface, request_exit, resize_dock, resize_surface,
     restart_current_process, show_error, show_information, startup_registration,
@@ -68,25 +68,7 @@ fn process_message(
                 auxiliary.launcher.needs_animation(),
             )?;
         }
-        apply_fullscreen_visibility(
-            dock,
-            window_tracker,
-            runtime.shell_fullscreen.get(),
-            dock_model,
-            &mut auxiliary.launcher,
-        )?;
-    }
-    if let Some(fullscreen) =
-        fullscreen_notification(message.is_thread_message(), message.id(), message.parameter())
-    {
-        runtime.shell_fullscreen.set(fullscreen);
-        apply_fullscreen_visibility(
-            dock,
-            window_tracker,
-            fullscreen,
-            dock_model,
-            &mut auxiliary.launcher,
-        )?;
+        apply_fullscreen_visibility(dock, window_tracker, dock_model, &mut auxiliary.launcher)?;
     }
     let windows_key_wake = runtime.windows_key.is_some_and(|_| is_windows_key_wake(message.id()));
     let alt_tab_wake = runtime.alt_tab.is_some_and(|_| is_alt_tab_wake(message.id()));
@@ -105,7 +87,6 @@ fn process_message(
         handle_context_menu_event(event, dock, graphics, dock_model, auxiliary)?;
     }
     drain_settings_and_switcher_events(&mut SettingsEventContext {
-        shell_fullscreen: runtime.shell_fullscreen.get(),
         dock,
         graphics,
         dock_surface: surface,
@@ -269,7 +250,6 @@ fn execute_context_menu_action(
 }
 
 struct SettingsEventContext<'a> {
-    shell_fullscreen: bool,
     dock: &'a DockWindow,
     graphics: &'a mut DeviceState,
     dock_surface: &'a mut CompositionSurfaceState,
@@ -473,7 +453,6 @@ fn apply_settings_action(
             apply_fullscreen_visibility(
                 context.dock,
                 context.window_tracker,
-                context.shell_fullscreen,
                 context.dock_model,
                 &mut context.auxiliary.launcher,
             )?;

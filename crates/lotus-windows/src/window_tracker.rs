@@ -25,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, Error, Result as WindowsResult};
 
-use crate::NativeError;
+use crate::{NativeError, WindowHandle};
 
 const REFRESH_MESSAGE: u32 = WM_APP + 1;
 const REFRESH_DELAY_MS: u32 = 120;
@@ -84,6 +84,12 @@ impl WindowTracker {
 
     pub const fn fullscreen_window(&self) -> Option<WindowId> {
         self.fullscreen_window
+    }
+
+    pub fn fullscreen_on_same_monitor(&self, window: WindowHandle) -> bool {
+        self.fullscreen_window
+            .and_then(hwnd_from_window_id)
+            .is_some_and(|fullscreen| same_monitor(window.raw(), fullscreen))
     }
 
     pub fn handle_message(
@@ -330,6 +336,22 @@ const fn screen_rect(rect: RECT) -> ScreenRect {
 
 fn window_id(hwnd: HWND) -> Option<WindowId> {
     (!hwnd.0.is_null()).then(|| u64::try_from(hwnd.0.addr()).ok()).flatten().map(WindowId::new)
+}
+
+fn hwnd_from_window_id(window: WindowId) -> Option<HWND> {
+    let address = usize::try_from(window.get()).ok()?;
+    (address != 0).then(|| HWND(std::ptr::with_exposed_provenance_mut::<c_void>(address)))
+}
+
+fn same_monitor(left: HWND, right: HWND) -> bool {
+    // SAFETY: Both borrowed HWND values are used only for read-only nearest-monitor selection.
+    let (left, right) = unsafe {
+        (
+            MonitorFromWindow(left, MONITOR_DEFAULTTONEAREST),
+            MonitorFromWindow(right, MONITOR_DEFAULTTONEAREST),
+        )
+    };
+    !left.is_invalid() && left == right
 }
 
 fn should_include_window(hwnd: HWND) -> bool {

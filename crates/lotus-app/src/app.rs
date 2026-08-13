@@ -47,7 +47,7 @@ use lotus_windows::activation::{
     ActivationError, execute_activation, foreground_window, launch_target, switch_window,
 };
 use lotus_windows::alt_tab::{AltTabController, AltTabEvent, is_alt_tab_wake};
-use lotus_windows::appbar::{ShellIntegration, fullscreen_notification};
+use lotus_windows::appbar::ShellIntegration;
 use lotus_windows::clipboard::read_text;
 use lotus_windows::clock::local_time_24h;
 use lotus_windows::dialog::{
@@ -80,7 +80,6 @@ use runtime_helpers::{
     restart_current_process,
 };
 use settings::SettingsRuntime;
-use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -135,7 +134,6 @@ struct RuntimePolicy<'a> {
     windows_key: Option<&'a WindowsKeyController>,
     alt_tab: Option<&'a AltTabController>,
     taskbar_badges: Option<&'a TaskbarBadgeController>,
-    shell_fullscreen: Cell<bool>,
 }
 
 pub fn run() -> Result<(), AppError> {
@@ -207,13 +205,7 @@ pub fn run() -> Result<(), AppError> {
     resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
     let _shell_integration = ShellIntegration::setup(dock_model.settings(), &dock).unwrap_or(None);
     render_and_schedule(&dock, &mut graphics, &mut surface, dock_model.scene(), false)?;
-    apply_fullscreen_visibility(
-        &dock,
-        &window_tracker,
-        false,
-        &dock_model,
-        &mut auxiliary.launcher,
-    )?;
+    apply_fullscreen_visibility(&dock, &window_tracker, &dock_model, &mut auxiliary.launcher)?;
     if startup.open_settings {
         auxiliary.settings.open(dock_model.settings(), &mut graphics)?;
     }
@@ -221,7 +213,6 @@ pub fn run() -> Result<(), AppError> {
         windows_key: windows_key.as_ref(),
         alt_tab: alt_tab.as_ref(),
         taskbar_badges: taskbar_badges.as_ref(),
-        shell_fullscreen: Cell::new(false),
     };
     run_message_loop(
         &runtime,

@@ -1,6 +1,6 @@
 [package]
 name = "lotus-search"
-version = "0.8.0"
+version.workspace = true
 description = "Application search feature for Lotus"
 edition.workspace = true
 rust-version.workspace = true

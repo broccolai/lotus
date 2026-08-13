@@ -1,6 +1,6 @@
 [package]
 name = "lotus-settings"
-version = "0.8.0"
+version.workspace = true
 description = "Settings interface feature for Lotus"
 edition.workspace = true
 rust-version.workspace = true

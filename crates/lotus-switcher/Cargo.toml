@@ -1,6 +1,6 @@
 [package]
 name = "lotus-switcher"
-version = "0.8.0"
+version.workspace = true
 description = "Platform-neutral Lotus application switcher behavior and layout"
 edition.workspace = true
 rust-version.workspace = true

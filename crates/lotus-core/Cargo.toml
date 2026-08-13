@@ -1,6 +1,6 @@
 [package]
 name = "lotus-core"
-version = "0.8.0"
+version.workspace = true
 description = "Platform-independent models and behavior for Lotus"
 edition.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "lotus-dock"
-version = "0.8.0"
+version.workspace = true
 description = "Dock and taskbar feature for Lotus"
 edition.workspace = true
 rust-version.workspace = true
