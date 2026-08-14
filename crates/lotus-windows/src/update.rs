@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,7 +20,9 @@ use crate::startup::{parse_startup_args, wait_for_restart_source};
 
 const UPDATE_WAKE_MESSAGE: u32 = WM_APP + 0x4C9;
 const APPLY_UPDATE_ARGUMENT: &str = "--apply-update";
+const INSTALL_UPDATE_ARGUMENT: &str = "--install-update";
 const CLEANUP_UPDATE_ARGUMENT: &str = "--cleanup-update";
+const UPDATE_HELPER_NAME: &str = "lotus-update-helper.exe";
 
 pub enum UpdateResult {
     Checked(Result<UpdateStatus, UpdateError>),
@@ -125,11 +127,15 @@ pub fn is_installed() -> Result<bool, UpdateInstallError> {
 }
 
 pub fn launch_installer(staged: &StagedUpdate) -> Result<(), UpdateInstallError> {
-    Command::new(&staged.executable)
-        .arg("/VERYSILENT")
-        .arg("/SUPPRESSMSGBOXES")
-        .arg("/NORESTART")
-        .arg("/RESTARTLOTUS=1")
+    let source = std::env::current_exe().map_err(UpdateInstallError::CurrentExecutable)?;
+    let helper = staged.directory.join(UPDATE_HELPER_NAME);
+    fs::copy(source, &helper).map_err(UpdateInstallError::CopyHelper)?;
+
+    Command::new(helper)
+        .arg(INSTALL_UPDATE_ARGUMENT)
+        .arg(&staged.executable)
+        .arg("--restart-after")
+        .arg(std::process::id().to_string())
         .spawn()
         .map_err(UpdateInstallError::LaunchHelper)?;
     Ok(())
@@ -154,16 +160,18 @@ fn launch_helper(executable: &Path) -> Result<(), UpdateInstallError> {
 
 pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let Some(index) = arguments
-        .iter()
-        .position(|argument| argument_eq(argument, APPLY_UPDATE_ARGUMENT))
-    else {
+    if let Some(installer) = helper_target(&arguments, INSTALL_UPDATE_ARGUMENT)? {
+        let startup =
+            parse_startup_args(&arguments).map_err(UpdateInstallError::StartupArguments)?;
+        wait_for_restart_source(startup.restart_after)
+            .map_err(UpdateInstallError::RestartWait)?;
+        run_installer(&installer)?;
+        return Ok(true);
+    }
+
+    let Some(target) = helper_target(&arguments, APPLY_UPDATE_ARGUMENT)? else {
         return Ok(false);
     };
-    let target = arguments
-        .get(index + 1)
-        .map(PathBuf::from)
-        .ok_or(UpdateInstallError::MissingTarget)?;
     let startup =
         parse_startup_args(&arguments).map_err(UpdateInstallError::StartupArguments)?;
     wait_for_restart_source(startup.restart_after)
@@ -186,6 +194,44 @@ pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
         .spawn()
         .map_err(UpdateInstallError::LaunchInstalled)?;
     Ok(true)
+}
+
+fn helper_target(
+    arguments: &[OsString],
+    argument_name: &str,
+) -> Result<Option<PathBuf>, UpdateInstallError> {
+    let Some(index) = arguments
+        .iter()
+        .position(|argument| argument_eq(argument, argument_name))
+    else {
+        return Ok(None);
+    };
+    arguments
+        .get(index + 1)
+        .map(PathBuf::from)
+        .map(Some)
+        .ok_or(UpdateInstallError::MissingTarget)
+}
+
+fn run_installer(installer: &Path) -> Result<(), UpdateInstallError> {
+    let status = Command::new(installer)
+        .arg("/VERYSILENT")
+        .arg("/SUPPRESSMSGBOXES")
+        .arg("/NORESTART")
+        .arg("/RESTARTLOTUS=1")
+        .status()
+        .map_err(UpdateInstallError::LaunchInstaller)?;
+    if status.success() {
+        return Ok(());
+    }
+
+    Command::new(installed_executable()?)
+        .arg("--restart-after")
+        .arg(std::process::id().to_string())
+        .arg("--open-settings")
+        .spawn()
+        .map_err(UpdateInstallError::LaunchInstalled)?;
+    Err(UpdateInstallError::InstallerExit(status.code()))
 }
 
 pub fn cleanup_staging_directory(path: &Path) -> Result<(), UpdateInstallError> {
@@ -266,10 +312,16 @@ pub enum UpdateInstallError {
     InstallDirectory(#[source] std::io::Error),
     #[error("Lotus could not stage its installed executable: {0}")]
     CopyExecutable(#[source] std::io::Error),
+    #[error("Lotus could not stage its update helper: {0}")]
+    CopyHelper(#[source] std::io::Error),
     #[error("Windows could not replace the installed Lotus executable: {0}")]
     ReplaceExecutable(#[source] crate::NativeError),
     #[error("Lotus could not launch its update helper: {0}")]
     LaunchHelper(#[source] std::io::Error),
+    #[error("Lotus could not launch its installer: {0}")]
+    LaunchInstaller(#[source] std::io::Error),
+    #[error("the Lotus installer exited unsuccessfully ({0:?})")]
+    InstallerExit(Option<i32>),
     #[error("Lotus could not launch the installed update: {0}")]
     LaunchInstalled(#[source] std::io::Error),
     #[error("refusing to clean an invalid update path: {0}")]

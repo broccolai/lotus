@@ -64,6 +64,24 @@ begin
   Result := ExpandConstant('{param:RESTARTLOTUS|0}') = '1';
 end;
 
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Attempts: Integer;
+begin
+  Result := '';
+  if not RestartAfterUpdate then
+    Exit;
+
+  for Attempts := 1 to 100 do
+  begin
+    if not CheckForMutexes('Local\Lotus.Dock.SingleInstance') then
+      Exit;
+    Sleep(100);
+  end;
+
+  Result := 'Lotus is still running. Close Lotus and run the update again.';
+end;
+
 function UpdateLaunchParameters(Param: String): String;
 begin
   Result := '--restart-after ' + IntToStr(GetCurrentProcessId) +
