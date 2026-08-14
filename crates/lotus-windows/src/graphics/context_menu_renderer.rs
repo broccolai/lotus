@@ -112,6 +112,11 @@ impl ContextMenuRenderer {
         for (action, _) in scene.items() {
             self.ensure_icon(action_asset(action), icon_size)?;
         }
+        let icons = scene
+            .items()
+            .into_iter()
+            .map(|(action, _)| self.icon(action_asset(action), icon_size).cloned())
+            .collect::<Result<Vec<_>, _>>()?;
         let panel = D2D_RECT_F {
             left: 0.5,
             top: 0.5,
@@ -127,7 +132,7 @@ impl ContextMenuRenderer {
             self.context.Clear(Some(&raw const transparent));
             self.context
                 .FillRoundedRectangle(&raw const panel, &self.panel);
-            for (action, bounds) in scene.items() {
+            for ((action, bounds), icon) in scene.items().into_iter().zip(&icons) {
                 let bounds = rect(bounds);
                 if scene.highlighted(action) {
                     let highlight = rounded(bounds, scale(scene, theme.radii.control));
@@ -141,7 +146,6 @@ impl ContextMenuRenderer {
                     right: (bounds.left + bounds.right + icon_extent) * 0.5,
                     bottom: (bounds.top + bounds.bottom + icon_extent) * 0.5,
                 };
-                let icon = self.icon(action_asset(action), icon_size)?;
                 self.context.DrawBitmap(
                     icon,
                     Some(&raw const icon_bounds),

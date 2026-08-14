@@ -18,7 +18,7 @@ use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit, Selec
 use lotus_core::notification::NotificationSource;
 use lotus_core::search::SearchUsage;
 use lotus_core::settings::{
-    DockSettings, NotificationBadgeStyle, SettingsDecodeError, SettingsStore,
+    DockSettings, DockZone, NotificationBadgeStyle, SettingsDecodeError, SettingsStore,
     SettingsStoreError, decode_settings,
 };
 use lotus_core::window::WindowInfo;
@@ -78,8 +78,8 @@ use crate::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
 use crate::graphics::launcher_scene::{LauncherResult, LauncherScene};
 use crate::graphics::launcher_surface::LauncherCompositionSurfaceState;
 use crate::graphics::scene::{
-    DockBadge, DockHitTarget, DockIcon, DockMetrics, DockScene, SystemStatusItem,
-    SystemStatusKind,
+    DockAnchor, DockBadge, DockHitTarget, DockIcon, DockMetrics, DockScene,
+    SystemStatusItem, SystemStatusKind,
 };
 use crate::graphics::scene_adapter::{
     adapt_dock_items_with_native, resolve_icon_with_native,

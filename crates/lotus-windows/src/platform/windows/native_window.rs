@@ -56,6 +56,7 @@ pub enum Activation {
 pub struct NativeWindow<State> {
     hwnd: HWND,
     state: Box<State>,
+    thread_affinity: PhantomData<Rc<()>>,
 }
 
 impl<State> NativeWindow<State> {
@@ -81,7 +82,11 @@ impl<State> NativeWindow<State> {
                 Some(state_pointer),
             )?
         };
-        Ok(Self { hwnd, state })
+        Ok(Self {
+            hwnd,
+            state,
+            thread_affinity: PhantomData,
+        })
     }
 
     pub(crate) const fn hwnd(&self) -> HWND {
@@ -185,3 +190,5 @@ impl<State> Drop for NativeWindow<State> {
         }
     }
 }
+use std::marker::PhantomData;
+use std::rc::Rc;

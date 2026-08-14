@@ -964,6 +964,9 @@ fn handle_window_event(
         | WindowEvent::Switcher(_) => {}
         WindowEvent::AnimationFrame => {
             auxiliary.launcher.advance_animation();
+            if dock_model.advance_departure(Instant::now()) {
+                resize_dock(dock, graphics, surface, dock_model)?;
+            }
             let dock_animation = render_surface(graphics, surface, dock_model.scene())?;
             let launcher_animation = auxiliary.launcher.render(graphics)?;
             dock.set_animation_active(dock_animation || launcher_animation)?;
@@ -1038,3 +1041,4 @@ fn handle_context_menu(
     auxiliary.context_menu.open(anchor, graphics)?;
     Ok(())
 }
+use std::time::Instant;

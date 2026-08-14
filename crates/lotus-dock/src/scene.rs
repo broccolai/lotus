@@ -30,6 +30,7 @@ pub struct DockItem<Asset> {
     source_index: usize,
     pub icon: DockIcon<Asset>,
     pub badge: Option<DockBadge>,
+    exiting: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,6 +39,14 @@ pub enum SystemStatusKind {
     Network,
     BackgroundApps,
     DateTime,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DockAnchor {
+    Left,
+    #[default]
+    Center,
+    Right,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -74,6 +83,7 @@ impl<Asset> DockItem<Asset> {
             source_index: 0,
             icon: DockIcon::Embedded(icon),
             badge: None,
+            exiting: false,
         }
     }
 
@@ -82,6 +92,7 @@ impl<Asset> DockItem<Asset> {
             source_index,
             icon,
             badge: None,
+            exiting: false,
         }
     }
 
@@ -95,6 +106,18 @@ impl<Asset> DockItem<Asset> {
 
     pub const fn source_index(&self) -> usize {
         self.source_index
+    }
+
+    pub fn set_source_index(&mut self, source_index: usize) {
+        self.source_index = source_index;
+    }
+
+    pub fn set_exiting(&mut self, exiting: bool) {
+        self.exiting = exiting;
+    }
+
+    pub const fn is_exiting(&self) -> bool {
+        self.exiting
     }
 
     pub fn set_badge(&mut self, badge: Option<DockBadge>) {
@@ -159,6 +182,7 @@ pub struct DockScene<Asset> {
     dpi: NonZeroU32,
     metrics: DockMetrics,
     mascot: DockIcon<Asset>,
+    anchor: DockAnchor,
     launcher_button_visible: bool,
     show_desktop_button: bool,
     status_items: Vec<SystemStatusItem<Asset>>,
@@ -179,6 +203,7 @@ impl<Asset: Clone> DockScene<Asset> {
             dpi,
             metrics,
             mascot,
+            anchor: DockAnchor::Center,
             launcher_button_visible: true,
             show_desktop_button: false,
             status_items: Vec::new(),
@@ -240,6 +265,14 @@ impl<Asset: Clone> DockScene<Asset> {
 
     pub const fn mascot(&self) -> &DockIcon<Asset> {
         &self.mascot
+    }
+
+    pub fn set_anchor(&mut self, anchor: DockAnchor) {
+        self.anchor = anchor;
+    }
+
+    pub const fn anchor(&self) -> DockAnchor {
+        self.anchor
     }
 
     pub fn set_launcher_button_visible(&mut self, visible: bool) {
@@ -436,6 +469,7 @@ impl<Asset: Clone> DockScene<Asset> {
                     source_index: item.source_index,
                     icon: item.icon.clone(),
                     badge: item.badge,
+                    exiting: item.exiting,
                     bounds: PixelRect::square(
                         cursor.saturating_add(metrics.spacing),
                         icon_top,
@@ -629,6 +663,7 @@ pub struct LaidOutItem<Asset> {
     pub source_index: usize,
     pub icon: DockIcon<Asset>,
     pub badge: Option<DockBadge>,
+    pub exiting: bool,
     pub bounds: PixelRect,
     pub hit_bounds: PixelRect,
 }

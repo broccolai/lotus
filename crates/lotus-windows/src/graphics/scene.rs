@@ -1,6 +1,6 @@
 pub use lotus_dock::scene::{
-    DockBadge, DockDragState, DockHitTarget, DockInteractionState, DockMetrics, DockSize,
-    PixelRect, RasterIcon, RasterIconId, SystemStatusKind,
+    DockAnchor, DockBadge, DockDragState, DockHitTarget, DockInteractionState, DockMetrics,
+    DockSize, PixelRect, RasterIcon, RasterIconId, SystemStatusKind,
 };
 
 use super::assets::SvgAsset;

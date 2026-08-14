@@ -149,6 +149,17 @@ impl SwitcherRenderer {
                 self.ensure_icon(icon, icon_size)?;
             }
         }
+        let bitmaps = layout
+            .items
+            .iter()
+            .map(|item| {
+                item.item
+                    .icon
+                    .as_ref()
+                    .map(|icon| self.bitmap(icon, icon_size).cloned())
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let transparent = TRANSPARENT;
         // SAFETY: All targets, brushes, formats, strings, and geometry remain live through EndDraw.
         let result = unsafe {
@@ -156,7 +167,7 @@ impl SwitcherRenderer {
             self.context.Clear(Some(&raw const transparent));
             self.context
                 .FillRoundedRectangle(&raw const panel, &self.panel);
-            for item in layout.items {
+            for (item, bitmap) in layout.items.into_iter().zip(&bitmaps) {
                 let bounds = rect(item.bounds);
                 if item.source_index == scene.selected() {
                     let selected_bounds =
@@ -168,8 +179,7 @@ impl SwitcherRenderer {
                     bottom: bounds.top + (bounds.bottom - bounds.top) * 0.62,
                     ..bounds
                 };
-                if let Some(icon) = &item.item.icon {
-                    let bitmap = self.bitmap(icon, icon_size)?;
+                if let (Some(icon), Some(bitmap)) = (&item.item.icon, bitmap) {
                     let icon_width = as_f32(icon_size.get());
                     let center_x = bounds.left.midpoint(bounds.right);
                     let icon_left = match icon {

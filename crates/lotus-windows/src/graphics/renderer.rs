@@ -30,8 +30,9 @@ use windows::core::{Error as WindowsError, w};
 use super::assets::{AssetError, RasterImage, RasterSize, SvgAsset, SvgAssetCache};
 use super::device::GraphicsDevice;
 use super::scene::{
-    DockBadge, DockDragState, DockHitTarget, DockIcon, DockInteractionState, DockLayout,
-    DockScene, LaidOutItem, LaidOutStatusItem, PixelRect, RasterIcon, RasterIconId,
+    DockAnchor, DockBadge, DockDragState, DockHitTarget, DockIcon, DockInteractionState,
+    DockLayout, DockScene, LaidOutItem, LaidOutStatusItem, PixelRect, RasterIcon,
+    RasterIconId,
 };
 use super::surface::SurfaceSize;
 use super::theme;
@@ -41,6 +42,9 @@ const DIVIDER_CORNER_RADIUS: f32 = 1.0;
 const HOVER_DURATION: Duration = Duration::from_millis(145);
 const PRESS_DURATION: Duration = Duration::from_millis(80);
 const REORDER_DURATION: Duration = Duration::from_millis(180);
+const CHROME_RESIZE_DURATION: Duration = Duration::from_millis(90);
+const CHROME_RESIZE_DISTANCE_DIP: f32 = 10.0;
+const EXIT_DURATION: Duration = Duration::from_millis(80);
 
 const TRANSPARENT: D2D1_COLOR_F = D2D1_COLOR_F {
     r: 0.0,
@@ -77,6 +81,8 @@ pub(super) struct Direct2DRenderer {
     status_formats: HashMap<u32, StatusTextFormats>,
     interaction: InteractionAnimator,
     reorder: ReorderAnimator,
+    chrome: ChromeAnimator,
+    exit: ExitAnimator,
     assets: SvgAssetCache,
     embedded_bitmaps: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
     raster_bitmaps: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
@@ -149,6 +155,8 @@ impl Direct2DRenderer {
             status_formats: HashMap::new(),
             interaction: InteractionAnimator::default(),
             reorder: ReorderAnimator::default(),
+            chrome: ChromeAnimator::default(),
+            exit: ExitAnimator::default(),
             assets: SvgAssetCache::create()?,
             embedded_bitmaps: HashMap::new(),
             raster_bitmaps: HashMap::new(),
@@ -205,11 +213,86 @@ impl Direct2DRenderer {
                 .sample(now, scene.interaction(), &layout.items);
         let (reorder_offsets, reorder_animating) =
             self.reorder.sample(now, scene.drag(), &layout.items);
+        let (dock, chrome_animating) =
+            self.chrome_geometry(now, size, scene, theme.radii.window);
+        let (exit_opacity, exit_animating) = self.exit.sample(now, &layout.items);
         self.ensure_scene_icons(scene, &layout)?;
         let badge_format = self.badge_format(scene.dpi())?;
         let status_formats = self.status_formats(scene.dpi())?;
+        let mut item_draws =
+            self.item_draws(scene, &layout, visuals, reorder_offsets, exit_opacity, size)?;
+        item_draws.sort_by_key(|(is_dragged, ..)| *is_dragged);
+        let jirachi = layout
+            .launcher_button_visible
+            .then(|| self.bitmap(scene.mascot(), layout.icon_size))
+            .transpose()?;
+        let divider = rounded_pixel_rectangle(layout.divider, DIVIDER_CORNER_RADIUS);
+        let jirachi_bounds = translated_scaled_pixel_rectangle(
+            layout.jirachi,
+            jirachi_visual.scale,
+            0.0,
+            scale_dip_offset(jirachi_visual.translate_y, scene.dpi()),
+        );
+        let mascot_bounds = fitted_mascot_bounds(scene.mascot(), jirachi_bounds);
+        let status_bitmaps = self.status_bitmaps(&layout)?;
+        let transparent = TRANSPARENT;
+
+        // SAFETY: The context has a live target. Geometry and color pointers
+        // remain valid through their calls, and every BeginDraw is paired with
+        // EndDraw before the result is inspected.
+        let result = unsafe {
+            self.context.BeginDraw();
+            self.context.Clear(Some(&raw const transparent));
+            self.context
+                .FillRoundedRectangle(&raw const dock, &self.dock_brush);
+            self.draw_items(&item_draws, scene.dpi(), &badge_format);
+            if layout.launcher_button_visible {
+                self.context
+                    .FillRoundedRectangle(&raw const divider, &self.divider_brush);
+            }
+            if let Some(status_divider) = layout.status_divider {
+                let status_divider =
+                    rounded_pixel_rectangle(status_divider, DIVIDER_CORNER_RADIUS);
+                self.context
+                    .FillRoundedRectangle(&raw const status_divider, &self.divider_brush);
+            }
+            self.draw_status_items(
+                &layout,
+                &status_bitmaps,
+                scene.interaction(),
+                &status_formats,
+            );
+            self.draw_show_desktop(&layout, scene.interaction());
+            if let Some(jirachi) = jirachi {
+                self.context.DrawBitmap(
+                    jirachi,
+                    Some(&raw const mascot_bounds),
+                    jirachi_visual.icon_opacity,
+                    mascot_interpolation(scene.mascot()),
+                    None,
+                    None,
+                );
+            }
+            self.context.EndDraw(None, None)
+        };
+
+        map_draw_result(
+            result,
+            needs_animation || reorder_animating || chrome_animating || exit_animating,
+        )
+    }
+
+    fn item_draws<'a>(
+        &'a self,
+        scene: &DockScene,
+        layout: &DockLayout,
+        visuals: Vec<ItemVisual>,
+        reorder_offsets: Vec<f32>,
+        exit_opacity: f32,
+        size: SurfaceSize,
+    ) -> Result<Vec<ItemDraw<'a>>, RendererError> {
         let drag = scene.drag();
-        let mut item_draws = layout
+        layout
             .items
             .iter()
             .zip(visuals.into_iter().zip(reorder_offsets))
@@ -223,6 +306,9 @@ impl Direct2DRenderer {
                         translate_y: 0.0,
                         icon_opacity: 1.0,
                     };
+                }
+                if item.exiting {
+                    visual.icon_opacity *= exit_opacity;
                 }
                 let bounds = if let Some(active_drag) =
                     drag.filter(|drag| drag.source_index == item.source_index)
@@ -257,67 +343,7 @@ impl Direct2DRenderer {
                     )
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        item_draws.sort_by_key(|(is_dragged, ..)| *is_dragged);
-        let jirachi = layout
-            .launcher_button_visible
-            .then(|| self.bitmap(scene.mascot(), layout.icon_size))
-            .transpose()?;
-        let dpi = f32::from(u16::try_from(scene.dpi()).unwrap_or(u16::MAX));
-        let dock = dock_rectangle(size, theme.radii.window * dpi / TARGET_DPI);
-        let divider = rounded_pixel_rectangle(layout.divider, DIVIDER_CORNER_RADIUS);
-        let jirachi_bounds = translated_scaled_pixel_rectangle(
-            layout.jirachi,
-            jirachi_visual.scale,
-            0.0,
-            scale_dip_offset(jirachi_visual.translate_y, scene.dpi()),
-        );
-        let mascot_bounds = fitted_mascot_bounds(scene.mascot(), jirachi_bounds);
-        let transparent = TRANSPARENT;
-
-        // SAFETY: The context has a live target. Geometry and color pointers
-        // remain valid through their calls, and every BeginDraw is paired with
-        // EndDraw before the result is inspected.
-        let result = unsafe {
-            self.context.BeginDraw();
-            self.context.Clear(Some(&raw const transparent));
-            self.context
-                .FillRoundedRectangle(&raw const dock, &self.dock_brush);
-            self.draw_items(&item_draws, scene.dpi(), &badge_format);
-            if layout.launcher_button_visible {
-                self.context
-                    .FillRoundedRectangle(&raw const divider, &self.divider_brush);
-            }
-            if let Some(status_divider) = layout.status_divider {
-                let status_divider =
-                    rounded_pixel_rectangle(status_divider, DIVIDER_CORNER_RADIUS);
-                self.context
-                    .FillRoundedRectangle(&raw const status_divider, &self.divider_brush);
-            }
-            self.draw_status_items(&layout, scene.interaction(), &status_formats)?;
-            self.draw_show_desktop(&layout, scene.interaction());
-            if let Some(jirachi) = jirachi {
-                self.context.DrawBitmap(
-                    jirachi,
-                    Some(&raw const mascot_bounds),
-                    jirachi_visual.icon_opacity,
-                    mascot_interpolation(scene.mascot()),
-                    None,
-                    None,
-                );
-            }
-            self.context.EndDraw(None, None)
-        };
-
-        match result {
-            Ok(()) => Ok(DrawResult::Complete {
-                needs_animation: needs_animation || reorder_animating,
-            }),
-            Err(error) if error.code() == D2DERR_RECREATE_TARGET => {
-                Ok(DrawResult::RecreateTarget)
-            }
-            Err(error) => Err(error.into()),
-        }
+            .collect()
     }
 
     fn apply_theme(&self, value: &Theme) {
@@ -347,6 +373,21 @@ impl Direct2DRenderer {
             self.ensure_icon(scene.mascot(), layout.icon_size)?;
         }
         Ok(())
+    }
+
+    fn chrome_geometry(
+        &mut self,
+        now: Instant,
+        size: SurfaceSize,
+        scene: &DockScene,
+        radius: f32,
+    ) -> (D2D1_ROUNDED_RECT, bool) {
+        let (width, animating) = self.chrome.sample(now, size.width(), scene.dpi());
+        let dpi = f32::from(u16::try_from(scene.dpi()).unwrap_or(u16::MAX));
+        (
+            dock_rectangle(size, radius * dpi / TARGET_DPI, width, scene.anchor()),
+            animating,
+        )
     }
 
     fn status_formats(&mut self, dpi: u32) -> Result<StatusTextFormats, WindowsError> {
@@ -396,6 +437,7 @@ impl Direct2DRenderer {
         icon: D2D_RECT_F,
         dpi: u32,
         format: &IDWriteTextFormat,
+        opacity: f32,
     ) {
         let scale = f32::from(u16::try_from(dpi).unwrap_or(u16::MAX)) / TARGET_DPI;
         let (width, height) = match badge {
@@ -417,6 +459,8 @@ impl Direct2DRenderer {
         };
         // SAFETY: Drawing occurs between BeginDraw and EndDraw with retained resources.
         unsafe {
+            self.badge_brush.SetOpacity(opacity);
+            self.badge_text_brush.SetOpacity(opacity);
             self.context
                 .FillRoundedRectangle(&raw const surface, &self.badge_brush);
             if badge != DockBadge::Dot {
@@ -457,9 +501,15 @@ impl Direct2DRenderer {
                     None,
                 );
             }
-            for (_, _, _, bounds, _, badge) in item_draws {
+            for (_, _, visual, bounds, _, badge) in item_draws {
                 if let Some(badge) = badge {
-                    self.draw_badge(*badge, *bounds, dpi, badge_format);
+                    self.draw_badge(
+                        *badge,
+                        *bounds,
+                        dpi,
+                        badge_format,
+                        visual.icon_opacity,
+                    );
                 }
             }
         }
@@ -490,14 +540,14 @@ impl Direct2DRenderer {
     fn draw_status_items(
         &self,
         layout: &DockLayout,
+        bitmaps: &[Option<ID2D1Bitmap1>],
         interaction: DockInteractionState,
         formats: &StatusTextFormats,
-    ) -> Result<(), RendererError> {
-        for item in &layout.status_items {
+    ) {
+        for (item, bitmap) in layout.status_items.iter().zip(bitmaps) {
             let target = DockHitTarget::SystemStatus(item.kind);
             let opacity = status_opacity(interaction, target);
-            if let Some(icon) = &item.icon {
-                let bitmap = self.bitmap(&icon.icon, nonzero_or_one(icon.bounds.width))?;
+            if let (Some(icon), Some(bitmap)) = (&item.icon, bitmap) {
                 let bounds = pixel_rectangle(icon.bounds);
                 // SAFETY: Drawing occurs between BeginDraw and EndDraw with retained resources.
                 unsafe {
@@ -514,7 +564,25 @@ impl Direct2DRenderer {
                 self.draw_status_clock(item, opacity, formats);
             }
         }
-        Ok(())
+    }
+
+    fn status_bitmaps(
+        &self,
+        layout: &DockLayout,
+    ) -> Result<Vec<Option<ID2D1Bitmap1>>, RendererError> {
+        layout
+            .status_items
+            .iter()
+            .map(|item| {
+                item.icon
+                    .as_ref()
+                    .map(|icon| {
+                        self.bitmap(&icon.icon, nonzero_or_one(icon.bounds.width))
+                            .cloned()
+                    })
+                    .transpose()
+            })
+            .collect()
     }
 
     fn draw_status_clock(
@@ -649,6 +717,19 @@ impl Direct2DRenderer {
     }
 }
 
+fn map_draw_result(
+    result: windows::core::Result<()>,
+    needs_animation: bool,
+) -> Result<DrawResult, RendererError> {
+    match result {
+        Ok(()) => Ok(DrawResult::Complete { needs_animation }),
+        Err(error) if error.code() == D2DERR_RECREATE_TARGET => {
+            Ok(DrawResult::RecreateTarget)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 #[derive(Default)]
 struct InteractionAnimator {
     items: HashMap<usize, ItemMotion>,
@@ -698,6 +779,66 @@ impl InteractionAnimator {
 struct ReorderAnimator {
     items: HashMap<usize, OffsetMotion>,
     was_dragging: bool,
+}
+
+#[derive(Default)]
+struct ChromeAnimator {
+    from: f32,
+    target: f32,
+    started: Option<Instant>,
+}
+
+#[derive(Default)]
+struct ExitAnimator {
+    started: Option<Instant>,
+}
+
+impl ExitAnimator {
+    fn sample(&mut self, now: Instant, items: &[LaidOutItem]) -> (f32, bool) {
+        if !items.iter().any(|item| item.exiting) {
+            self.started = None;
+            return (1.0, false);
+        }
+
+        let started = *self.started.get_or_insert(now);
+        let progress = (now.saturating_duration_since(started).as_secs_f32()
+            / EXIT_DURATION.as_secs_f32())
+        .clamp(0.0, 1.0);
+        (1.0 - progress, progress < 1.0)
+    }
+}
+
+impl ChromeAnimator {
+    fn sample(&mut self, now: Instant, width: u32, dpi: u32) -> (f32, bool) {
+        let width = pixels_to_f32(width);
+        if self.target == 0.0 {
+            self.from = width;
+            self.target = width;
+            return (width, false);
+        }
+        if width > self.target {
+            let scale = f32::from(u16::try_from(dpi).unwrap_or(u16::MAX)) / TARGET_DPI;
+            self.from = (width - CHROME_RESIZE_DISTANCE_DIP * scale).max(self.target);
+            self.target = width;
+            self.started = Some(now);
+        } else if width < self.target {
+            self.from = width;
+            self.target = width;
+            self.started = None;
+        }
+        let Some(started) = self.started else {
+            return (self.target, false);
+        };
+        let progress = (now.saturating_duration_since(started).as_secs_f32()
+            / CHROME_RESIZE_DURATION.as_secs_f32())
+        .clamp(0.0, 1.0);
+        let width = self.from + (self.target - self.from) * ease_out_cubic(progress);
+        let moving = progress < 1.0;
+        if !moving {
+            self.started = None;
+        }
+        (width, moving)
+    }
 }
 
 impl ReorderAnimator {
@@ -1076,12 +1217,23 @@ fn fitted_mascot_bounds(icon: &DockIcon, bounds: D2D_RECT_F) -> D2D_RECT_F {
     }
 }
 
-fn dock_rectangle(size: SurfaceSize, radius: f32) -> D2D1_ROUNDED_RECT {
+fn dock_rectangle(
+    size: SurfaceSize,
+    radius: f32,
+    width: f32,
+    anchor: DockAnchor,
+) -> D2D1_ROUNDED_RECT {
+    let surface_width = pixels_to_f32(size.width());
+    let left = match anchor {
+        DockAnchor::Left => 0.0,
+        DockAnchor::Center => (surface_width - width) * 0.5,
+        DockAnchor::Right => surface_width - width,
+    };
     D2D1_ROUNDED_RECT {
         rect: D2D_RECT_F {
-            left: 0.0,
+            left,
             top: 0.0,
-            right: pixels_to_f32(size.width()),
+            right: left + width,
             bottom: pixels_to_f32(size.height()),
         },
         radiusX: radius,

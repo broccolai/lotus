@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::mem::size_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -54,7 +54,7 @@ enum WindowKind {
 
 #[derive(Default)]
 pub struct WindowState {
-    pending: VecDeque<WindowEvent>,
+    pending: RefCell<VecDeque<WindowEvent>>,
     corner_radius: Cell<u32>,
     tracking_mouse_leave: Cell<bool>,
     left_button_pressed: Cell<bool>,
@@ -100,20 +100,20 @@ impl WindowState {
         }
     }
 
-    fn push(&mut self, event: WindowEvent) {
-        self.pending.push_back(event);
+    fn push(&self, event: WindowEvent) {
+        self.pending.borrow_mut().push_back(event);
     }
 
-    pub fn drain(&mut self) -> impl Iterator<Item = WindowEvent> + '_ {
-        self.pending.drain(..)
+    pub fn drain(&self) -> impl Iterator<Item = WindowEvent> {
+        std::mem::take(&mut *self.pending.borrow_mut()).into_iter()
     }
 
     pub fn set_corner_radius(&self, corner_radius: u32) {
         self.corner_radius.set(corner_radius);
     }
 
-    pub fn clear_events(&mut self) {
-        self.pending.clear();
+    pub fn clear_events(&self) {
+        self.pending.borrow_mut().clear();
         self.pending_high_surrogate.set(None);
     }
 
@@ -440,14 +440,14 @@ fn apply_configured_region(hwnd: HWND) {
     });
 }
 
-fn with_window_state(hwnd: HWND, action: impl FnOnce(&mut WindowState)) {
+fn with_window_state(hwnd: HWND, action: impl FnOnce(&WindowState)) {
     // SAFETY: GWLP_USERDATA is written only from WM_NCCREATE and cleared by WM_NCDESTROY on this
     // thread. A nonzero value therefore points to DockWindow's live boxed WindowState.
     let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut WindowState;
     if !pointer.is_null() {
-        // SAFETY: All access occurs sequentially on the HWND's creating UI thread and the mutable
-        // borrow is confined to this synchronous closure invocation.
-        action(unsafe { &mut *pointer });
+        // SAFETY: The Box remains stable for the HWND lifetime. WindowState uses interior
+        // mutability for callback state, so synchronous Win32 reentrancy never aliases `&mut`.
+        action(unsafe { &*pointer });
     }
 }
 

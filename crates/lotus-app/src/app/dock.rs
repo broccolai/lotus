@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
 use lotus_core::dock::DockItem;
 use lotus_core::notification::count_for_item;
 use lotus_dock::interaction::{DockInteraction, map_visual_insertion_slot};
@@ -5,14 +8,17 @@ use lotus_dock::model::{DockModel, SettingsImpact, project_snapshot};
 use lotus_settings::appearance::theme_for;
 
 use super::{
-    AppError, DockBadge, DockContextRequest, DockHitTarget, DockIcon, DockMetrics,
-    DockScene, DockSettings, NativeIconCache, NotificationBadgeStyle, NotificationSource,
-    Path, SettingsStore, SignedPoint, SvgAsset, SystemStatusItem, SystemStatusKind,
-    WindowHandle, WindowInfo, adapt_dock_items_with_native, execute_activation,
-    foreground_window, local_date, local_time_24h, resolve_executable, show_error,
+    AppError, DockAnchor, DockBadge, DockContextRequest, DockHitTarget, DockIcon,
+    DockMetrics, DockScene, DockSettings, DockZone, NativeIconCache,
+    NotificationBadgeStyle, NotificationSource, Path, SettingsStore, SignedPoint, SvgAsset,
+    SystemStatusItem, SystemStatusKind, WindowHandle, WindowInfo,
+    adapt_dock_items_with_native, execute_activation, foreground_window, local_date,
+    local_time_24h, resolve_executable, show_error,
 };
+use crate::graphics::scene::DockItem as SceneDockItem;
 
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
+const EXIT_DURATION: Duration = Duration::from_millis(80);
 
 pub(super) struct DockRuntime {
     model: DockModel,
@@ -20,6 +26,8 @@ pub(super) struct DockRuntime {
     native_icons: NativeIconCache,
     notifications: Vec<NotificationSource>,
     interaction: DockInteraction,
+    pending_items: Option<Vec<SceneDockItem>>,
+    exit_deadline: Option<Instant>,
 }
 
 impl DockRuntime {
@@ -34,6 +42,7 @@ impl DockRuntime {
         let items = projected_items(&settings, windows);
         let mut scene = DockScene::new(dpi, metrics, mascot(&settings), Vec::new())
             .ok_or(AppError::InvalidScene)?;
+        scene.set_anchor(dock_anchor(settings.dock_zone));
         let _ = scene.set_theme(theme_for(&settings));
         scene.set_show_desktop_button(settings.show_desktop_button);
         scene.replace_status_items(docked_status_items(&settings));
@@ -43,15 +52,34 @@ impl DockRuntime {
             native_icons: NativeIconCache::default(),
             notifications: Vec::new(),
             interaction: DockInteraction::new(drag_threshold),
+            pending_items: None,
+            exit_deadline: None,
         };
         runtime.refresh_scene_items();
         Ok(runtime)
     }
 
     pub(super) fn rebuild(&mut self, windows: &[WindowInfo]) {
+        let previous_model = self.model.items().to_vec();
+        let previous_scene = self.scene.items().to_vec();
         self.model
             .rebuild(projected_items(self.model.settings(), windows));
-        self.refresh_scene_items();
+        let final_items = self.scene_items();
+
+        if let Some(transition) = departure_transition(
+            &previous_model,
+            &previous_scene,
+            self.model.items(),
+            &final_items,
+        ) {
+            self.scene.replace_items(transition);
+            self.pending_items = Some(final_items);
+            self.exit_deadline = Some(Instant::now() + EXIT_DURATION);
+        } else {
+            self.scene.replace_items(final_items);
+            self.pending_items = None;
+            self.exit_deadline = None;
+        }
     }
 
     pub(super) fn set_dpi(&mut self, dpi: u32) -> Result<(), AppError> {
@@ -68,6 +96,25 @@ impl DockRuntime {
     }
 
     pub(super) fn refresh_scene_items(&mut self) {
+        let scene_items = self.scene_items();
+        self.scene.replace_items(scene_items);
+        self.pending_items = None;
+        self.exit_deadline = None;
+    }
+
+    pub(super) fn advance_departure(&mut self, now: Instant) -> bool {
+        if self.exit_deadline.is_none_or(|deadline| now < deadline) {
+            return false;
+        }
+
+        if let Some(items) = self.pending_items.take() {
+            self.scene.replace_items(items);
+        }
+        self.exit_deadline = None;
+        true
+    }
+
+    fn scene_items(&mut self) -> Vec<SceneDockItem> {
         let icon_size = self
             .scene
             .icon_size_pixels()
@@ -102,7 +149,7 @@ impl DockRuntime {
             };
             item.set_badge(badge);
         }
-        self.scene.replace_items(scene_items);
+        scene_items
     }
 
     pub(super) fn set_notifications(&mut self, notifications: Vec<NotificationSource>) {
@@ -136,6 +183,7 @@ impl DockRuntime {
             let mut scene =
                 DockScene::new(dpi, metrics, mascot(self.model.settings()), Vec::new())
                     .ok_or(AppError::InvalidScene)?;
+            scene.set_anchor(dock_anchor(self.model.settings().dock_zone));
             let _ = scene.set_theme(theme_for(self.model.settings()));
             scene.set_show_desktop_button(self.model.settings().show_desktop_button);
             scene.replace_status_items(docked_status_items(self.model.settings()));
@@ -274,6 +322,48 @@ impl DockRuntime {
     }
 }
 
+fn departure_transition(
+    previous_model: &[DockItem],
+    previous_scene: &[SceneDockItem],
+    current_model: &[DockItem],
+    current_scene: &[SceneDockItem],
+) -> Option<Vec<SceneDockItem>> {
+    let current_indices = current_model
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    let mut current_visuals = current_scene.iter().cloned().map(Some).collect::<Vec<_>>();
+    let mut transition = Vec::with_capacity(previous_scene.len().max(current_scene.len()));
+    let mut departing = false;
+
+    for previous in previous_scene {
+        let Some(identity) = previous_model
+            .get(previous.source_index())
+            .map(|item| item.id.as_str())
+        else {
+            continue;
+        };
+        if let Some(&current_index) = current_indices.get(identity)
+            && let Some(position) = current_visuals.iter().position(|item| {
+                item.as_ref()
+                    .is_some_and(|item| item.source_index() == current_index)
+            })
+        {
+            transition.push(current_visuals[position].take().expect("item is present"));
+        } else {
+            let mut exiting = previous.clone();
+            exiting.set_source_index(usize::MAX);
+            exiting.set_exiting(true);
+            transition.push(exiting);
+            departing = true;
+        }
+    }
+
+    transition.extend(current_visuals.into_iter().flatten());
+    departing.then_some(transition)
+}
+
 pub(super) fn status_items(settings: &DockSettings) -> Vec<SystemStatusItem> {
     if !settings.show_system_status {
         return Vec::new();
@@ -341,4 +431,12 @@ fn mascot(settings: &DockSettings) -> DockIcon {
             lotus_windows::custom_image::load_custom_image(Path::new(path)).ok()
         })
         .map_or(DockIcon::Embedded(SvgAsset::LotusPixel), DockIcon::Raster)
+}
+
+pub(super) const fn dock_anchor(zone: DockZone) -> DockAnchor {
+    match zone {
+        DockZone::Left => DockAnchor::Left,
+        DockZone::Center => DockAnchor::Center,
+        DockZone::Right => DockAnchor::Right,
+    }
 }

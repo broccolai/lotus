@@ -2,7 +2,7 @@ use lotus_core::settings::DockSettings;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::geometry::NonZeroPhysicalSize;
 
-use super::dock::{metrics, status_items};
+use super::dock::{dock_anchor, metrics, status_items};
 use super::{
     AppError, CompositionSurfaceState, DeviceState, DockHitTarget, DockIcon, DockScene,
     StatusWindow, SurfaceSize, SvgAsset, SystemStatusKind, WindowEvent, render_surface,
@@ -190,6 +190,7 @@ fn build_status_scene(
         Vec::new(),
     )
     .ok_or(AppError::InvalidScene)?;
+    scene.set_anchor(dock_anchor(settings.system_status_zone));
     scene.set_launcher_button_visible(false);
     scene.replace_status_items(items);
     let _ = scene.set_theme(theme_for(settings));
