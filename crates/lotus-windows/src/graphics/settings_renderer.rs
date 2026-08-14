@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::num::NonZeroU32;
 
-use lotus_core::settings::{DockZone, NotificationBadgeStyle, WindowPickerStyle};
+use lotus_core::settings::{DockZone, NotificationBadgeStyle};
 use lotus_settings::appearance::{AccentPreset, SurfacePreset};
 use lotus_ui::theme::{Color, Theme};
 use thiserror::Error;
@@ -362,6 +362,41 @@ impl SettingsRenderer {
                 page == SettingsPage::About,
             );
         }
+
+        let Some(appearance) =
+            layout.bounds(SettingsControl::Navigate(SettingsPage::Appearance))
+        else {
+            return;
+        };
+        let Some(taskbar) = layout.bounds(SettingsControl::Navigate(SettingsPage::Taskbar))
+        else {
+            return;
+        };
+        let top = appearance
+            .top
+            .saturating_add(appearance.height)
+            .saturating_add(
+                taskbar
+                    .top
+                    .saturating_sub(appearance.top + appearance.height)
+                    / 2,
+            );
+        let divider = D2D_RECT_F {
+            left: as_f32(appearance.left.saturating_add(scale(scene, 20))),
+            top: as_f32(top),
+            right: as_f32(
+                appearance
+                    .left
+                    .saturating_add(appearance.width)
+                    .saturating_sub(scale(scene, 20)),
+            ),
+            bottom: as_f32(top.saturating_add(scale(scene, 1))),
+        };
+        // SAFETY: The active context, finite local rectangle, and retained brush are live.
+        unsafe {
+            self.context
+                .FillRectangle(&raw const divider, &self.divider);
+        }
     }
 
     fn draw_content(&self, scene: &SettingsScene, layout: &SettingsLayout) {
@@ -372,6 +407,15 @@ impl SettingsRenderer {
             self.context.PushAxisAlignedClip(
                 &raw const viewport,
                 D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            );
+        }
+        for entry in &layout.sections {
+            self.draw_text(
+                entry.section.title(),
+                inset(entry.bounds, scale(scene, 16), 0),
+                &self.small_format,
+                &self.muted,
+                false,
             );
         }
         self.draw_content_group(scene, layout);
@@ -423,9 +467,6 @@ impl SettingsRenderer {
             SettingsControl::DockZone => self.draw_zone_picker(scene, bounds, false),
             SettingsControl::SystemStatusZone => self.draw_zone_picker(scene, bounds, true),
             SettingsControl::MediaZone => self.draw_media_zone_picker(scene, bounds),
-            SettingsControl::WindowPickerStyle => {
-                self.draw_window_picker_style(scene, bounds);
-            }
             SettingsControl::Toggle(toggle) => self.draw_toggle(scene, bounds, toggle),
             SettingsControl::Slider(slider) => self.draw_slider(scene, bounds, slider),
             SettingsControl::ChooseMascotImage => self.draw_mascot_image(scene, bounds),
@@ -792,7 +833,6 @@ impl SettingsRenderer {
                         | SettingsControl::DockZone
                         | SettingsControl::SystemStatusZone
                         | SettingsControl::MediaZone
-                        | SettingsControl::WindowPickerStyle
                         | SettingsControl::Toggle(_)
                         | SettingsControl::Slider(_)
                         | SettingsControl::ChooseMascotImage
@@ -803,7 +843,17 @@ impl SettingsRenderer {
         if controls.is_empty() {
             return;
         }
-        for entry in controls.iter().take(controls.len().saturating_sub(1)) {
+        for pair in controls.windows(2) {
+            let [entry, next] = pair else {
+                continue;
+            };
+            let gap = next
+                .bounds
+                .top
+                .saturating_sub(entry.bounds.top.saturating_add(entry.bounds.height));
+            if gap > scale(scene, 8) {
+                continue;
+            }
             let y = entry
                 .bounds
                 .top
@@ -1023,20 +1073,6 @@ impl SettingsRenderer {
                 ("Left", selected == DockZone::Left),
                 ("Centre", selected == DockZone::Center),
                 ("Right", selected == DockZone::Right),
-            ],
-        );
-    }
-
-    fn draw_window_picker_style(&self, scene: &SettingsScene, bounds: SettingsRect) {
-        let selected = scene.draft().window_picker_style;
-        self.draw_text_segments(
-            scene,
-            bounds,
-            SettingsControl::WindowPickerStyle,
-            "Window picker",
-            &[
-                ("Live previews", selected == WindowPickerStyle::Thumbnails),
-                ("Compact", selected == WindowPickerStyle::Compact),
             ],
         );
     }
@@ -1673,7 +1709,6 @@ fn is_page_content(control: SettingsControl) -> bool {
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
             | SettingsControl::MediaZone
-            | SettingsControl::WindowPickerStyle
             | SettingsControl::Toggle(_)
             | SettingsControl::Slider(_)
             | SettingsControl::ChooseMascotImage

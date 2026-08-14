@@ -145,6 +145,7 @@ const SEARCH_FOCUS_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5446, 50);
 const WNDPROC_PANIC_EXIT_CODE: i32 = 1;
 const SETTINGS_MIN_WIDTH_DIPS: u32 = 780;
 const SETTINGS_MIN_HEIGHT_DIPS: u32 = 540;
+const SETTINGS_DRAG_REGION_LEFT_DIPS: u32 = 220;
 
 pub struct WindowClass {
     instance: HINSTANCE,
@@ -608,9 +609,11 @@ fn settings_header_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     // SAFETY: Reading per-window DPI has no side effects on this live HWND.
     let dpi = DpiScale::from_system(unsafe { GetDpiForWindow(hwnd) });
     let header_bottom = dpi.physical_i32(64);
-    let close_left = bounds.right.saturating_sub(dpi.physical_i32(52));
-    let draggable =
-        client.x >= 0 && client.x < close_left && client.y >= 0 && client.y < header_bottom;
+    let header_left = dpi.physical_i32(SETTINGS_DRAG_REGION_LEFT_DIPS);
+    let draggable = client.x >= header_left
+        && client.x < bounds.right
+        && client.y >= 0
+        && client.y < header_bottom;
     LRESULT(
         isize::try_from(if draggable {
             HTCAPTION

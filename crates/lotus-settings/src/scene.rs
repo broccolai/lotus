@@ -2,7 +2,6 @@ use std::num::NonZeroU32;
 
 use lotus_core::settings::{
     CURRENT_ONBOARDING_VERSION, DockSettings, DockZone, NotificationBadgeStyle,
-    WindowPickerStyle,
 };
 use lotus_ui::theme::Theme;
 
@@ -24,6 +23,8 @@ const CONTROL_VALUE_GAP_DIP: u32 = 14;
 const CONTROL_VALUE_WIDTH_DIP: u32 = 44;
 const ROW_HEIGHT_DIP: u32 = 46;
 const ROW_GAP_DIP: u32 = 4;
+const SECTION_LABEL_HEIGHT_DIP: u32 = 26;
+const SECTION_GAP_DIP: u32 = 12;
 const ACTION_HEIGHT_DIP: u32 = NAV_HEIGHT_DIP;
 const ACTION_GAP_DIP: u32 = 8;
 const APPLY_WIDTH_DIP: u32 = 92;
@@ -39,6 +40,23 @@ pub enum SettingsPage {
     Status,
     Search,
     About,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsSection {
+    Main,
+    Appearance,
+    Advanced,
+}
+
+impl SettingsSection {
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::Appearance => "appearance",
+            Self::Advanced => "advanced",
+        }
+    }
 }
 
 impl SettingsPage {
@@ -174,7 +192,6 @@ pub enum SettingsControl {
     DockZone,
     SystemStatusZone,
     MediaZone,
-    WindowPickerStyle,
     Toggle(SettingsToggle),
     Slider(SettingsSlider),
     ChooseMascotImage,
@@ -256,10 +273,23 @@ pub struct SettingsControlLayout {
     pub bounds: SettingsRect,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SettingsSectionLayout {
+    pub section: SettingsSection,
+    pub bounds: SettingsRect,
+}
+
+struct PageContentLayout {
+    sections: Vec<(SettingsSection, u32)>,
+    controls: Vec<(SettingsControl, u32)>,
+    height: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SettingsLayout {
     pub size: SettingsSize,
     pub controls: Vec<SettingsControlLayout>,
+    pub sections: Vec<SettingsSectionLayout>,
     pub content_viewport: SettingsRect,
     pub scrollbar_thumb: Option<SettingsRect>,
 }
@@ -445,16 +475,22 @@ impl SettingsScene {
             Self::content_viewport_height_dip(),
         );
         let mut controls = Vec::new();
+        let mut sections = Vec::new();
         for (index, page) in SettingsPage::ALL
             .into_iter()
             .filter(|page| *page != SettingsPage::About)
             .enumerate()
         {
+            let module_offset = if index >= 2 {
+                16
+            } else {
+                0
+            };
             controls.push(SettingsControlLayout {
                 control: SettingsControl::Navigate(page),
                 bounds: self.rect(
                     NAV_LEFT_DIP,
-                    76 + u32_index(index) * 50,
+                    76 + u32_index(index) * 50 + module_offset,
                     NAV_WIDTH_DIP,
                     NAV_HEIGHT_DIP,
                 ),
@@ -479,11 +515,26 @@ impl SettingsScene {
             ),
         });
         let content_width = WIDTH_DIP - CONTENT_LEFT_DIP - CONTENT_RIGHT_DIP;
-        for (index, control) in self.page_controls().into_iter().enumerate() {
+        let content = self.page_content_positions();
+        for (section, top) in content.sections {
+            sections.push(SettingsSectionLayout {
+                section,
+                bounds: self.rect(
+                    CONTENT_LEFT_DIP,
+                    CONTENT_TOP_DIP
+                        .saturating_add(top)
+                        .saturating_sub(self.scroll_offset_dip),
+                    content_width,
+                    SECTION_LABEL_HEIGHT_DIP,
+                ),
+            });
+        }
+        for (control, relative_top) in content.controls {
             let top = if control == SettingsControl::ReplaySetup {
                 HEIGHT_DIP - FOOTER_HEIGHT_DIP - ROW_HEIGHT_DIP - 22
             } else {
-                (CONTENT_TOP_DIP + u32_index(index) * (ROW_HEIGHT_DIP + ROW_GAP_DIP))
+                CONTENT_TOP_DIP
+                    .saturating_add(relative_top)
                     .saturating_sub(self.scroll_offset_dip)
             };
             let bounds = self.rect(CONTENT_LEFT_DIP, top, content_width, ROW_HEIGHT_DIP);
@@ -527,6 +578,7 @@ impl SettingsScene {
         SettingsLayout {
             size,
             controls,
+            sections,
             content_viewport,
             scrollbar_thumb: self.scrollbar_thumb(),
         }
@@ -582,7 +634,6 @@ impl SettingsScene {
                 | SettingsControl::DockZone
                 | SettingsControl::SystemStatusZone
                 | SettingsControl::MediaZone
-                | SettingsControl::WindowPickerStyle
         ) {
             let bounds = self
                 .layout()
@@ -631,7 +682,6 @@ impl SettingsScene {
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
             | SettingsControl::MediaZone
-            | SettingsControl::WindowPickerStyle
             | SettingsControl::Toggle(_)
             | SettingsControl::ChooseMascotImage
             | SettingsControl::ResetMascotImage
@@ -738,10 +788,6 @@ impl SettingsScene {
             (SettingsKey::Right, SettingsControl::MediaZone) => {
                 self.cycle_media_zone(false)
             }
-            (
-                SettingsKey::Left | SettingsKey::Right,
-                SettingsControl::WindowPickerStyle,
-            ) => self.cycle_window_picker_style(),
             (SettingsKey::Left, SettingsControl::OnboardingZone(module)) => {
                 self.cycle_onboarding_zone(module, true)
             }
@@ -756,6 +802,78 @@ impl SettingsScene {
         let applied = applied.normalized();
         self.baseline = applied.clone();
         self.draft = applied;
+    }
+
+    fn page_groups(&self) -> Vec<(SettingsSection, Vec<SettingsControl>)> {
+        match self.page {
+            SettingsPage::Appearance | SettingsPage::General | SettingsPage::About => {
+                Vec::new()
+            }
+            SettingsPage::Taskbar => vec![
+                (
+                    SettingsSection::Main,
+                    vec![
+                        SettingsControl::Toggle(SettingsToggle::ShowAppDock),
+                        SettingsControl::Toggle(SettingsToggle::HideWhenFullscreen),
+                        SettingsControl::Toggle(SettingsToggle::ShowOnAllMonitors),
+                    ],
+                ),
+                (
+                    SettingsSection::Appearance,
+                    vec![
+                        SettingsControl::Toggle(SettingsToggle::ShowDesktopButton),
+                        SettingsControl::Toggle(SettingsToggle::ShowRunningIndicators),
+                        SettingsControl::DockZone,
+                        SettingsControl::Slider(SettingsSlider::IconSize),
+                        SettingsControl::Slider(SettingsSlider::ItemSpacing),
+                        SettingsControl::Slider(SettingsSlider::HorizontalPadding),
+                        SettingsControl::Slider(SettingsSlider::VerticalPadding),
+                        SettingsControl::Slider(SettingsSlider::BottomOffset),
+                    ],
+                ),
+                (
+                    SettingsSection::Advanced,
+                    vec![SettingsControl::Toggle(
+                        SettingsToggle::ReplaceWindowsTaskbar,
+                    )],
+                ),
+            ],
+            SettingsPage::Status => vec![
+                (
+                    SettingsSection::Main,
+                    vec![
+                        SettingsControl::Toggle(SettingsToggle::ShowSystemStatus),
+                        SettingsControl::Toggle(SettingsToggle::ShowMediaControls),
+                    ],
+                ),
+                (
+                    SettingsSection::Appearance,
+                    vec![
+                        SettingsControl::SystemStatusZone,
+                        SettingsControl::MediaZone,
+                        SettingsControl::Toggle(SettingsToggle::ShowMediaMetadata),
+                        SettingsControl::Toggle(SettingsToggle::ShowVolumeStatus),
+                        SettingsControl::Toggle(SettingsToggle::ShowNetworkStatus),
+                        SettingsControl::Toggle(SettingsToggle::ShowBackgroundAppsStatus),
+                        SettingsControl::Toggle(SettingsToggle::ShowDateTimeStatus),
+                        SettingsControl::Toggle(SettingsToggle::ShowDateInStatus),
+                    ],
+                ),
+            ],
+            SettingsPage::Search => vec![
+                (
+                    SettingsSection::Main,
+                    vec![
+                        SettingsControl::Toggle(SettingsToggle::SearchEnabled),
+                        SettingsControl::Toggle(SettingsToggle::SearchOpenWithWindowsKey),
+                    ],
+                ),
+                (
+                    SettingsSection::Advanced,
+                    vec![SettingsControl::Slider(SettingsSlider::SearchResultLimit)],
+                ),
+            ],
+        }
     }
 
     fn page_controls(&self) -> Vec<SettingsControl> {
@@ -779,39 +897,58 @@ impl SettingsScene {
                 }
                 controls
             }
-            SettingsPage::Taskbar => vec![
-                SettingsControl::Toggle(SettingsToggle::ShowAppDock),
-                SettingsControl::Toggle(SettingsToggle::ReplaceWindowsTaskbar),
-                SettingsControl::Toggle(SettingsToggle::HideWhenFullscreen),
-                SettingsControl::Toggle(SettingsToggle::ShowOnAllMonitors),
-                SettingsControl::Toggle(SettingsToggle::ShowDesktopButton),
-                SettingsControl::Toggle(SettingsToggle::ShowRunningIndicators),
-                SettingsControl::DockZone,
-                SettingsControl::WindowPickerStyle,
-                SettingsControl::Slider(SettingsSlider::IconSize),
-                SettingsControl::Slider(SettingsSlider::ItemSpacing),
-                SettingsControl::Slider(SettingsSlider::HorizontalPadding),
-                SettingsControl::Slider(SettingsSlider::VerticalPadding),
-                SettingsControl::Slider(SettingsSlider::BottomOffset),
-            ],
-            SettingsPage::Status => vec![
-                SettingsControl::Toggle(SettingsToggle::ShowSystemStatus),
-                SettingsControl::SystemStatusZone,
-                SettingsControl::Toggle(SettingsToggle::ShowMediaControls),
-                SettingsControl::Toggle(SettingsToggle::ShowMediaMetadata),
-                SettingsControl::MediaZone,
-                SettingsControl::Toggle(SettingsToggle::ShowVolumeStatus),
-                SettingsControl::Toggle(SettingsToggle::ShowNetworkStatus),
-                SettingsControl::Toggle(SettingsToggle::ShowBackgroundAppsStatus),
-                SettingsControl::Toggle(SettingsToggle::ShowDateTimeStatus),
-                SettingsControl::Toggle(SettingsToggle::ShowDateInStatus),
-            ],
-            SettingsPage::Search => vec![
-                SettingsControl::Toggle(SettingsToggle::SearchEnabled),
-                SettingsControl::Toggle(SettingsToggle::SearchOpenWithWindowsKey),
-                SettingsControl::Slider(SettingsSlider::SearchResultLimit),
-            ],
             SettingsPage::About => vec![SettingsControl::ReplaySetup],
+            SettingsPage::Taskbar | SettingsPage::Status | SettingsPage::Search => self
+                .page_groups()
+                .into_iter()
+                .flat_map(|(_, controls)| controls)
+                .collect(),
+        }
+    }
+
+    fn page_content_positions(&self) -> PageContentLayout {
+        let groups = self.page_groups();
+        if groups.is_empty() {
+            let controls = self
+                .page_controls()
+                .into_iter()
+                .enumerate()
+                .map(|(index, control)| {
+                    (control, u32_index(index) * (ROW_HEIGHT_DIP + ROW_GAP_DIP))
+                })
+                .collect::<Vec<_>>();
+            let height = controls.last().map_or(0, |(_, top)| top + ROW_HEIGHT_DIP);
+            return PageContentLayout {
+                sections: Vec::new(),
+                controls,
+                height,
+            };
+        }
+        let mut sections = Vec::with_capacity(groups.len());
+        let mut controls = Vec::new();
+        let mut top = 0_u32;
+
+        for (group_index, (section, group_controls)) in groups.into_iter().enumerate() {
+            if group_index > 0 {
+                top = top.saturating_add(SECTION_GAP_DIP);
+            }
+            sections.push((section, top));
+            top = top.saturating_add(SECTION_LABEL_HEIGHT_DIP);
+
+            let control_count = group_controls.len();
+            for (control_index, control) in group_controls.into_iter().enumerate() {
+                controls.push((control, top));
+                top = top.saturating_add(ROW_HEIGHT_DIP);
+                if control_index + 1 < control_count {
+                    top = top.saturating_add(ROW_GAP_DIP);
+                }
+            }
+        }
+
+        PageContentLayout {
+            sections,
+            controls,
+            height: top,
         }
     }
 
@@ -820,14 +957,10 @@ impl SettingsScene {
     }
 
     fn content_height_dip(&self) -> u32 {
-        let count = u32::try_from(self.page_controls().len()).unwrap_or(u32::MAX);
-        if count == 0 || self.page == SettingsPage::About {
+        if self.page == SettingsPage::About {
             return 0;
         }
-
-        count
-            .saturating_mul(ROW_HEIGHT_DIP)
-            .saturating_add(count.saturating_sub(1).saturating_mul(ROW_GAP_DIP))
+        self.page_content_positions().height
     }
 
     fn maximum_scroll_offset_dip(&self) -> u32 {
@@ -951,6 +1084,7 @@ impl SettingsScene {
         SettingsLayout {
             size,
             controls,
+            sections: Vec::new(),
             content_viewport: SettingsRect {
                 left: 0,
                 top: 0,
@@ -1020,7 +1154,6 @@ impl SettingsScene {
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
             | SettingsControl::MediaZone
-            | SettingsControl::WindowPickerStyle
             | SettingsControl::Slider(_)
             | SettingsControl::CheckForUpdates
             | SettingsControl::Revert
@@ -1158,15 +1291,15 @@ impl SettingsScene {
         let Some(control) = self.focused.filter(|control| is_page_content(*control)) else {
             return;
         };
-        let Some(index) = self
-            .page_controls()
-            .iter()
-            .position(|item| *item == control)
+        let Some(top) = self
+            .page_content_positions()
+            .controls
+            .into_iter()
+            .find_map(|(item, top)| (item == control).then_some(top))
         else {
             return;
         };
 
-        let top = u32_index(index).saturating_mul(ROW_HEIGHT_DIP + ROW_GAP_DIP);
         let bottom = top.saturating_add(ROW_HEIGHT_DIP);
         let viewport_height = Self::content_viewport_height_dip();
         if top < self.scroll_offset_dip {
@@ -1235,13 +1368,6 @@ impl SettingsScene {
                     SettingsControl::MediaZone => self.draft.media_zone = *zone,
                     _ => {}
                 }
-            }
-            SettingsControl::WindowPickerStyle => {
-                self.draft.window_picker_style = if offset.saturating_mul(2) / width == 0 {
-                    WindowPickerStyle::Thumbnails
-                } else {
-                    WindowPickerStyle::Compact
-                };
             }
             _ => return SettingsAction::None,
         }
@@ -1315,14 +1441,6 @@ impl SettingsScene {
             .unwrap_or_default();
         self.draft.media_zone =
             DockZone::ALL[cycle_index(current, DockZone::ALL.len(), reverse)];
-        SettingsAction::Changed
-    }
-
-    fn cycle_window_picker_style(&mut self) -> SettingsAction {
-        self.draft.window_picker_style = match self.draft.window_picker_style {
-            WindowPickerStyle::Compact => WindowPickerStyle::Thumbnails,
-            WindowPickerStyle::Thumbnails => WindowPickerStyle::Compact,
-        };
         SettingsAction::Changed
     }
 
@@ -1518,7 +1636,6 @@ fn is_page_content(control: SettingsControl) -> bool {
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
             | SettingsControl::MediaZone
-            | SettingsControl::WindowPickerStyle
             | SettingsControl::Toggle(_)
             | SettingsControl::Slider(_)
             | SettingsControl::ChooseMascotImage

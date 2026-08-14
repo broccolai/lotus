@@ -295,6 +295,7 @@ impl DockSettings {
         self.corner_radius = self.corner_radius.min(48);
         self.search_result_limit = self.search_result_limit.clamp(1, 8);
         self.background_opacity = self.background_opacity.clamp(0.08, 0.95);
+        self.window_picker_style = WindowPickerStyle::Thumbnails;
 
         if !is_hex_color(&self.background_color) {
             self.background_color = "#11141A".into();
