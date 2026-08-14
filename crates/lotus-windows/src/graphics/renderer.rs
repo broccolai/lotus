@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::mem::ManuallyDrop;
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
@@ -10,29 +11,32 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+    D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE,
     D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
-    D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext,
-    ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush,
+    D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_ROUNDED_RECT, D2D1CreateFactory,
+    ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Geometry,
+    ID2D1Image, ID2D1Layer, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory,
+    IDWriteFactory, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
-use windows::core::{Error as WindowsError, w};
+use windows::core::{Error as WindowsError, Interface, w};
 
 use super::assets::{AssetError, RasterImage, RasterSize, SvgAsset, SvgAssetCache};
 use super::device::GraphicsDevice;
 use super::scene::{
     DockAnchor, DockBadge, DockDragState, DockHitTarget, DockIcon, DockInteractionState,
-    DockLayout, DockScene, LaidOutItem, LaidOutStatusItem, PixelRect, RasterIcon,
-    RasterIconId,
+    DockLayout, DockScene, LaidOutItem, LaidOutMedia, LaidOutStatusItem, PixelRect,
+    RasterIcon, RasterIconId,
 };
 use super::surface::SurfaceSize;
 use super::theme;
@@ -64,8 +68,14 @@ struct StatusTextFormats {
     date: IDWriteTextFormat,
 }
 
+#[derive(Clone)]
+struct MediaTextFormats {
+    title: IDWriteTextFormat,
+    artist: IDWriteTextFormat,
+}
+
 pub(super) struct Direct2DRenderer {
-    _factory: ID2D1Factory1,
+    factory: ID2D1Factory1,
     _device: ID2D1Device,
     context: ID2D1DeviceContext,
     target: Option<ID2D1Bitmap1>,
@@ -79,6 +89,7 @@ pub(super) struct Direct2DRenderer {
     write_factory: IDWriteFactory,
     badge_formats: HashMap<u32, IDWriteTextFormat>,
     status_formats: HashMap<u32, StatusTextFormats>,
+    media_formats: HashMap<u32, MediaTextFormats>,
     interaction: InteractionAnimator,
     reorder: ReorderAnimator,
     chrome: ChromeAnimator,
@@ -139,7 +150,7 @@ impl Direct2DRenderer {
         };
 
         let mut renderer = Self {
-            _factory: factory,
+            factory,
             _device: device,
             context,
             target: None,
@@ -153,6 +164,7 @@ impl Direct2DRenderer {
             write_factory,
             badge_formats: HashMap::new(),
             status_formats: HashMap::new(),
+            media_formats: HashMap::new(),
             interaction: InteractionAnimator::default(),
             reorder: ReorderAnimator::default(),
             chrome: ChromeAnimator::default(),
@@ -219,9 +231,10 @@ impl Direct2DRenderer {
         self.ensure_scene_icons(scene, &layout)?;
         let badge_format = self.badge_format(scene.dpi())?;
         let status_formats = self.status_formats(scene.dpi())?;
+        let media_formats = self.media_formats(scene.dpi())?;
         let mut item_draws =
             self.item_draws(scene, &layout, visuals, reorder_offsets, exit_opacity, size)?;
-        item_draws.sort_by_key(|(is_dragged, ..)| *is_dragged);
+        item_draws.sort_by_key(|item| item.is_dragged);
         let jirachi = layout
             .launcher_button_visible
             .then(|| self.bitmap(scene.mascot(), layout.icon_size))
@@ -235,6 +248,7 @@ impl Direct2DRenderer {
         );
         let mascot_bounds = fitted_mascot_bounds(scene.mascot(), jirachi_bounds);
         let status_bitmaps = self.status_bitmaps(&layout)?;
+        let media_artwork_clip = self.media_artwork_clip(&layout, scene)?;
         let transparent = TRANSPARENT;
 
         // SAFETY: The context has a live target. Geometry and color pointers
@@ -250,6 +264,18 @@ impl Direct2DRenderer {
                 self.context
                     .FillRoundedRectangle(&raw const divider, &self.divider_brush);
             }
+            if let Some(media_divider) = layout.media_divider {
+                let media_divider =
+                    rounded_pixel_rectangle(media_divider, DIVIDER_CORNER_RADIUS);
+                self.context
+                    .FillRoundedRectangle(&raw const media_divider, &self.divider_brush);
+            }
+            self.draw_media(
+                &layout,
+                scene.interaction(),
+                &media_formats,
+                media_artwork_clip.as_ref(),
+            );
             if let Some(status_divider) = layout.status_divider {
                 let status_divider =
                     rounded_pixel_rectangle(status_divider, DIVIDER_CORNER_RADIUS);
@@ -332,16 +358,18 @@ impl Direct2DRenderer {
                         scale_dip_offset(visual.translate_y, scene.dpi()),
                     )
                 };
-                self.bitmap(&item.icon, layout.icon_size).map(|bitmap| {
-                    (
+                self.bitmap(&item.icon, layout.icon_size)
+                    .map(|bitmap| ItemDraw {
                         is_dragged,
                         bitmap,
                         visual,
                         bounds,
-                        icon_interpolation(&item.icon, layout.icon_size),
-                        item.badge,
-                    )
-                })
+                        interpolation: icon_interpolation(&item.icon, layout.icon_size),
+                        badge: item.badge,
+                        running: item
+                            .running
+                            .then(|| running_indicator(bounds, size.height(), scene.dpi())),
+                    })
             })
             .collect()
     }
@@ -367,6 +395,15 @@ impl Direct2DRenderer {
         for item in &layout.status_items {
             if let Some(icon) = &item.icon {
                 self.ensure_icon(&icon.icon, nonzero_or_one(icon.bounds.width))?;
+            }
+        }
+        if let Some(media) = &layout.media {
+            self.ensure_icon(
+                &media.artwork.icon,
+                nonzero_or_one(media.artwork.bounds.width),
+            )?;
+            for control in &media.controls {
+                self.ensure_icon(&control.icon, nonzero_or_one(control.bounds.width))?;
             }
         }
         if layout.launcher_button_visible {
@@ -400,6 +437,19 @@ impl Direct2DRenderer {
         let date = centered_text_format(&self.write_factory, 10.5 * scale)?;
         let formats = StatusTextFormats { time, date };
         self.status_formats.insert(dpi, formats.clone());
+        Ok(formats)
+    }
+
+    fn media_formats(&mut self, dpi: u32) -> Result<MediaTextFormats, WindowsError> {
+        if let Some(formats) = self.media_formats.get(&dpi) {
+            return Ok(formats.clone());
+        }
+
+        let scale = f32::from(u16::try_from(dpi).unwrap_or(u16::MAX)) / TARGET_DPI;
+        let title = media_text_format(&self.write_factory, 12.5 * scale)?;
+        let artist = media_text_format(&self.write_factory, 10.5 * scale)?;
+        let formats = MediaTextFormats { title, artist };
+        self.media_formats.insert(dpi, formats.clone());
         Ok(formats)
     }
 
@@ -491,24 +541,31 @@ impl Direct2DRenderer {
     ) {
         // SAFETY: Called between BeginDraw and EndDraw with live retained resources.
         unsafe {
-            for (_, bitmap, visual, bounds, interpolation, _) in item_draws {
+            for item in item_draws {
                 self.context.DrawBitmap(
-                    *bitmap,
-                    Some(bounds),
-                    visual.icon_opacity,
-                    *interpolation,
+                    item.bitmap,
+                    Some(&raw const item.bounds),
+                    item.visual.icon_opacity,
+                    item.interpolation,
                     None,
                     None,
                 );
             }
-            for (_, _, visual, bounds, _, badge) in item_draws {
-                if let Some(badge) = badge {
+            for item in item_draws {
+                if let Some(running) = item.running {
+                    self.badge_brush.SetOpacity(item.visual.icon_opacity * 0.72);
+                    self.context
+                        .FillRoundedRectangle(&raw const running, &self.badge_brush);
+                }
+            }
+            for item in item_draws {
+                if let Some(badge) = item.badge {
                     self.draw_badge(
-                        *badge,
-                        *bounds,
+                        badge,
+                        item.bounds,
                         dpi,
                         badge_format,
-                        visual.icon_opacity,
+                        item.visual.icon_opacity,
                     );
                 }
             }
@@ -564,6 +621,144 @@ impl Direct2DRenderer {
                 self.draw_status_clock(item, opacity, formats);
             }
         }
+    }
+
+    fn draw_media(
+        &self,
+        layout: &DockLayout,
+        interaction: DockInteractionState,
+        formats: &MediaTextFormats,
+        artwork_clip: Option<&ID2D1Geometry>,
+    ) {
+        let Some(media) = &layout.media else {
+            return;
+        };
+        let metadata_target = DockHitTarget::Media(lotus_media::MediaHitTarget::Metadata);
+        let metadata_opacity = status_opacity(interaction, metadata_target);
+        if let Ok(bitmap) = self.bitmap(
+            &media.artwork.icon,
+            nonzero_or_one(media.artwork.bounds.width),
+        ) {
+            let bounds = pixel_rectangle(media.artwork.bounds);
+            // SAFETY: Drawing occurs between BeginDraw and EndDraw with retained resources.
+            unsafe {
+                if let Some(clip) = artwork_clip {
+                    let mut layer = D2D1_LAYER_PARAMETERS1 {
+                        contentBounds: bounds,
+                        geometricMask: ManuallyDrop::new(Some(clip.clone())),
+                        maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                        opacity: 1.0,
+                        opacityBrush: ManuallyDrop::new(None),
+                        layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+                        ..Default::default()
+                    };
+                    layer.maskTransform.M11 = 1.0;
+                    layer.maskTransform.M22 = 1.0;
+                    self.context
+                        .PushLayer(&raw const layer, None::<&ID2D1Layer>);
+                }
+                self.context.DrawBitmap(
+                    bitmap,
+                    Some(&raw const bounds),
+                    metadata_opacity,
+                    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                    None,
+                    None,
+                );
+                if artwork_clip.is_some() {
+                    self.context.PopLayer();
+                }
+            }
+        }
+        self.draw_media_text(media, metadata_opacity, formats);
+
+        for control in &media.controls {
+            let target = DockHitTarget::Media(control.target);
+            let opacity = if control.enabled {
+                status_opacity(interaction, target)
+            } else {
+                0.34
+            };
+            let Ok(bitmap) =
+                self.bitmap(&control.icon, nonzero_or_one(control.bounds.width))
+            else {
+                continue;
+            };
+            let bounds = pixel_rectangle(inset_rectangle(control.bounds, 5));
+            // SAFETY: Drawing occurs between BeginDraw and EndDraw with retained resources.
+            unsafe {
+                self.context.DrawBitmap(
+                    bitmap,
+                    Some(&raw const bounds),
+                    opacity,
+                    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+
+    fn media_artwork_clip(
+        &self,
+        layout: &DockLayout,
+        scene: &DockScene,
+    ) -> Result<Option<ID2D1Geometry>, RendererError> {
+        let Some(media) = &layout.media else {
+            return Ok(None);
+        };
+        let rounded = rounded_pixel_rectangle(
+            media.artwork.bounds,
+            scale_dip_offset(scene.theme().radii.control, scene.dpi()),
+        );
+        // SAFETY: The factory is live and copies the local rounded-rectangle description.
+        let geometry = unsafe {
+            self.factory
+                .CreateRoundedRectangleGeometry(&raw const rounded)?
+        };
+        Ok(Some(geometry.cast()?))
+    }
+
+    fn draw_media_text(
+        &self,
+        media: &LaidOutMedia,
+        opacity: f32,
+        formats: &MediaTextFormats,
+    ) {
+        let midpoint = media
+            .metadata
+            .top
+            .saturating_add(media.metadata.height.saturating_mul(11) / 20);
+        let title = PixelRect {
+            left: media.metadata.left,
+            top: media.metadata.top,
+            width: media.metadata.width,
+            height: midpoint.saturating_sub(media.metadata.top),
+        };
+        let artist = PixelRect {
+            left: media.metadata.left,
+            top: midpoint,
+            width: media.metadata.width,
+            height: media
+                .metadata
+                .top
+                .saturating_add(media.metadata.height)
+                .saturating_sub(midpoint),
+        };
+        self.draw_status_text(
+            &media.title,
+            pixel_rectangle(title),
+            &formats.title,
+            &self.status_text_brush,
+            opacity,
+        );
+        self.draw_status_text(
+            &media.artist,
+            pixel_rectangle(artist),
+            &formats.artist,
+            &self.status_muted_text_brush,
+            opacity,
+        );
     }
 
     fn status_bitmaps(
@@ -1066,14 +1261,38 @@ struct ItemVisual {
     icon_opacity: f32,
 }
 
-type ItemDraw<'a> = (
-    bool,
-    &'a ID2D1Bitmap1,
-    ItemVisual,
-    D2D_RECT_F,
-    D2D1_INTERPOLATION_MODE,
-    Option<DockBadge>,
-);
+struct ItemDraw<'a> {
+    is_dragged: bool,
+    bitmap: &'a ID2D1Bitmap1,
+    visual: ItemVisual,
+    bounds: D2D_RECT_F,
+    interpolation: D2D1_INTERPOLATION_MODE,
+    badge: Option<DockBadge>,
+    running: Option<D2D1_ROUNDED_RECT>,
+}
+
+fn running_indicator(
+    bounds: D2D_RECT_F,
+    surface_height: u32,
+    dpi: u32,
+) -> D2D1_ROUNDED_RECT {
+    let scale = f32::from(u16::try_from(dpi).unwrap_or(u16::MAX)) / TARGET_DPI;
+    let width = 8.0 * scale;
+    let height = 2.0 * scale;
+    let center = f32::midpoint(bounds.left, bounds.right);
+    let bottom = pixels_to_f32(surface_height);
+
+    D2D1_ROUNDED_RECT {
+        rect: D2D_RECT_F {
+            left: center - width * 0.5,
+            top: bottom - height,
+            right: center + width * 0.5,
+            bottom,
+        },
+        radiusX: height * 0.5,
+        radiusY: height * 0.5,
+    }
+}
 
 fn ease_out_cubic(value: f32) -> f32 {
     1.0 - (1.0 - value).powi(3)
@@ -1275,6 +1494,31 @@ fn centered_text_format(
     Ok(format)
 }
 
+fn media_text_format(
+    factory: &IDWriteFactory,
+    size: f32,
+) -> Result<IDWriteTextFormat, WindowsError> {
+    // SAFETY: Static family and locale strings are NUL terminated.
+    let format = unsafe {
+        factory.CreateTextFormat(
+            w!("Segoe UI Variable Text"),
+            None,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            size,
+            w!("en-us"),
+        )?
+    };
+    // SAFETY: The newly created format accepts these documented layout values.
+    unsafe {
+        format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+    }
+    Ok(format)
+}
+
 fn status_opacity(interaction: DockInteractionState, target: DockHitTarget) -> f32 {
     if interaction.pressed == Some(target) {
         0.62
@@ -1287,6 +1531,16 @@ fn status_opacity(interaction: DockInteractionState, target: DockHitTarget) -> f
 
 fn nonzero_or_one(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).unwrap_or(NonZeroU32::MIN)
+}
+
+fn inset_rectangle(rectangle: PixelRect, numerator: u32) -> PixelRect {
+    let inset = rectangle.width.saturating_mul(numerator) / 28;
+    PixelRect {
+        left: rectangle.left.saturating_add(inset),
+        top: rectangle.top.saturating_add(inset),
+        width: rectangle.width.saturating_sub(inset.saturating_mul(2)),
+        height: rectangle.height.saturating_sub(inset.saturating_mul(2)),
+    }
 }
 
 fn scaled_pixel_rectangle(rectangle: PixelRect, scale: f32) -> D2D_RECT_F {

@@ -3,7 +3,8 @@ use std::rc::Rc;
 
 use lotus_core::settings::{DockSettings, DockZone};
 use lotus_ui::geometry::{DpiScale, NonZeroPhysicalSize};
-use windows::Win32::Foundation::{E_INVALIDARG, HWND};
+use windows::Win32::Foundation::{E_INVALIDARG, HWND, POINT};
+use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::WindowsAndMessaging::{
     WINDOW_EX_STYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
@@ -22,6 +23,7 @@ use crate::platform::windows::interaction::drag_threshold;
 use crate::platform::windows::native_window::{
     Activation, NativeWindow, WindowCreation, WindowHandle, current_instance,
 };
+use crate::window::events::SignedPoint;
 use crate::window::procedure::{WindowClass, WindowEvent, WindowState};
 use crate::window::search::SearchWindow;
 use crate::window::settings::SettingsWindow;
@@ -195,6 +197,20 @@ impl DockWindow {
 
     pub fn client_size(&self) -> Result<(u32, u32)> {
         self.window.client_size()
+    }
+
+    pub fn client_to_screen(&self, point: SignedPoint) -> Result<SignedPoint> {
+        let mut native = POINT {
+            x: point.x,
+            y: point.y,
+        };
+
+        // SAFETY: `native` is valid writable storage and the HWND remains owned by `self`.
+        unsafe { ClientToScreen(self.hwnd(), &raw mut native) }.ok()?;
+        Ok(SignedPoint {
+            x: native.x,
+            y: native.y,
+        })
     }
 
     pub fn drag_threshold(&self) -> (u32, u32) {

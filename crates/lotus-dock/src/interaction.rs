@@ -77,6 +77,7 @@ impl DockInteraction {
             }),
             Some(
                 DockHitTarget::Jirachi
+                | DockHitTarget::Media(_)
                 | DockHitTarget::SystemStatus(_)
                 | DockHitTarget::ShowDesktop,
             )

@@ -4,4 +4,5 @@ pub mod action_menu;
 pub mod appbar;
 pub mod interaction;
 pub mod model;
+pub mod popup;
 pub mod scene;

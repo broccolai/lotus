@@ -1,17 +1,14 @@
 [package]
-name = "lotus-dock"
+name = "lotus-media"
 version.workspace = true
-description = "Dock and taskbar feature for Lotus"
+description = "Media session feature for Lotus"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
 [dependencies]
-lotus-core.workspace = true
-lotus-media.workspace = true
 lotus-ui.workspace = true
-thiserror.workspace = true
 
 [lints]
 workspace = true

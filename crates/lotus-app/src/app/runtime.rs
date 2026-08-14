@@ -2,18 +2,19 @@ use lotus_settings::scene::SettingsPointerStyle;
 use lotus_windows::interaction::{NativeMessage, PointerCursor};
 
 use super::{
-    AppError, AuxiliaryWindows, CommandId, CompositionSurfaceState, ContextMenuAction,
-    ContextMenuEvent, DeviceState, DockContextRequest, DockHitTarget, DockRuntime,
-    DockWindow, LauncherSubmission, MenuDirection, PointerEvent, RuntimePolicy,
-    SceneSettingsKey, SelectionDirection, SettingsAction, SettingsEvent, SettingsRuntime,
-    SettingsUpdateActivity, SurfaceSize, SystemStatusKind, UpdateResult, UpdateStatus,
-    WindowEvent, WindowHandle, WindowSettingsKey, WindowTracker, WindowTrackerEvent,
-    apply_fullscreen_visibility, confirm_install_update, confirm_restart, confirm_shutdown,
-    handle_alt_tab_events, handle_pointer_event, handle_search_event,
-    handle_windows_key_events, is_alt_tab_wake, is_installed, is_search_catalog_wake,
-    is_taskbar_badge_wake, is_update_wake, is_windows_key_wake, launch_current_installer,
-    launch_installer, launch_target, next_message, render_and_schedule, render_surface,
-    request_exit, resize_dock, resize_surface, restart_current_process, show_error,
+    AppError, AppMenuAction, AuxiliaryWindows, AuxiliaryZoneAction, CommandId,
+    CompositionSurfaceState, ContextMenuAction, ContextMenuEvent, DeviceState,
+    DockContextRequest, DockHitTarget, DockRuntime, DockWindow, LauncherSubmission,
+    PointerEvent, PopupAction, RuntimePolicy, SceneSettingsKey, SelectionDirection,
+    SettingsAction, SettingsEvent, SettingsRuntime, SettingsUpdateActivity, SurfaceSize,
+    SystemStatusKind, UpdateResult, UpdateStatus, WindowEvent, WindowHandle,
+    WindowSettingsKey, WindowTracker, WindowTrackerEvent, apply_fullscreen_visibility,
+    confirm_install_update, confirm_restart, confirm_shutdown, handle_alt_tab_events,
+    handle_pointer_event, handle_search_event, handle_windows_key_events, is_alt_tab_wake,
+    is_installed, is_media_wake, is_search_catalog_wake, is_taskbar_badge_wake,
+    is_update_wake, is_windows_key_wake, launch_current_installer, launch_installer,
+    launch_target, next_message, render_and_schedule, render_surface, request_exit,
+    request_window_close, resize_dock, resize_surface, restart_current_process, show_error,
     show_information, startup_registration, write_text,
 };
 
@@ -54,33 +55,15 @@ fn process_message(
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
 ) -> Result<(), AppError> {
-    if let Some(event) = window_tracker.handle_message(
-        message.is_thread_message(),
-        message.id(),
-        message.parameter(),
-    )? {
-        if event == WindowTrackerEvent::SnapshotRefreshed {
-            dock_model.rebuild(window_tracker.current_windows());
-            resize_dock(dock, graphics, surface, dock_model)?;
-            auxiliary
-                .status
-                .sync(dock, dock_model.settings(), graphics)?;
-            render_and_schedule(
-                dock,
-                graphics,
-                surface,
-                dock_model.scene(),
-                auxiliary.launcher.needs_animation(),
-            )?;
-        }
-        apply_fullscreen_visibility(
-            dock,
-            window_tracker,
-            dock_model,
-            &mut auxiliary.launcher,
-            &auxiliary.status,
-        )?;
-    }
+    handle_tracker_message(
+        message,
+        dock,
+        graphics,
+        surface,
+        window_tracker,
+        dock_model,
+        auxiliary,
+    )?;
     let windows_key_wake = runtime
         .windows_key
         .is_some_and(|_| is_windows_key_wake(message.id()));
@@ -89,33 +72,19 @@ fn process_message(
         .is_some_and(|_| is_alt_tab_wake(message.id()));
     let search_catalog_wake = is_search_catalog_wake(message.id());
     let update_wake = is_update_wake(message.id());
+    let media_wake = is_media_wake(message.id());
     let badge_wake =
         runtime.taskbar_badges.is_some() && is_taskbar_badge_wake(message.id());
     message.dispatch();
-    let events = dock.drain_events().collect::<Vec<_>>();
-    for event in events {
-        handle_window_event(event, dock, graphics, surface, dock_model, auxiliary)?;
-    }
-    for event in auxiliary.launcher.drain_events() {
-        if let Some(submission) = handle_search_event(
-            event,
-            dock,
-            graphics,
-            surface,
-            dock_model,
-            &mut auxiliary.launcher,
-        )? {
-            execute_search_submission(submission, dock, graphics, dock_model, auxiliary)?;
-        }
-    }
-    for event in auxiliary.context_menu.drain_events() {
-        handle_context_menu_event(event, dock, graphics, dock_model, auxiliary)?;
-    }
-    for event in auxiliary.status.drain_events() {
-        if let Some(kind) = auxiliary.status.handle_event(event, graphics)? {
-            activate_system_status(kind, auxiliary.status.window.handle());
-        }
-    }
+
+    drain_window_events(
+        dock,
+        graphics,
+        surface,
+        window_tracker.current_windows(),
+        dock_model,
+        auxiliary,
+    )?;
     drain_settings_and_switcher_events(&mut SettingsEventContext {
         dock,
         graphics,
@@ -124,6 +93,7 @@ fn process_message(
         dock_model,
         auxiliary,
     })?;
+
     if update_wake {
         handle_update_results(&mut auxiliary.settings, graphics)?;
     }
@@ -132,6 +102,19 @@ fn process_message(
         && let Ok(snapshot) = controller.snapshot()
     {
         dock_model.set_notifications(snapshot);
+        render_and_schedule(
+            dock,
+            graphics,
+            surface,
+            dock_model.scene(),
+            auxiliary.launcher.needs_animation(),
+        )?;
+    }
+    if media_wake && auxiliary.media.drain(dock_model) {
+        resize_dock(dock, graphics, surface, dock_model)?;
+        auxiliary
+            .status
+            .sync(dock, dock_model.settings(), dock_model.media(), graphics)?;
         render_and_schedule(
             dock,
             graphics,
@@ -168,6 +151,112 @@ fn process_message(
         dock.set_animation_active(dock_animation || launcher_animation)?;
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drain_window_events(
+    dock: &mut DockWindow,
+    graphics: &mut DeviceState,
+    surface: &mut CompositionSurfaceState,
+    windows: &[lotus_core::window::WindowInfo],
+    dock_model: &mut DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
+    let events = dock.drain_events().collect::<Vec<_>>();
+    for event in events {
+        handle_window_event(event, dock, graphics, surface, dock_model, auxiliary)?;
+    }
+    for event in auxiliary.launcher.drain_events() {
+        if let Some(submission) = handle_search_event(
+            event,
+            dock,
+            graphics,
+            surface,
+            dock_model,
+            &mut auxiliary.launcher,
+        )? {
+            execute_search_submission(submission, dock, graphics, dock_model, auxiliary)?;
+        }
+    }
+    for event in auxiliary.context_menu.drain_events() {
+        handle_context_menu_event(
+            event, dock, graphics, surface, windows, dock_model, auxiliary,
+        )?;
+    }
+    for (zone, event) in auxiliary.status.drain_events() {
+        if let Some((action, owner)) =
+            auxiliary.status.handle_event(zone, event, graphics)?
+        {
+            match action {
+                AuxiliaryZoneAction::Media(target) => {
+                    auxiliary.media.activate(target, dock_model, owner);
+                }
+                AuxiliaryZoneAction::Status(kind) => activate_system_status(kind, owner),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_tracker_message(
+    message: &NativeMessage,
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    surface: &mut CompositionSurfaceState,
+    window_tracker: &mut WindowTracker,
+    dock_model: &mut DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
+    let Some(event) = window_tracker.handle_message(
+        message.is_thread_message(),
+        message.id(),
+        message.parameter(),
+    )?
+    else {
+        return Ok(());
+    };
+    if event == WindowTrackerEvent::SnapshotRefreshed {
+        dock_model.rebuild(window_tracker.current_windows());
+        dock_model.record_foreground(lotus_windows::activation::foreground_window());
+        reconcile_visible_picker(dock_model, &mut auxiliary.context_menu, graphics)?;
+        resize_dock(dock, graphics, surface, dock_model)?;
+        auxiliary
+            .status
+            .sync(dock, dock_model.settings(), dock_model.media(), graphics)?;
+        render_and_schedule(
+            dock,
+            graphics,
+            surface,
+            dock_model.scene(),
+            auxiliary.launcher.needs_animation(),
+        )?;
+    }
+    apply_fullscreen_visibility(
+        dock,
+        window_tracker,
+        dock_model,
+        &mut auxiliary.launcher,
+        &auxiliary.status,
+    )
+}
+
+fn reconcile_visible_picker(
+    dock_model: &mut DockRuntime,
+    popup: &mut super::ContextMenuRuntime,
+    graphics: &mut DeviceState,
+) -> Result<(), AppError> {
+    let Some(identity) = popup.picker_identity().map(str::to_owned) else {
+        return Ok(());
+    };
+    let Some(source_index) = dock_model.source_index(&identity) else {
+        popup.hide();
+        return Ok(());
+    };
+    let windows = dock_model
+        .picker_windows(source_index, lotus_windows::activation::foreground_window());
+    let style = dock_model.settings().window_picker_style;
+    popup.replace_picker(source_index, style, windows, graphics)
 }
 
 fn execute_search_submission(
@@ -291,7 +380,9 @@ fn handle_context_menu_event(
     event: ContextMenuEvent,
     dock: &DockWindow,
     graphics: &mut DeviceState,
-    dock_model: &DockRuntime,
+    surface: &mut CompositionSurfaceState,
+    windows: &[lotus_core::window::WindowInfo],
+    dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
 ) -> Result<(), AppError> {
     match event {
@@ -307,22 +398,47 @@ fn handle_context_menu_event(
         }
         ContextMenuEvent::PointerReleased { x, y } => {
             let action = auxiliary.context_menu.scene.pointer_action(x, y);
+            let source_index = auxiliary.context_menu.scene.source_index();
             auxiliary.context_menu.hide();
             if let Some(action) = action {
-                execute_context_menu_action(action, dock, graphics, dock_model, auxiliary)?;
+                execute_popup_action(
+                    action,
+                    source_index,
+                    dock,
+                    graphics,
+                    surface,
+                    windows,
+                    dock_model,
+                    auxiliary,
+                )?;
             }
         }
         ContextMenuEvent::SelectionRequested => {
             let action = auxiliary.context_menu.scene.selected_action();
+            let source_index = auxiliary.context_menu.scene.source_index();
             auxiliary.context_menu.hide();
-            execute_context_menu_action(action, dock, graphics, dock_model, auxiliary)?;
+            if let Some(action) = action {
+                execute_popup_action(
+                    action,
+                    source_index,
+                    dock,
+                    graphics,
+                    surface,
+                    windows,
+                    dock_model,
+                    auxiliary,
+                )?;
+            }
         }
         ContextMenuEvent::MoveSelection(direction) => {
-            let direction = match direction {
-                SelectionDirection::Previous => MenuDirection::Previous,
-                SelectionDirection::Next => MenuDirection::Next,
-            };
-            if auxiliary.context_menu.scene.move_selection(direction) {
+            let next = direction == SelectionDirection::Next;
+            if auxiliary.context_menu.scene.move_selection(next) {
+                auxiliary.context_menu.render(graphics)?;
+            }
+        }
+        ContextMenuEvent::Scroll(direction) => {
+            let next = direction == SelectionDirection::Next;
+            if auxiliary.context_menu.scene.scroll(next) {
                 auxiliary.context_menu.render(graphics)?;
             }
         }
@@ -341,6 +457,131 @@ fn handle_context_menu_event(
             auxiliary.context_menu.render(graphics)?;
         }
         ContextMenuEvent::RenderRequested => auxiliary.context_menu.render(graphics)?,
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_popup_action(
+    action: PopupAction,
+    source_index: Option<usize>,
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    surface: &mut CompositionSurfaceState,
+    windows: &[lotus_core::window::WindowInfo],
+    dock_model: &mut DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
+    match action {
+        PopupAction::System(action) => {
+            execute_context_menu_action(action, dock, graphics, dock_model, auxiliary)?;
+        }
+        PopupAction::App(action) => {
+            let Some(source_index) = source_index else {
+                return Ok(());
+            };
+            execute_app_menu_action(
+                action,
+                source_index,
+                dock,
+                graphics,
+                surface,
+                windows,
+                dock_model,
+                auxiliary,
+            )?;
+        }
+        PopupAction::Activate(window) => {
+            if let Some(source_index) = source_index {
+                dock_model.record_window_activation(source_index, window);
+            }
+            if let Err(error) = lotus_windows::activation::switch_window(window) {
+                show_error(
+                    dock.handle(),
+                    "Lotus",
+                    &format!("Lotus could not activate that window.\n\n{error}"),
+                );
+            }
+        }
+        PopupAction::CloseWindow(window) => {
+            if let Err(error) = request_window_close(window) {
+                show_error(
+                    dock.handle(),
+                    "Lotus",
+                    &format!("Lotus could not close that window.\n\n{error}"),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_app_menu_action(
+    action: AppMenuAction,
+    source_index: usize,
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    surface: &mut CompositionSurfaceState,
+    windows: &[lotus_core::window::WindowInfo],
+    dock_model: &mut DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
+    match action {
+        AppMenuAction::Open => dock_model.open_new(source_index, dock.handle()),
+        AppMenuAction::TogglePin => {
+            let pinned = dock_model
+                .item(source_index)
+                .is_some_and(|item| item.is_pinned);
+            let changed = match dock_model.set_pinned(source_index, !pinned, windows) {
+                Ok(changed) => changed,
+                Err(error) => {
+                    show_error(
+                        dock.handle(),
+                        "Lotus",
+                        &format!("Lotus could not save that pin.\n\n{error}"),
+                    );
+                    false
+                }
+            };
+            if changed {
+                resize_dock(dock, graphics, surface, dock_model)?;
+                auxiliary.status.sync(
+                    dock,
+                    dock_model.settings(),
+                    dock_model.media(),
+                    graphics,
+                )?;
+                render_and_schedule(
+                    dock,
+                    graphics,
+                    surface,
+                    dock_model.scene(),
+                    auxiliary.launcher.needs_animation(),
+                )?;
+            }
+        }
+        AppMenuAction::Close => {
+            let window_ids = dock_model
+                .item(source_index)
+                .map(|item| {
+                    item.windows
+                        .iter()
+                        .map(|window| window.id)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for window in window_ids {
+                if let Err(error) = request_window_close(window) {
+                    show_error(
+                        dock.handle(),
+                        "Lotus",
+                        &format!("Lotus could not close that window.\n\n{error}"),
+                    );
+                    break;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -583,83 +824,93 @@ fn apply_settings_action(
             context.auxiliary.settings.hide();
             Ok(())
         }
-        SettingsAction::Apply(next) => {
-            let next = *next;
-            let start_with_windows = next.start_with_windows;
-            let impact = context
-                .dock_model
-                .apply_settings(next, context.window_tracker.current_windows())?;
-            if let Err(error) = startup_registration::sync(start_with_windows) {
-                show_error(
-                    context.auxiliary.settings.window.handle(),
-                    "Lotus Settings",
-                    &format!(
-                        "Lotus saved your preference but could not update Windows startup.\n\n{error}"
-                    ),
-                );
-            }
-            if !impact.changed {
-                return Ok(());
-            }
+        SettingsAction::Apply(next) => apply_changed_settings(*next, context),
+    }
+}
 
-            context.dock.set_status_refresh_active(
-                context.dock_model.settings().show_system_status
-                    && context.dock_model.settings().show_date_time_status,
-            )?;
+fn apply_changed_settings(
+    next: lotus_core::settings::DockSettings,
+    context: &mut SettingsEventContext<'_>,
+) -> Result<(), AppError> {
+    let start_with_windows = next.start_with_windows;
+    let impact = context
+        .dock_model
+        .apply_settings(next, context.window_tracker.current_windows())?;
+    if let Err(error) = startup_registration::sync(start_with_windows) {
+        show_error(
+            context.auxiliary.settings.window.handle(),
+            "Lotus Settings",
+            &format!(
+                "Lotus saved your preference but could not update Windows startup.\n\n{error}"
+            ),
+        );
+    }
+    if !impact.changed {
+        return Ok(());
+    }
 
-            lotus_windows::backdrop::apply_dock_settings(
-                context.dock.handle(),
-                context.dock_model.settings(),
+    context.dock.set_status_refresh_active(
+        context.dock_model.settings().show_system_status
+            && context.dock_model.settings().show_date_time_status,
+    )?;
+    context
+        .auxiliary
+        .media
+        .set_enabled(context.dock_model.settings().show_media_controls);
+    if !context.dock_model.settings().show_media_controls {
+        let _changed = context.auxiliary.media.drain(context.dock_model);
+    }
+
+    lotus_windows::backdrop::apply_dock_settings(
+        context.dock.handle(),
+        context.dock_model.settings(),
+    );
+    apply_auxiliary_settings(context)?;
+    resize_dock(
+        context.dock,
+        context.graphics,
+        context.dock_surface,
+        context.dock_model,
+    )?;
+    context.auxiliary.status.sync(
+        context.dock,
+        context.dock_model.settings(),
+        context.dock_model.media(),
+        context.graphics,
+    )?;
+    render_and_schedule(
+        context.dock,
+        context.graphics,
+        context.dock_surface,
+        context.dock_model.scene(),
+        context.auxiliary.launcher.needs_animation(),
+    )?;
+    apply_fullscreen_visibility(
+        context.dock,
+        context.window_tracker,
+        context.dock_model,
+        &mut context.auxiliary.launcher,
+        &context.auxiliary.status,
+    )?;
+    context
+        .auxiliary
+        .settings
+        .scene
+        .mark_applied(context.dock_model.settings().clone());
+    context.auxiliary.settings.render(context.graphics)?;
+
+    if impact.restart_required {
+        if let Err(error) = restart_current_process() {
+            show_error(
+                context.auxiliary.settings.window.handle(),
+                "Lotus Settings",
+                &format!("Lotus saved your settings but could not restart.\n\n{error}"),
             );
-            apply_auxiliary_settings(context)?;
-            resize_dock(
-                context.dock,
-                context.graphics,
-                context.dock_surface,
-                context.dock_model,
-            )?;
-            context.auxiliary.status.sync(
-                context.dock,
-                context.dock_model.settings(),
-                context.graphics,
-            )?;
-            render_and_schedule(
-                context.dock,
-                context.graphics,
-                context.dock_surface,
-                context.dock_model.scene(),
-                context.auxiliary.launcher.needs_animation(),
-            )?;
-            apply_fullscreen_visibility(
-                context.dock,
-                context.window_tracker,
-                context.dock_model,
-                &mut context.auxiliary.launcher,
-                &context.auxiliary.status,
-            )?;
-            context
-                .auxiliary
-                .settings
-                .scene
-                .mark_applied(context.dock_model.settings().clone());
-            context.auxiliary.settings.render(context.graphics)?;
-
-            if impact.restart_required {
-                if let Err(error) = restart_current_process() {
-                    show_error(
-                        context.auxiliary.settings.window.handle(),
-                        "Lotus Settings",
-                        &format!(
-                            "Lotus saved your settings but could not restart.\n\n{error}"
-                        ),
-                    );
-                } else {
-                    request_exit(0);
-                }
-            }
-            Ok(())
+        } else {
+            request_exit(0);
         }
     }
+    Ok(())
 }
 
 fn choose_settings_color(
@@ -893,9 +1144,12 @@ fn handle_window_event(
             dock_model.set_dpi(dpi)?;
             dock_model.set_drag_threshold(dock.drag_threshold());
             resize_dock(dock, graphics, surface, dock_model)?;
-            auxiliary
-                .status
-                .sync(dock, dock_model.settings(), graphics)?;
+            auxiliary.status.sync(
+                dock,
+                dock_model.settings(),
+                dock_model.media(),
+                graphics,
+            )?;
             render_and_schedule(
                 dock,
                 graphics,
@@ -906,54 +1160,18 @@ fn handle_window_event(
         }
         WindowEvent::PlacementRefreshRequested => {
             dock.refresh_placement(dock_model.settings())?;
-            auxiliary
-                .status
-                .sync(dock, dock_model.settings(), graphics)?;
+            auxiliary.status.sync(
+                dock,
+                dock_model.settings(),
+                dock_model.media(),
+                graphics,
+            )?;
             if auxiliary.launcher.is_visible() {
                 auxiliary.launcher.sync_size(dock, graphics)?;
             }
         }
         WindowEvent::Pointer(event) => {
-            if matches!(event, PointerEvent::LeftButtonPressed { .. }) {
-                auxiliary.context_menu.hide();
-            }
-            let (changed, activation) = handle_pointer_event(event, dock_model)?;
-            if changed {
-                render_and_schedule(
-                    dock,
-                    graphics,
-                    surface,
-                    dock_model.scene(),
-                    auxiliary.launcher.needs_animation(),
-                )?;
-            }
-            if let Some(target) = activation {
-                match target {
-                    DockHitTarget::Item(_) => {
-                        auxiliary.launcher.hide();
-                        dock_model.activate(target, dock.handle());
-                    }
-                    DockHitTarget::Jirachi => {
-                        let needs_animation =
-                            auxiliary.launcher.toggle(dock, dock_model, graphics)?;
-                        dock.set_animation_active(needs_animation)?;
-                    }
-                    DockHitTarget::SystemStatus(kind) => {
-                        auxiliary.launcher.hide();
-                        activate_system_status(kind, dock.handle());
-                    }
-                    DockHitTarget::ShowDesktop => {
-                        auxiliary.launcher.hide();
-                        if let Err(error) = lotus_windows::desktop::toggle() {
-                            show_error(
-                                dock.handle(),
-                                "Lotus",
-                                &format!("Lotus could not show the desktop.\n\n{error}"),
-                            );
-                        }
-                    }
-                }
-            }
+            handle_dock_pointer(event, dock, graphics, surface, dock_model, auxiliary)?;
         }
         WindowEvent::ContextMenuRequested(request) => {
             handle_context_menu(request, dock, graphics, surface, dock_model, auxiliary)?;
@@ -996,6 +1214,123 @@ fn handle_window_event(
     Ok(())
 }
 
+fn handle_dock_pointer(
+    event: PointerEvent,
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    surface: &mut CompositionSurfaceState,
+    dock_model: &mut DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
+    if matches!(event, PointerEvent::LeftButtonPressed { .. }) {
+        auxiliary.context_menu.hide();
+    }
+    let release_request = match event {
+        PointerEvent::LeftButtonReleased { x, y } => {
+            let client = super::SignedPoint { x, y };
+            dock.client_to_screen(client)
+                .ok()
+                .map(|screen| DockContextRequest::Pointer { screen, client })
+        }
+        PointerEvent::Moved { .. }
+        | PointerEvent::Left
+        | PointerEvent::LeftButtonPressed { .. }
+        | PointerEvent::Cancelled => None,
+    };
+    let (changed, activation) = handle_pointer_event(event, dock_model)?;
+    if changed {
+        render_and_schedule(
+            dock,
+            graphics,
+            surface,
+            dock_model.scene(),
+            auxiliary.launcher.needs_animation(),
+        )?;
+    }
+    let Some(target) = activation else {
+        return Ok(());
+    };
+    match target {
+        DockHitTarget::Item(source_index) => {
+            activate_dock_item(
+                source_index,
+                target,
+                release_request,
+                dock,
+                graphics,
+                dock_model,
+                auxiliary,
+            )?;
+        }
+        DockHitTarget::Jirachi => {
+            let needs_animation = auxiliary.launcher.toggle(dock, dock_model, graphics)?;
+            dock.set_animation_active(needs_animation)?;
+        }
+        DockHitTarget::Media(target) => {
+            auxiliary.launcher.hide();
+            auxiliary.media.activate(target, dock_model, dock.handle());
+        }
+        DockHitTarget::SystemStatus(kind) => {
+            auxiliary.launcher.hide();
+            activate_system_status(kind, dock.handle());
+        }
+        DockHitTarget::ShowDesktop => {
+            auxiliary.launcher.hide();
+            if let Err(error) = lotus_windows::desktop::toggle() {
+                show_error(
+                    dock.handle(),
+                    "Lotus",
+                    &format!("Lotus could not show the desktop.\n\n{error}"),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn activate_dock_item(
+    source_index: usize,
+    target: DockHitTarget,
+    release_request: Option<DockContextRequest>,
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    dock_model: &mut DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
+    auxiliary.launcher.hide();
+    let window_count = dock_model
+        .item(source_index)
+        .map_or(0, |item| item.windows.len());
+    let anchor = release_request
+        .and_then(|request| dock_model.popup_target_anchor(request))
+        .map(|(_, anchor, _)| anchor);
+    if window_count <= 1 {
+        dock_model.activate(target, dock.handle());
+        return Ok(());
+    }
+    let Some(anchor) = anchor else {
+        dock_model.activate(target, dock.handle());
+        return Ok(());
+    };
+
+    let entries = dock_model
+        .picker_windows(source_index, lotus_windows::activation::foreground_window());
+    let identity = dock_model
+        .item(source_index)
+        .map(|item| item.id.clone())
+        .unwrap_or_default();
+    let style = dock_model.settings().window_picker_style;
+    auxiliary.context_menu.open_picker(
+        anchor,
+        source_index,
+        identity,
+        style,
+        entries,
+        graphics,
+    )
+}
+
 fn activate_system_status(kind: SystemStatusKind, owner: WindowHandle) {
     let result = match kind {
         SystemStatusKind::Volume => launch_target("sndvol.exe", None),
@@ -1030,15 +1365,33 @@ fn handle_context_menu(
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
 ) -> Result<(), AppError> {
-    let Some(anchor) = dock_model.jirachi_menu_anchor(request) else {
+    let Some((target, anchor, alignment)) = dock_model.popup_target_anchor(request) else {
         return Ok(());
     };
     auxiliary.launcher.hide();
     if dock_model.pointer_cancelled() {
         render_and_schedule(dock, graphics, surface, dock_model.scene(), false)?;
     }
-
-    auxiliary.context_menu.open(anchor, graphics)?;
+    match target {
+        DockHitTarget::Jirachi => {
+            auxiliary.context_menu.open(anchor, alignment, graphics)?;
+        }
+        DockHitTarget::Item(source_index) => {
+            let Some(item) = dock_model.item(source_index) else {
+                return Ok(());
+            };
+            auxiliary.context_menu.open_app(
+                anchor,
+                source_index,
+                item.windows.len(),
+                item.is_pinned,
+                graphics,
+            )?;
+        }
+        DockHitTarget::Media(_)
+        | DockHitTarget::SystemStatus(_)
+        | DockHitTarget::ShowDesktop => {}
+    }
     Ok(())
 }
 use std::time::Instant;

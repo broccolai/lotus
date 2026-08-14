@@ -20,6 +20,14 @@ pub enum NotificationBadgeStyle {
     Count,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowPickerStyle {
+    Compact,
+    #[default]
+    Thumbnails,
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 #[error("invalid Lotus settings: {0}")]
 pub struct SettingsDecodeError(String);
@@ -191,6 +199,7 @@ pub struct DockSettings {
     pub accent_color: String,
     pub mascot_image_path: Option<String>,
     pub show_unpinned_running_apps: bool,
+    pub show_running_indicators: bool,
     pub show_desktop_button: bool,
     pub show_system_status: bool,
     pub dock_zone: DockZone,
@@ -200,12 +209,16 @@ pub struct DockSettings {
     pub show_background_apps_status: bool,
     pub show_date_time_status: bool,
     pub show_date_in_status: bool,
+    pub show_media_controls: bool,
+    pub show_media_metadata: bool,
+    pub media_zone: DockZone,
     pub start_with_windows: bool,
     pub hide_when_fullscreen: bool,
     pub replace_windows_taskbar: bool,
     pub exclusive_taskbar_replacement: bool,
     pub search_open_with_windows_key: bool,
     pub alt_tab_enabled: bool,
+    pub window_picker_style: WindowPickerStyle,
     pub notification_badge_style: NotificationBadgeStyle,
     pub notification_disabled_apps: Vec<String>,
     pub search_result_limit: u32,
@@ -230,6 +243,7 @@ impl Default for DockSettings {
             accent_color: "#F5A5A5".into(),
             mascot_image_path: None,
             show_unpinned_running_apps: true,
+            show_running_indicators: true,
             show_desktop_button: false,
             show_system_status: true,
             dock_zone: DockZone::Center,
@@ -239,12 +253,16 @@ impl Default for DockSettings {
             show_background_apps_status: true,
             show_date_time_status: true,
             show_date_in_status: true,
+            show_media_controls: true,
+            show_media_metadata: true,
+            media_zone: DockZone::Center,
             start_with_windows: true,
             hide_when_fullscreen: true,
             replace_windows_taskbar: true,
             exclusive_taskbar_replacement: false,
             search_open_with_windows_key: true,
             alt_tab_enabled: false,
+            window_picker_style: WindowPickerStyle::Thumbnails,
             notification_badge_style: NotificationBadgeStyle::Off,
             notification_disabled_apps: Vec::new(),
             search_result_limit: 5,
@@ -433,6 +451,7 @@ fn canonicalize_property_names_in_json(json: &mut [u8]) {
         "accentColor",
         "mascotImagePath",
         "showUnpinnedRunningApps",
+        "showRunningIndicators",
         "showDesktopButton",
         "showSystemStatus",
         "dockZone",
@@ -442,12 +461,16 @@ fn canonicalize_property_names_in_json(json: &mut [u8]) {
         "showBackgroundAppsStatus",
         "showDateTimeStatus",
         "showDateInStatus",
+        "showMediaControls",
+        "showMediaMetadata",
+        "mediaZone",
         "startWithWindows",
         "hideWhenFullscreen",
         "replaceWindowsTaskbar",
         "exclusiveTaskbarReplacement",
         "searchOpenWithWindowsKey",
         "altTabEnabled",
+        "windowPickerStyle",
         "notificationBadgeStyle",
         "notificationDisabledApps",
         "searchResultLimit",

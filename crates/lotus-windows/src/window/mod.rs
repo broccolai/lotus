@@ -7,7 +7,7 @@ mod settings;
 mod status;
 mod switcher;
 
-pub use context_menu::ContextMenuWindow;
+pub use context_menu::{ContextMenuWindow, PopupAlignment};
 pub use dock::DockWindow;
 pub use events::{
     ContextMenuEvent, CursorMove, DockContextRequest, PointerEvent, SearchEdit,

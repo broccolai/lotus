@@ -19,6 +19,7 @@ pub struct WindowInfo {
     pub process_id: u32,
     pub title: String,
     pub executable_path: PathBuf,
+    pub app_user_model_id: Option<String>,
 }
 
 impl WindowInfo {

@@ -536,10 +536,11 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "lotus-app"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "lotus-core",
  "lotus-dock",
+ "lotus-media",
  "lotus-search",
  "lotus-settings",
  "lotus-switcher",
@@ -551,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-core"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "atomic-write-file",
  "serde",
@@ -561,16 +562,24 @@ dependencies = [
 
 [[package]]
 name = "lotus-dock"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "lotus-core",
+ "lotus-media",
  "lotus-ui",
  "thiserror",
 ]
 
 [[package]]
+name = "lotus-media"
+version = "0.11.0"
+dependencies = [
+ "lotus-ui",
+]
+
+[[package]]
 name = "lotus-search"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "atomic-write-file",
  "fasteval",
@@ -580,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-settings"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "lotus-core",
  "lotus-ui",
@@ -588,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-switcher"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "lotus-core",
  "lotus-ui",
@@ -596,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-ui"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "euclid",
  "thiserror",
@@ -604,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-update"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "semver",
  "serde",
@@ -616,12 +625,13 @@ dependencies = [
 
 [[package]]
 name = "lotus-windows"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "atomic-write-file",
  "image",
  "lotus-core",
  "lotus-dock",
+ "lotus-media",
  "lotus-search",
  "lotus-settings",
  "lotus-switcher",

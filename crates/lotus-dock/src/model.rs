@@ -2,7 +2,7 @@ use std::path::Path;
 
 use lotus_core::activation::{ActivationDecision, decide_activation};
 use lotus_core::dock::DockItem;
-use lotus_core::settings::{DockSettings, SettingsStore, SettingsStoreError};
+use lotus_core::settings::{DockSettings, PinnedApp, SettingsStore, SettingsStoreError};
 use lotus_core::window::{WindowId, WindowInfo};
 
 pub fn project_snapshot<F>(
@@ -16,7 +16,7 @@ where
     lotus_core::dock::project_dock(
         windows,
         lotus_core::dock::DockProjection {
-            pinned_apps: &[],
+            pinned_apps: &settings.pinned_apps,
             hidden_executables: &settings.hidden_executables,
             item_order: &settings.item_order,
             show_unpinned_running_apps: settings.show_unpinned_running_apps,
@@ -161,6 +161,70 @@ impl DockModel {
             .collect::<Vec<_>>();
         Some((decide_activation(&windows, foreground), item))
     }
+
+    pub fn set_pinned(
+        &mut self,
+        source_index: usize,
+        pinned: bool,
+    ) -> Result<bool, SettingsStoreError> {
+        let Some(item) = self.items.get(source_index) else {
+            return Ok(false);
+        };
+        if item.is_pinned == pinned {
+            return Ok(false);
+        }
+
+        let mut settings = self.settings.clone();
+        if pinned {
+            if settings
+                .pinned_apps
+                .iter()
+                .any(|pin| pin.id.eq_ignore_ascii_case(&item.id))
+            {
+                return Ok(false);
+            }
+            let executable = Path::new(&item.executable_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+                .into_iter()
+                .collect();
+            settings.pinned_apps.push(PinnedApp {
+                id: item.id.clone(),
+                name: item.display_name.clone(),
+                launch_target: item.launch_target.clone(),
+                arguments: item.arguments.clone(),
+                icon_source: Some(item.icon_source.clone()),
+                match_executables: executable,
+            });
+            insert_item_order(&mut settings.item_order, &self.items, source_index);
+        } else {
+            settings
+                .pinned_apps
+                .retain(|pin| !pin.id.eq_ignore_ascii_case(&item.id));
+        }
+
+        self.settings_store.save(&settings)?;
+        self.settings = settings;
+        Ok(true)
+    }
+}
+
+fn insert_item_order(order: &mut Vec<String>, items: &[DockItem], source_index: usize) {
+    let id = &items[source_index].id;
+    if order.iter().any(|saved| saved.eq_ignore_ascii_case(id)) {
+        return;
+    }
+    let next = items
+        .iter()
+        .skip(source_index + 1)
+        .find_map(|item| {
+            order
+                .iter()
+                .position(|saved| saved.eq_ignore_ascii_case(&item.id))
+        })
+        .unwrap_or(order.len());
+    order.insert(next, id.clone());
 }
 
 fn restart_required(previous: &DockSettings, current: &DockSettings) -> bool {

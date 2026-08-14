@@ -26,6 +26,17 @@ const FLUENT_RESTART_SVG: &[u8] =
     include_bytes!("../../assets/fluent/arrow-clockwise-24-regular.svg");
 const FLUENT_SEARCH_SVG: &[u8] =
     include_bytes!("../../assets/fluent/search-24-regular.svg");
+const FLUENT_MUSIC_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/music-note-24-regular.svg");
+const FLUENT_PREVIOUS_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/previous-24-regular.svg");
+const FLUENT_PLAY_SVG: &[u8] = include_bytes!("../../assets/fluent/play-24-regular.svg");
+const FLUENT_PAUSE_SVG: &[u8] = include_bytes!("../../assets/fluent/pause-24-regular.svg");
+const FLUENT_NEXT_SVG: &[u8] = include_bytes!("../../assets/fluent/next-24-regular.svg");
+const FLUENT_OPEN_SVG: &[u8] = include_bytes!("../../assets/fluent/open-24-regular.svg");
+const FLUENT_PIN_SVG: &[u8] = include_bytes!("../../assets/fluent/pin-24-regular.svg");
+const FLUENT_PIN_OFF_SVG: &[u8] =
+    include_bytes!("../../assets/fluent/pin-off-24-regular.svg");
 const MAX_RASTER_DIMENSION: u32 = 4_096;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -42,10 +53,18 @@ pub enum SvgAsset {
     FluentLock,
     FluentRestart,
     FluentSearch,
+    FluentMusic,
+    FluentPrevious,
+    FluentPlay,
+    FluentPause,
+    FluentNext,
+    FluentOpen,
+    FluentPin,
+    FluentPinOff,
 }
 
 impl SvgAsset {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 20] = [
         Self::LotusPixel,
         Self::FluentCalculator,
         Self::FluentPower,
@@ -58,6 +77,14 @@ impl SvgAsset {
         Self::FluentLock,
         Self::FluentRestart,
         Self::FluentSearch,
+        Self::FluentMusic,
+        Self::FluentPrevious,
+        Self::FluentPlay,
+        Self::FluentPause,
+        Self::FluentNext,
+        Self::FluentOpen,
+        Self::FluentPin,
+        Self::FluentPinOff,
     ];
 
     const fn source(self) -> &'static [u8] {
@@ -74,6 +101,14 @@ impl SvgAsset {
             Self::FluentLock => FLUENT_LOCK_SVG,
             Self::FluentRestart => FLUENT_RESTART_SVG,
             Self::FluentSearch => FLUENT_SEARCH_SVG,
+            Self::FluentMusic => FLUENT_MUSIC_SVG,
+            Self::FluentPrevious => FLUENT_PREVIOUS_SVG,
+            Self::FluentPlay => FLUENT_PLAY_SVG,
+            Self::FluentPause => FLUENT_PAUSE_SVG,
+            Self::FluentNext => FLUENT_NEXT_SVG,
+            Self::FluentOpen => FLUENT_OPEN_SVG,
+            Self::FluentPin => FLUENT_PIN_SVG,
+            Self::FluentPinOff => FLUENT_PIN_OFF_SVG,
         }
     }
 
@@ -91,6 +126,14 @@ impl SvgAsset {
                 | Self::FluentLock
                 | Self::FluentRestart
                 | Self::FluentSearch
+                | Self::FluentMusic
+                | Self::FluentPrevious
+                | Self::FluentPlay
+                | Self::FluentPause
+                | Self::FluentNext
+                | Self::FluentOpen
+                | Self::FluentPin
+                | Self::FluentPinOff
         )
     }
 }

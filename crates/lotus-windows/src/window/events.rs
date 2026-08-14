@@ -88,6 +88,7 @@ pub enum ContextMenuEvent {
     PointerLeft,
     PointerReleased { x: i32, y: i32 },
     MoveSelection(SelectionDirection),
+    Scroll(SelectionDirection),
     SelectionRequested,
     DismissRequested,
     Resized { width: u32, height: u32 },

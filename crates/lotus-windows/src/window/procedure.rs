@@ -214,6 +214,15 @@ fn dispatch(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT
     if message == WM_MOUSEWHEEL && is_search_window(hwnd) {
         return dispatch_search_wheel(hwnd, wparam);
     }
+    if message == WM_MOUSEWHEEL && is_context_menu_window(hwnd) {
+        if let Some(direction) = wheel_selection_direction(wparam) {
+            push_window_event(
+                hwnd,
+                WindowEvent::ContextMenu(ContextMenuEvent::Scroll(direction)),
+            );
+        }
+        return LRESULT(0);
+    }
 
     match message {
         WM_NCCREATE => {

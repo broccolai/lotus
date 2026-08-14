@@ -5,11 +5,11 @@ use lotus_core::activation::ActivationDecision;
 use lotus_core::dock::DockItem;
 use lotus_core::window::WindowId;
 use thiserror::Error;
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Shell::{SHELLEXECUTEINFOW, ShellExecuteExW};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, IsIconic, IsWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOWNORMAL,
-    ShowWindow, SwitchToThisWindow,
+    GetForegroundWindow, IsIconic, IsWindow, PostMessageW, SW_MINIMIZE, SW_RESTORE,
+    SW_SHOWNORMAL, ShowWindow, SwitchToThisWindow, WM_CLOSE,
 };
 use windows::core::PCWSTR;
 
@@ -106,6 +106,14 @@ pub fn switch_window(window: WindowId) -> Result<(), ActivationError> {
     } else {
         Err(ActivationError::ForegroundDenied(window))
     }
+}
+
+pub fn request_window_close(window: WindowId) -> Result<(), ActivationError> {
+    let hwnd = existing_window(window)?;
+    // SAFETY: The HWND was validated immediately above. Posting WM_CLOSE transfers no pointers
+    // and lets the owning application run its normal close and save-confirmation path.
+    unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }
+        .map_err(|_| ActivationError::MissingWindow(window))
 }
 
 fn existing_window(window: WindowId) -> Result<HWND, ActivationError> {

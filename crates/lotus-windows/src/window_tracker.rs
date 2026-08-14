@@ -10,6 +10,7 @@ use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
 };
+use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, GetCurrentThreadId, OpenProcess, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -294,6 +295,7 @@ fn window_info(hwnd: HWND, own_process_id: u32) -> Option<WindowInfo> {
         process_id,
         title,
         executable_path,
+        app_user_model_id: process_application_id(process_id),
     })
 }
 
@@ -472,6 +474,29 @@ pub(crate) fn process_image_path(process_id: u32) -> Option<PathBuf> {
     .ok()?;
     buffer.truncate(usize::try_from(length).ok()?);
     Some(PathBuf::from(String::from_utf16_lossy(&buffer)))
+}
+
+fn process_application_id(process_id: u32) -> Option<String> {
+    // SAFETY: The requested access is read-only and the PID came from a current top-level HWND.
+    let process =
+        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
+            .ok()?;
+    let process = OwnedHandle(process);
+    let mut buffer = vec![0_u16; 512];
+    let mut length = u32::try_from(buffer.len()).ok()?;
+    // SAFETY: The process handle is live and the UTF-16 buffer is valid writable storage.
+    let result = unsafe {
+        GetApplicationUserModelId(
+            process.get(),
+            &raw mut length,
+            Some(windows::core::PWSTR(buffer.as_mut_ptr())),
+        )
+    };
+    if result.0 != 0 || length == 0 {
+        return None;
+    }
+    let text_length = usize::try_from(length.saturating_sub(1)).ok()?;
+    Some(String::from_utf16_lossy(&buffer[..text_length]))
 }
 
 struct OwnedHandle(HANDLE);

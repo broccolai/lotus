@@ -1,4 +1,4 @@
-use lotus_core::settings::{DockZone, NotificationBadgeStyle};
+use lotus_core::settings::{DockZone, NotificationBadgeStyle, WindowPickerStyle};
 use lotus_settings::appearance::{AccentPreset, SurfacePreset};
 use lotus_ui::theme::{Color, Theme};
 use thiserror::Error;
@@ -301,6 +301,12 @@ impl SettingsRenderer {
                 SettingsControl::SystemStatusZone => {
                     self.draw_zone_picker(scene, entry.bounds, true);
                 }
+                SettingsControl::MediaZone => {
+                    self.draw_media_zone_picker(scene, entry.bounds);
+                }
+                SettingsControl::WindowPickerStyle => {
+                    self.draw_window_picker_style(scene, entry.bounds);
+                }
                 SettingsControl::Toggle(toggle) => {
                     self.draw_toggle(scene, entry.bounds, toggle);
                 }
@@ -336,6 +342,8 @@ impl SettingsRenderer {
                         | SettingsControl::NotificationBadgeStyle
                         | SettingsControl::DockZone
                         | SettingsControl::SystemStatusZone
+                        | SettingsControl::MediaZone
+                        | SettingsControl::WindowPickerStyle
                         | SettingsControl::Toggle(_)
                         | SettingsControl::Slider(_)
                         | SettingsControl::ChooseMascotImage
@@ -564,6 +572,35 @@ impl SettingsRenderer {
                 ("Left", selected == DockZone::Left),
                 ("Centre", selected == DockZone::Center),
                 ("Right", selected == DockZone::Right),
+            ],
+        );
+    }
+
+    fn draw_media_zone_picker(&self, scene: &SettingsScene, bounds: SettingsRect) {
+        let selected = scene.draft().media_zone;
+        self.draw_text_segments(
+            scene,
+            bounds,
+            SettingsControl::MediaZone,
+            "Media position",
+            &[
+                ("Left", selected == DockZone::Left),
+                ("Centre", selected == DockZone::Center),
+                ("Right", selected == DockZone::Right),
+            ],
+        );
+    }
+
+    fn draw_window_picker_style(&self, scene: &SettingsScene, bounds: SettingsRect) {
+        let selected = scene.draft().window_picker_style;
+        self.draw_text_segments(
+            scene,
+            bounds,
+            SettingsControl::WindowPickerStyle,
+            "Window picker",
+            &[
+                ("Live previews", selected == WindowPickerStyle::Thumbnails),
+                ("Compact", selected == WindowPickerStyle::Compact),
             ],
         );
     }
@@ -1021,6 +1058,7 @@ pub(super) enum SettingsRendererError {
 fn toggle_label(value: SettingsToggle) -> &'static str {
     match value {
         SettingsToggle::ShowUnpinnedRunningApps => "Show unpinned running applications",
+        SettingsToggle::ShowRunningIndicators => "Show indicators for open applications",
         SettingsToggle::ShowDesktopButton => "Show a desktop button at the right edge",
         SettingsToggle::ShowSystemStatus => "Show system status",
         SettingsToggle::ShowVolumeStatus => "Show volume",
@@ -1028,6 +1066,8 @@ fn toggle_label(value: SettingsToggle) -> &'static str {
         SettingsToggle::ShowBackgroundAppsStatus => "Show background applications",
         SettingsToggle::ShowDateTimeStatus => "Show time",
         SettingsToggle::ShowDateInStatus => "Show date below the time",
+        SettingsToggle::ShowMediaControls => "Show media controls",
+        SettingsToggle::ShowMediaMetadata => "Show track information",
         SettingsToggle::StartWithWindows => "Start Lotus when you sign in",
         SettingsToggle::ReplaceWindowsTaskbar => "Replace the Windows taskbar",
         SettingsToggle::ExclusiveTaskbarReplacement => {

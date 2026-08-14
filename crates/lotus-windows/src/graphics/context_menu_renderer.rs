@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::num::NonZeroU32;
 
-use lotus_ui::geometry::PhysicalRect;
+use lotus_ui::geometry::{PhysicalRect, physical_rect};
+use lotus_ui::icon::{Icon, RasterIcon, RasterIconId};
 use lotus_ui::theme::Theme;
 use thiserror::Error;
 use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
@@ -11,16 +12,23 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
     D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext,
     ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush,
 };
+use windows::Win32::Graphics::DirectWrite::{
+    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+};
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
-use windows::core::Error as WindowsError;
+use windows::core::{Error as WindowsError, w};
 
-use super::context_menu_scene::{ContextMenuAction, ContextMenuScene};
+use super::assets::{AssetError, RasterSize, SvgAsset, SvgAssetCache};
+use super::context_menu_scene::{ContextMenuScene, PopupEntry, PopupIcon, PopupSymbol};
 use super::device::GraphicsDevice;
 use super::surface::SurfaceSize;
 use super::theme;
@@ -40,8 +48,13 @@ pub(super) struct ContextMenuRenderer {
     target: Option<ID2D1Bitmap1>,
     panel: ID2D1SolidColorBrush,
     highlight: ID2D1SolidColorBrush,
+    active: ID2D1SolidColorBrush,
+    text: ID2D1SolidColorBrush,
+    write_factory: IDWriteFactory,
+    text_formats: HashMap<u32, IDWriteTextFormat>,
     assets: SvgAssetCache,
-    icons: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
+    embedded: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
+    rasters: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
 
 impl ContextMenuRenderer {
@@ -58,6 +71,9 @@ impl ContextMenuRenderer {
         // SAFETY: The live device returns an owned drawing context.
         let context =
             unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
+        // SAFETY: DirectWrite returns an owned shared factory.
+        let write_factory: IDWriteFactory =
+            unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let theme = Theme::default();
         let mut renderer = Self {
             _factory: factory,
@@ -66,8 +82,13 @@ impl ContextMenuRenderer {
             target: None,
             panel: brush(&context, &theme::d2d(theme.chrome_overlay))?,
             highlight: brush(&context, &theme::d2d(theme.control_hover))?,
+            active: brush(&context, &theme::d2d(theme.accent_soft))?,
+            text: brush(&context, &theme::d2d(theme.text))?,
+            write_factory,
+            text_formats: HashMap::new(),
             assets: SvgAssetCache::create()?,
-            icons: HashMap::new(),
+            embedded: HashMap::new(),
+            rasters: HashMap::new(),
         };
         renderer.attach_target(swap_chain)?;
         Ok(renderer)
@@ -104,57 +125,45 @@ impl ContextMenuRenderer {
         scene: &ContextMenuScene,
     ) -> Result<ContextMenuDrawResult, ContextMenuRendererError> {
         debug_assert!(self.target.is_some());
-        let theme = scene.theme();
-        theme::set(&self.panel, theme.chrome_overlay);
-        theme::set(&self.highlight, theme.control_hover);
-        let icon_size =
-            NonZeroU32::new((20 * scene.dpi()).div_ceil(96)).unwrap_or(NonZeroU32::MIN);
-        for (action, _) in scene.items() {
-            self.ensure_icon(action_asset(action), icon_size)?;
+        self.apply_theme(&scene.theme());
+        let entries = scene.entries();
+        let icon_size = nonzero((20 * scene.dpi()).div_ceil(96));
+        let fallback_size = nonzero((42 * scene.dpi()).div_ceil(96));
+        for entry in &entries {
+            let size = if entry.preview.is_some() {
+                fallback_size
+            } else {
+                icon_size
+            };
+            self.ensure_popup_icon(&entry.icon, size)?;
         }
-        let icons = scene
-            .items()
-            .into_iter()
-            .map(|(action, _)| self.icon(action_asset(action), icon_size).cloned())
-            .collect::<Result<Vec<_>, _>>()?;
-        let panel = D2D_RECT_F {
-            left: 0.5,
-            top: 0.5,
-            right: as_f32(size.width()) - 0.5,
-            bottom: as_f32(size.height()) - 0.5,
-        };
-        let panel = rounded(panel, scale(scene, theme.radii.panel));
+        self.ensure_embedded(SvgAsset::FluentDismiss, icon_size)?;
+        if scene.picker_navigation().is_some() {
+            self.ensure_embedded(SvgAsset::FluentPrevious, icon_size)?;
+            self.ensure_embedded(SvgAsset::FluentNext, icon_size)?;
+        }
+        let format = self.text_format(scene.dpi())?;
+        let panel = rounded(
+            D2D_RECT_F {
+                left: 0.5,
+                top: 0.5,
+                right: as_f32(size.width()) - 0.5,
+                bottom: as_f32(size.height()) - 0.5,
+            },
+            scale(scene, scene.theme().radii.panel),
+        );
         let transparent = TRANSPARENT;
 
-        // SAFETY: Target, brushes, format, text and local geometry remain live through EndDraw.
+        // SAFETY: Target, brushes, text, bitmaps and local geometry remain live through EndDraw.
         let result = unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&raw const transparent));
             self.context
                 .FillRoundedRectangle(&raw const panel, &self.panel);
-            for ((action, bounds), icon) in scene.items().into_iter().zip(&icons) {
-                let bounds = rect(bounds);
-                if scene.highlighted(action) {
-                    let highlight = rounded(bounds, scale(scene, theme.radii.control));
-                    self.context
-                        .FillRoundedRectangle(&raw const highlight, &self.highlight);
-                }
-                let icon_extent = as_f32(icon_size.get());
-                let icon_bounds = D2D_RECT_F {
-                    left: (bounds.left + bounds.right - icon_extent) * 0.5,
-                    top: (bounds.top + bounds.bottom - icon_extent) * 0.5,
-                    right: (bounds.left + bounds.right + icon_extent) * 0.5,
-                    bottom: (bounds.top + bounds.bottom + icon_extent) * 0.5,
-                };
-                self.context.DrawBitmap(
-                    icon,
-                    Some(&raw const icon_bounds),
-                    1.0,
-                    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
-                    None,
-                    None,
-                );
+            for entry in &entries {
+                self.draw_entry(entry, scene, &format, icon_size, fallback_size)?;
             }
+            self.draw_picker_navigation(scene, size, icon_size)?;
             self.context.EndDraw(None, None)
         };
         match result {
@@ -166,39 +175,289 @@ impl ContextMenuRenderer {
         }
     }
 
-    fn ensure_icon(
+    fn draw_picker_navigation(
+        &self,
+        scene: &ContextMenuScene,
+        size: SurfaceSize,
+        icon_size: NonZeroU32,
+    ) -> Result<(), ContextMenuRendererError> {
+        let Some((previous, next)) = scene.picker_navigation() else {
+            return Ok(());
+        };
+        let diameter = (28 * scene.dpi()).div_ceil(96);
+        let top = size.height().saturating_sub(diameter) / 2;
+        if previous {
+            self.draw_navigation_icon(
+                SvgAsset::FluentPrevious,
+                physical_rect(2, top, diameter, diameter),
+                icon_size,
+            )?;
+        }
+        if next {
+            self.draw_navigation_icon(
+                SvgAsset::FluentNext,
+                physical_rect(
+                    size.width().saturating_sub(diameter + 2),
+                    top,
+                    diameter,
+                    diameter,
+                ),
+                icon_size,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn draw_navigation_icon(
+        &self,
+        asset: SvgAsset,
+        bounds: PhysicalRect,
+        icon_size: NonZeroU32,
+    ) -> Result<(), ContextMenuRendererError> {
+        let background = rounded(rect(bounds), as_f32(bounds.height()) / 2.0);
+        // SAFETY: Drawing occurs inside the active Direct2D draw transaction.
+        unsafe {
+            self.context
+                .FillRoundedRectangle(&raw const background, &self.highlight);
+        };
+        let bitmap = self.embedded_bitmap(asset, icon_size)?;
+        let destination = centered_rect(bounds, icon_size.get());
+        // SAFETY: The bitmap and destination rectangle remain live for the synchronous draw.
+        unsafe {
+            self.context.DrawBitmap(
+                bitmap,
+                Some(&raw const destination),
+                1.0,
+                D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                None,
+                None,
+            );
+        };
+        Ok(())
+    }
+
+    fn draw_entry(
+        &self,
+        entry: &PopupEntry<SvgAsset>,
+        scene: &ContextMenuScene,
+        format: &IDWriteTextFormat,
+        icon_size: NonZeroU32,
+        fallback_size: NonZeroU32,
+    ) -> Result<(), ContextMenuRendererError> {
+        let bounds = rect(entry.bounds);
+        let radius = scale(scene, scene.theme().radii.control);
+        if entry.highlighted {
+            let highlight = rounded(bounds, radius);
+            // SAFETY: Drawing occurs inside the active Direct2D draw transaction.
+            unsafe {
+                self.context
+                    .FillRoundedRectangle(&raw const highlight, &self.highlight);
+            };
+        }
+        if entry.active {
+            let active = rounded(bounds, radius);
+            // SAFETY: Drawing occurs inside the active Direct2D draw transaction.
+            unsafe {
+                self.context.DrawRoundedRectangle(
+                    &raw const active,
+                    &self.active,
+                    1.0,
+                    None,
+                );
+            };
+        }
+
+        let artwork_size = if entry.preview.is_some() {
+            fallback_size
+        } else {
+            icon_size
+        };
+        let icon = self.popup_bitmap(&entry.icon, artwork_size)?;
+        let icon_bounds = icon_bounds(entry, artwork_size);
+        // SAFETY: The bitmap and destination rectangle are live through this synchronous draw.
+        unsafe {
+            self.context.DrawBitmap(
+                icon,
+                Some(&raw const icon_bounds),
+                1.0,
+                D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                None,
+                None,
+            );
+        };
+        self.draw_label(entry, format);
+        self.draw_close(entry, icon_size)?;
+        Ok(())
+    }
+
+    fn draw_label(&self, entry: &PopupEntry<SvgAsset>, format: &IDWriteTextFormat) {
+        if entry.label.is_empty() {
+            return;
+        }
+        let mut bounds = rect(entry.bounds);
+        let height = bounds.bottom - bounds.top;
+        if let Some(preview) = entry.preview {
+            bounds.left += 12.0;
+            bounds.bottom = as_f32(preview.min_y());
+        } else {
+            bounds.left += height;
+        }
+        if let Some(close) = entry.close {
+            bounds.right = as_f32(close.min_x().saturating_sub(4));
+        }
+        let text = entry.label.encode_utf16().collect::<Vec<_>>();
+        // SAFETY: Drawing occurs inside the active transaction; text and bounds remain live.
+        unsafe {
+            self.context.DrawText(
+                &text,
+                format,
+                &raw const bounds,
+                &self.text,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+        };
+    }
+
+    fn draw_close(
+        &self,
+        entry: &PopupEntry<SvgAsset>,
+        icon_size: NonZeroU32,
+    ) -> Result<(), ContextMenuRendererError> {
+        let Some(close) = entry.close.filter(|_| entry.highlighted) else {
+            return Ok(());
+        };
+        if entry.close_highlighted {
+            let highlight = rounded(rect(close), as_f32(close.height()) * 0.25);
+            // SAFETY: Drawing occurs inside the active Direct2D draw transaction.
+            unsafe {
+                self.context
+                    .FillRoundedRectangle(&raw const highlight, &self.highlight);
+            };
+        }
+        let bitmap = self.embedded_bitmap(SvgAsset::FluentDismiss, icon_size)?;
+        let bounds = centered_rect(close, icon_size.get());
+        // SAFETY: The retained bitmap and local bounds are live for the synchronous draw.
+        unsafe {
+            self.context.DrawBitmap(
+                bitmap,
+                Some(&raw const bounds),
+                1.0,
+                D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                None,
+                None,
+            );
+        };
+        Ok(())
+    }
+
+    fn apply_theme(&self, value: &Theme) {
+        theme::set(&self.panel, value.chrome_overlay);
+        theme::set(&self.highlight, value.control_hover);
+        theme::set(&self.active, value.accent_soft);
+        theme::set(&self.text, value.text);
+    }
+
+    fn text_format(&mut self, dpi: u32) -> Result<IDWriteTextFormat, WindowsError> {
+        if let Some(format) = self.text_formats.get(&dpi) {
+            return Ok(format.clone());
+        }
+        let size = 13.5 * as_f32(dpi) / TARGET_DPI;
+        // SAFETY: Static family and locale strings are NUL terminated.
+        let format = unsafe {
+            self.write_factory.CreateTextFormat(
+                w!("Segoe UI Variable Text"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size,
+                w!("en-us"),
+            )?
+        };
+        // SAFETY: The newly created format accepts these documented layout values.
+        unsafe {
+            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        }
+        self.text_formats.insert(dpi, format.clone());
+        Ok(format)
+    }
+
+    fn ensure_popup_icon(
+        &mut self,
+        icon: &PopupIcon<SvgAsset>,
+        size: NonZeroU32,
+    ) -> Result<(), ContextMenuRendererError> {
+        match icon {
+            PopupIcon::Symbol(symbol) => self.ensure_embedded(symbol_asset(*symbol), size),
+            PopupIcon::Artwork(Icon::Embedded(asset)) => self.ensure_embedded(*asset, size),
+            PopupIcon::Artwork(Icon::Raster(raster)) => self.ensure_raster(raster),
+        }
+    }
+
+    fn ensure_embedded(
         &mut self,
         asset: SvgAsset,
         size: NonZeroU32,
     ) -> Result<(), ContextMenuRendererError> {
         let key = (asset, size);
-        if self.icons.contains_key(&key) {
+        if self.embedded.contains_key(&key) {
             return Ok(());
         }
         let raster = self.assets.rasterize(asset, RasterSize::square(size))?;
-        let properties = source_properties();
-        // SAFETY: The raster owns tightly packed premultiplied BGRA8 pixels for this size.
-        let bitmap = unsafe {
-            self.context.CreateBitmap(
-                D2D_SIZE_U {
-                    width: raster.size().width(),
-                    height: raster.size().height(),
-                },
-                Some(raster.pixels().as_ptr().cast::<c_void>()),
-                raster.stride()?,
-                &raw const properties,
-            )?
-        };
-        self.icons.insert(key, bitmap);
+        let bitmap = upload_bitmap(
+            &self.context,
+            raster.size().width(),
+            raster.size().height(),
+            raster.pixels(),
+            raster.stride()?,
+        )?;
+        self.embedded.insert(key, bitmap);
         Ok(())
     }
 
-    fn icon(
+    fn ensure_raster(
+        &mut self,
+        raster: &RasterIcon,
+    ) -> Result<(), ContextMenuRendererError> {
+        let key = raster_key(raster);
+        if self.rasters.contains_key(&key) {
+            return Ok(());
+        }
+        let bitmap = upload_bitmap(
+            &self.context,
+            raster.width(),
+            raster.height(),
+            raster.pixels(),
+            raster.stride(),
+        )?;
+        self.rasters.insert(key, bitmap);
+        Ok(())
+    }
+
+    fn popup_bitmap(
+        &self,
+        icon: &PopupIcon<SvgAsset>,
+        size: NonZeroU32,
+    ) -> Result<&ID2D1Bitmap1, ContextMenuRendererError> {
+        match icon {
+            PopupIcon::Symbol(symbol) => self.embedded_bitmap(symbol_asset(*symbol), size),
+            PopupIcon::Artwork(Icon::Embedded(asset)) => self.embedded_bitmap(*asset, size),
+            PopupIcon::Artwork(Icon::Raster(raster)) => self
+                .rasters
+                .get(&raster_key(raster))
+                .ok_or(ContextMenuRendererError::BitmapCacheInvariant),
+        }
+    }
+
+    fn embedded_bitmap(
         &self,
         asset: SvgAsset,
         size: NonZeroU32,
     ) -> Result<&ID2D1Bitmap1, ContextMenuRendererError> {
-        self.icons
+        self.embedded
             .get(&(asset, size))
             .ok_or(ContextMenuRendererError::BitmapCacheInvariant)
     }
@@ -208,10 +467,30 @@ impl ContextMenuRenderer {
 pub(super) enum ContextMenuRendererError {
     #[error(transparent)]
     Asset(#[from] AssetError),
-    #[error("uploaded context-menu icon disappeared from the graphics cache")]
+    #[error("uploaded popup icon disappeared from the graphics cache")]
     BitmapCacheInvariant,
     #[error(transparent)]
     Windows(#[from] WindowsError),
+}
+
+fn upload_bitmap(
+    context: &ID2D1DeviceContext,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    stride: u32,
+) -> Result<ID2D1Bitmap1, WindowsError> {
+    let properties = source_properties();
+    // SAFETY: The validated source slice contains premultiplied BGRA bytes and remains live
+    // through the synchronous Direct2D copy.
+    unsafe {
+        context.CreateBitmap(
+            D2D_SIZE_U { width, height },
+            Some(pixels.as_ptr().cast::<c_void>()),
+            stride,
+            &raw const properties,
+        )
+    }
 }
 
 fn brush(
@@ -248,6 +527,37 @@ fn source_properties() -> D2D1_BITMAP_PROPERTIES1 {
     }
 }
 
+fn icon_bounds(entry: &PopupEntry<SvgAsset>, size: NonZeroU32) -> D2D_RECT_F {
+    if let Some(preview) = entry.preview {
+        centered_rect(preview, size.get())
+    } else if entry.label.is_empty() {
+        centered_rect(entry.bounds, size.get())
+    } else {
+        let inset = entry.bounds.height().saturating_sub(size.get()) / 2;
+        D2D_RECT_F {
+            left: as_f32(entry.bounds.min_x().saturating_add(inset)),
+            top: as_f32(entry.bounds.min_y().saturating_add(inset)),
+            right: as_f32(entry.bounds.min_x().saturating_add(inset + size.get())),
+            bottom: as_f32(entry.bounds.min_y().saturating_add(inset + size.get())),
+        }
+    }
+}
+
+fn centered_rect(bounds: PhysicalRect, size: u32) -> D2D_RECT_F {
+    let left = bounds
+        .min_x()
+        .saturating_add(bounds.width().saturating_sub(size) / 2);
+    let top = bounds
+        .min_y()
+        .saturating_add(bounds.height().saturating_sub(size) / 2);
+    D2D_RECT_F {
+        left: as_f32(left),
+        top: as_f32(top),
+        right: as_f32(left.saturating_add(size)),
+        bottom: as_f32(top.saturating_add(size)),
+    }
+}
+
 fn rect(value: PhysicalRect) -> D2D_RECT_F {
     D2D_RECT_F {
         left: as_f32(value.min_x()),
@@ -265,23 +575,34 @@ const fn rounded(rect: D2D_RECT_F, radius: f32) -> D2D1_ROUNDED_RECT {
     }
 }
 
-const fn action_asset(action: ContextMenuAction) -> SvgAsset {
-    match action {
-        ContextMenuAction::RequestShutdown => SvgAsset::FluentPower,
-        ContextMenuAction::OpenVolumeMixer => SvgAsset::FluentVolume,
-        ContextMenuAction::OpenSettings => SvgAsset::FluentSettings,
-        ContextMenuAction::OpenTrayOverflow => SvgAsset::FluentTray,
-        ContextMenuAction::QuitLotus => SvgAsset::FluentDismiss,
+const fn symbol_asset(symbol: PopupSymbol) -> SvgAsset {
+    match symbol {
+        PopupSymbol::Power => SvgAsset::FluentPower,
+        PopupSymbol::Volume => SvgAsset::FluentVolume,
+        PopupSymbol::Settings => SvgAsset::FluentSettings,
+        PopupSymbol::Tray => SvgAsset::FluentTray,
+        PopupSymbol::Quit | PopupSymbol::Close => SvgAsset::FluentDismiss,
+        PopupSymbol::Open => SvgAsset::FluentOpen,
+        PopupSymbol::Pin => SvgAsset::FluentPin,
+        PopupSymbol::Unpin => SvgAsset::FluentPinOff,
     }
+}
+
+fn raster_key(raster: &RasterIcon) -> (RasterIconId, u32, u32) {
+    (raster.id().clone(), raster.width(), raster.height())
 }
 
 fn scale(scene: &ContextMenuScene, dips: f32) -> f32 {
     as_f32(scene.dpi()) * dips / TARGET_DPI
 }
 
+fn nonzero(value: u32) -> NonZeroU32 {
+    NonZeroU32::new(value).unwrap_or(NonZeroU32::MIN)
+}
+
 #[allow(
     clippy::cast_precision_loss,
-    reason = "menu dimensions remain below f32 exact range"
+    reason = "popup dimensions remain below f32 exact range"
 )]
 const fn as_f32(value: u32) -> f32 {
     value as f32
@@ -296,4 +617,3 @@ const fn rgba8(red: u8, green: u8, blue: u8, alpha: u8) -> D2D1_COLOR_F {
         a: alpha as f32 / MAX,
     }
 }
-use super::assets::{AssetError, RasterSize, SvgAsset, SvgAssetCache};

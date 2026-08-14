@@ -26,6 +26,14 @@ pub struct ContextMenuWindow {
     _class: Rc<WindowClass>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PopupAlignment {
+    Start,
+    #[default]
+    Center,
+    End,
+}
+
 impl ContextMenuWindow {
     pub(super) fn create(class: Rc<WindowClass>, owner: HWND) -> Result<Self> {
         let extended_style = WINDOW_EX_STYLE(WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0);
@@ -66,6 +74,7 @@ impl ContextMenuWindow {
     pub fn prepare_at(
         &mut self,
         anchor: SignedPoint,
+        alignment: PopupAlignment,
         size: NonZeroPhysicalSize,
     ) -> Result<u32> {
         let display = nearest_display_to_point(anchor.x, anchor.y)?;
@@ -73,7 +82,12 @@ impl ContextMenuWindow {
         let height = i32::try_from(size.height()).unwrap_or(i32::MAX);
         let maximum_x = display.work_area.right.saturating_sub(width);
         let maximum_y = display.work_area.bottom.saturating_sub(height);
-        let x = anchor.x.saturating_sub(width / 2).clamp(
+        let x = match alignment {
+            PopupAlignment::Start => anchor.x,
+            PopupAlignment::Center => anchor.x.saturating_sub(width / 2),
+            PopupAlignment::End => anchor.x.saturating_sub(width),
+        }
+        .clamp(
             display.work_area.left,
             maximum_x.max(display.work_area.left),
         );

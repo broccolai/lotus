@@ -4,7 +4,8 @@ use lotus_ui::theme::Theme;
 
 use super::{
     AppError, ContextMenuCompositionSurfaceState, ContextMenuEvent, ContextMenuScene,
-    ContextMenuWindow, DeviceState, NonZeroPhysicalSize, SignedPoint, SurfaceError,
+    ContextMenuWindow, DeviceState, DwmThumbnailHost, NativePickerWindow,
+    NonZeroPhysicalSize, PopupAlignment, SignedPoint, SurfaceError, WindowPickerStyle,
 };
 
 pub(super) struct ContextMenuRuntime {
@@ -12,36 +13,140 @@ pub(super) struct ContextMenuRuntime {
     pub(super) scene: ContextMenuScene,
     pub(super) surface: Option<ContextMenuCompositionSurfaceState>,
     pub(super) visible: bool,
+    thumbnails: DwmThumbnailHost,
+    theme: Theme,
+    anchor: Option<SignedPoint>,
+    alignment: PopupAlignment,
+    picker_identity: Option<String>,
 }
 
 impl ContextMenuRuntime {
     pub(super) fn new(window: ContextMenuWindow, theme: &Theme) -> Result<Self, AppError> {
-        let mut scene =
-            ContextMenuScene::new(window.dpi()).ok_or(AppError::InvalidContextMenuScene)?;
+        let mut scene = ContextMenuScene::system(window.dpi())
+            .ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(*theme);
         Ok(Self {
+            thumbnails: DwmThumbnailHost::new(window.handle()),
             window,
             scene,
             surface: None,
             visible: false,
+            theme: *theme,
+            anchor: None,
+            alignment: PopupAlignment::Center,
+            picker_identity: None,
         })
     }
 
     pub(super) fn apply_settings(&mut self, settings: &DockSettings) {
         let _ = self.scene.set_theme(theme_for(settings));
+        self.theme = theme_for(settings);
         lotus_windows::backdrop::apply_popup_settings(self.window.handle(), settings);
     }
 
     pub(super) fn open(
         &mut self,
         anchor: SignedPoint,
+        alignment: PopupAlignment,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        let mut scene = ContextMenuScene::system(self.window.dpi())
+            .ok_or(AppError::InvalidContextMenuScene)?;
+        let _ = scene.set_theme(self.theme);
+        self.scene = scene;
+        self.picker_identity = None;
+        self.alignment = alignment;
+        self.open_current(anchor, graphics)
+    }
+
+    pub(super) fn open_app(
+        &mut self,
+        anchor: SignedPoint,
+        source_index: usize,
+        running_windows: usize,
+        pinned: bool,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        let mut scene =
+            ContextMenuScene::app(self.window.dpi(), source_index, running_windows, pinned)
+                .ok_or(AppError::InvalidContextMenuScene)?;
+        let _ = scene.set_theme(self.theme);
+        self.scene = scene;
+        self.picker_identity = None;
+        self.alignment = PopupAlignment::Center;
+        self.open_current(anchor, graphics)
+    }
+
+    pub(super) fn open_picker(
+        &mut self,
+        anchor: SignedPoint,
+        source_index: usize,
+        identity: String,
+        style: WindowPickerStyle,
+        windows: Vec<NativePickerWindow>,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        let mut scene =
+            ContextMenuScene::picker(self.window.dpi(), source_index, style, windows)
+                .ok_or(AppError::InvalidContextMenuScene)?;
+        let _ = scene.set_theme(self.theme);
+        self.scene = scene;
+        self.picker_identity = Some(identity);
+        self.alignment = PopupAlignment::Center;
+        self.open_current(anchor, graphics)
+    }
+
+    pub(super) fn picker_identity(&self) -> Option<&str> {
+        self.picker_identity.as_deref()
+    }
+
+    pub(super) fn replace_picker(
+        &mut self,
+        source_index: usize,
+        style: WindowPickerStyle,
+        windows: Vec<NativePickerWindow>,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        if windows.is_empty() {
+            self.hide();
+            return Ok(());
+        }
+        let Some(anchor) = self.anchor else {
+            self.hide();
+            return Ok(());
+        };
+        let mut scene =
+            ContextMenuScene::picker(self.window.dpi(), source_index, style, windows)
+                .ok_or(AppError::InvalidContextMenuScene)?;
+        let _ = scene.set_theme(self.theme);
+        self.scene = scene;
+        self.prepare_surface(anchor, graphics)?;
+        self.render(graphics)
+    }
+
+    fn open_current(
+        &mut self,
+        anchor: SignedPoint,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        self.anchor = Some(anchor);
+        self.prepare_surface(anchor, graphics)?;
+        self.visible = true;
+        self.render(graphics)?;
+        self.window.show();
+        Ok(())
+    }
+
+    fn prepare_surface(
+        &mut self,
+        anchor: SignedPoint,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         let mut desired = self.scene.desired_size();
-        let dpi = self.window.prepare_at(anchor, desired)?;
+        let dpi = self.window.prepare_at(anchor, self.alignment, desired)?;
         if self.scene.set_dpi(dpi) {
             desired = self.scene.desired_size();
-            let _dpi = self.window.prepare_at(anchor, desired)?;
+            let _dpi = self.window.prepare_at(anchor, self.alignment, desired)?;
         }
         if let Some(surface) = &mut self.surface {
             surface.resize(desired)?;
@@ -53,9 +158,6 @@ impl ContextMenuRuntime {
                 desired,
             )?);
         }
-        self.visible = true;
-        self.render(graphics)?;
-        self.window.show();
         Ok(())
     }
 
@@ -63,6 +165,9 @@ impl ContextMenuRuntime {
         if self.visible {
             self.window.hide();
             self.visible = false;
+            self.thumbnails.clear();
+            self.anchor = None;
+            self.picker_identity = None;
             let _ = self.scene.pointer_left();
         }
     }
@@ -76,7 +181,10 @@ impl ContextMenuRuntime {
             .as_mut()
             .ok_or(AppError::InvalidContextMenuScene)?;
         match surface.render_scene(&self.scene) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.thumbnails.reconcile(&self.scene.picker_previews());
+                Ok(())
+            }
             Err(SurfaceError::DeviceLost(_)) => {
                 let _ = graphics.poll();
                 graphics.recover()?;

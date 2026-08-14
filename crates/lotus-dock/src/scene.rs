@@ -1,5 +1,6 @@
 use std::num::NonZeroU32;
 
+use lotus_media::{MediaControls, MediaHitTarget, MediaWidgetLayout, PlaybackState};
 pub use lotus_ui::icon::{RasterIcon, RasterIconId};
 use lotus_ui::theme::Theme;
 
@@ -30,6 +31,7 @@ pub struct DockItem<Asset> {
     source_index: usize,
     pub icon: DockIcon<Asset>,
     pub badge: Option<DockBadge>,
+    running: bool,
     exiting: bool,
 }
 
@@ -55,6 +57,26 @@ pub struct SystemStatusItem<Asset> {
     pub icon: Option<DockIcon<Asset>>,
     pub primary_text: String,
     pub secondary_text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MediaItem<Asset> {
+    pub source_id: String,
+    pub title: String,
+    pub artist: String,
+    pub show_metadata: bool,
+    pub artwork: DockIcon<Asset>,
+    pub controls: MediaControls,
+    pub playback: PlaybackState,
+    pub symbols: MediaSymbols<Asset>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MediaSymbols<Asset> {
+    pub previous: Asset,
+    pub play: Asset,
+    pub pause: Asset,
+    pub next: Asset,
 }
 
 impl<Asset> SystemStatusItem<Asset> {
@@ -83,6 +105,7 @@ impl<Asset> DockItem<Asset> {
             source_index: 0,
             icon: DockIcon::Embedded(icon),
             badge: None,
+            running: false,
             exiting: false,
         }
     }
@@ -92,6 +115,7 @@ impl<Asset> DockItem<Asset> {
             source_index,
             icon,
             badge: None,
+            running: false,
             exiting: false,
         }
     }
@@ -122,6 +146,10 @@ impl<Asset> DockItem<Asset> {
 
     pub fn set_badge(&mut self, badge: Option<DockBadge>) {
         self.badge = badge;
+    }
+
+    pub fn set_running(&mut self, running: bool) {
+        self.running = running;
     }
 }
 
@@ -185,6 +213,7 @@ pub struct DockScene<Asset> {
     anchor: DockAnchor,
     launcher_button_visible: bool,
     show_desktop_button: bool,
+    media: Option<MediaItem<Asset>>,
     status_items: Vec<SystemStatusItem<Asset>>,
     items: Vec<DockItem<Asset>>,
     interaction: DockInteractionState,
@@ -206,6 +235,7 @@ impl<Asset: Clone> DockScene<Asset> {
             anchor: DockAnchor::Center,
             launcher_button_visible: true,
             show_desktop_button: false,
+            media: None,
             status_items: Vec::new(),
             items,
             interaction: DockInteractionState::default(),
@@ -285,6 +315,14 @@ impl<Asset: Clone> DockScene<Asset> {
 
     pub fn set_show_desktop_button(&mut self, visible: bool) {
         self.show_desktop_button = visible;
+    }
+
+    pub fn replace_media(&mut self, media: Option<MediaItem<Asset>>) {
+        self.media = media;
+    }
+
+    pub const fn media(&self) -> Option<&MediaItem<Asset>> {
+        self.media.as_ref()
     }
 
     pub fn replace_status_items(&mut self, items: Vec<SystemStatusItem<Asset>>) {
@@ -378,6 +416,17 @@ impl<Asset: Clone> DockScene<Asset> {
             .icon_size
             .saturating_add(metrics.spacing.saturating_mul(2));
         let item_strip_width = item_count.saturating_mul(slot_width);
+        let media_width = self
+            .media
+            .as_ref()
+            .and_then(|media| {
+                MediaWidgetLayout::new(
+                    self.dpi(),
+                    self.desired_height_dips(),
+                    media.show_metadata,
+                )
+            })
+            .map_or(0, |layout| layout.width);
         let show_desktop_width = self
             .show_desktop_button
             .then_some(metrics.show_desktop_width);
@@ -389,6 +438,14 @@ impl<Asset: Clone> DockScene<Asset> {
                 | SystemStatusKind::BackgroundApps => metrics.status_icon_slot_width,
             })
         });
+        let media_chrome_width = if self.media_separator_visible() {
+            metrics
+                .spacing
+                .saturating_add(metrics.divider_width)
+                .saturating_add(metrics.spacing)
+        } else {
+            0
+        };
         let status_chrome_width = if self.status_separator_visible() {
             metrics
                 .spacing
@@ -408,6 +465,8 @@ impl<Asset: Clone> DockScene<Asset> {
             .saturating_mul(2)
             .saturating_add(item_strip_width)
             .saturating_add(launcher_width.unwrap_or_default())
+            .saturating_add(media_chrome_width)
+            .saturating_add(media_width)
             .saturating_add(status_chrome_width)
             .saturating_add(status_width)
             .saturating_add(show_desktop_width.unwrap_or_default());
@@ -469,6 +528,7 @@ impl<Asset: Clone> DockScene<Asset> {
                     source_index: item.source_index,
                     icon: item.icon.clone(),
                     badge: item.badge,
+                    running: item.running,
                     exiting: item.exiting,
                     bounds: PixelRect::square(
                         cursor.saturating_add(metrics.spacing),
@@ -482,6 +542,8 @@ impl<Asset: Clone> DockScene<Asset> {
             })
             .collect();
 
+        let (media_divider, media) =
+            self.layout_media(&mut cursor, content_top, surface_height, desired, &metrics);
         let (status_divider, status_items) = self.layout_status_items(
             &mut cursor,
             content_top,
@@ -505,6 +567,8 @@ impl<Asset: Clone> DockScene<Asset> {
             items,
             launcher_button_visible: self.launcher_button_visible,
             divider,
+            media_divider,
+            media,
             status_divider,
             jirachi,
             jirachi_hit_bounds,
@@ -512,6 +576,77 @@ impl<Asset: Clone> DockScene<Asset> {
             show_desktop,
             icon_size: nonzero_or_one(metrics.icon_size),
         }
+    }
+
+    fn layout_media(
+        &self,
+        cursor: &mut u32,
+        content_top: u32,
+        surface_height: u32,
+        desired: DockSize,
+        metrics: &ScaledMetrics,
+    ) -> (Option<PixelRect>, Option<LaidOutMedia<Asset>>) {
+        let Some(media) = &self.media else {
+            return (None, None);
+        };
+        let divider = self.media_separator_visible().then(|| {
+            let divider = segment_divider(*cursor, surface_height, metrics);
+            *cursor = divider
+                .left
+                .saturating_add(metrics.divider_width)
+                .saturating_add(metrics.spacing);
+            divider
+        });
+        let widget = MediaWidgetLayout::new(
+            self.dpi(),
+            self.desired_height_dips(),
+            media.show_metadata,
+        )
+        .expect("the scene has a nonzero DPI");
+        let translated = |bounds: lotus_ui::geometry::PhysicalRect| PixelRect {
+            left: cursor.saturating_add(bounds.origin.x),
+            top: content_top.saturating_add(bounds.origin.y),
+            width: bounds.size.width,
+            height: bounds.size.height,
+        };
+        let play_pause = if media.playback == PlaybackState::Playing {
+            (&media.symbols.pause, media.controls.pause)
+        } else {
+            (&media.symbols.play, media.controls.play)
+        };
+        let laid_out = LaidOutMedia {
+            source_id: media.source_id.clone(),
+            artwork: LaidOutStatusIcon {
+                icon: media.artwork.clone(),
+                bounds: translated(widget.artwork),
+            },
+            metadata: translated(widget.metadata),
+            title: media.title.clone(),
+            artist: media.artist.clone(),
+            controls: vec![
+                LaidOutMediaControl {
+                    target: MediaHitTarget::Previous,
+                    icon: DockIcon::Embedded(media.symbols.previous.clone()),
+                    bounds: translated(widget.previous),
+                    enabled: media.controls.previous,
+                },
+                LaidOutMediaControl {
+                    target: MediaHitTarget::PlayPause,
+                    icon: DockIcon::Embedded(play_pause.0.clone()),
+                    bounds: translated(widget.play_pause),
+                    enabled: play_pause.1,
+                },
+                LaidOutMediaControl {
+                    target: MediaHitTarget::Next,
+                    icon: DockIcon::Embedded(media.symbols.next.clone()),
+                    bounds: translated(widget.next),
+                    enabled: media.controls.next,
+                },
+            ],
+        };
+        *cursor = cursor.saturating_add(widget.width);
+        debug_assert_eq!(desired.height(), widget.height);
+        (divider, Some(laid_out))
     }
 
     fn layout_status_items(
@@ -523,12 +658,7 @@ impl<Asset: Clone> DockScene<Asset> {
         metrics: &ScaledMetrics,
     ) -> (Option<PixelRect>, Vec<LaidOutStatusItem<Asset>>) {
         let divider = self.status_separator_visible().then(|| {
-            let divider = PixelRect {
-                left: cursor.saturating_add(metrics.spacing),
-                top: surface_height.saturating_sub(metrics.divider_height) / 2,
-                width: metrics.divider_width,
-                height: metrics.divider_height,
-            };
+            let divider = segment_divider(*cursor, surface_height, metrics);
             *cursor = cursor
                 .saturating_add(metrics.spacing)
                 .saturating_add(metrics.divider_width)
@@ -544,7 +674,23 @@ impl<Asset: Clone> DockScene<Asset> {
     }
 
     fn status_separator_visible(&self) -> bool {
-        !self.items.is_empty() && !self.status_items.is_empty()
+        (self.app_segment_visible() || self.media.is_some())
+            && !self.status_items.is_empty()
+    }
+
+    fn media_separator_visible(&self) -> bool {
+        self.app_segment_visible() && self.media.is_some()
+    }
+
+    fn app_segment_visible(&self) -> bool {
+        self.launcher_button_visible || !self.items.is_empty()
+    }
+
+    fn desired_height_dips(&self) -> u32 {
+        self.metrics
+            .icon_size
+            .get()
+            .saturating_add(self.metrics.vertical_padding.saturating_mul(2))
     }
 
     fn scaled_metrics(&self) -> ScaledMetrics {
@@ -616,6 +762,15 @@ struct ScaledMetrics {
     status_clock_width: u32,
 }
 
+fn segment_divider(cursor: u32, surface_height: u32, metrics: &ScaledMetrics) -> PixelRect {
+    PixelRect {
+        left: cursor.saturating_add(metrics.spacing),
+        top: surface_height.saturating_sub(metrics.divider_height) / 2,
+        width: metrics.divider_width,
+        height: metrics.divider_height,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DockSize {
     pub(super) width: NonZeroU32,
@@ -663,6 +818,7 @@ pub struct LaidOutItem<Asset> {
     pub source_index: usize,
     pub icon: DockIcon<Asset>,
     pub badge: Option<DockBadge>,
+    pub running: bool,
     pub exiting: bool,
     pub bounds: PixelRect,
     pub hit_bounds: PixelRect,
@@ -683,11 +839,31 @@ pub struct LaidOutStatusItem<Asset> {
     pub secondary_text: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LaidOutMediaControl<Asset> {
+    pub target: MediaHitTarget,
+    pub icon: DockIcon<Asset>,
+    pub bounds: PixelRect,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LaidOutMedia<Asset> {
+    pub source_id: String,
+    pub artwork: LaidOutStatusIcon<Asset>,
+    pub metadata: PixelRect,
+    pub title: String,
+    pub artist: String,
+    pub controls: Vec<LaidOutMediaControl<Asset>>,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct DockLayout<Asset> {
     pub items: Vec<LaidOutItem<Asset>>,
     pub launcher_button_visible: bool,
     pub divider: PixelRect,
+    pub media_divider: Option<PixelRect>,
+    pub media: Option<LaidOutMedia<Asset>>,
     pub status_divider: Option<PixelRect>,
     pub jirachi: PixelRect,
     pub jirachi_hit_bounds: PixelRect,
@@ -705,6 +881,21 @@ impl<Asset> DockLayout<Asset> {
                 || {
                     (self.launcher_button_visible && self.jirachi_hit_bounds.contains(x, y))
                         .then_some(DockHitTarget::Jirachi)
+                        .or_else(|| {
+                            self.media.as_ref().and_then(|media| {
+                                if media.artwork.bounds.contains(x, y)
+                                    || media.metadata.contains(x, y)
+                                {
+                                    Some(DockHitTarget::Media(MediaHitTarget::Metadata))
+                                } else {
+                                    media
+                                        .controls
+                                        .iter()
+                                        .find(|control| control.bounds.contains(x, y))
+                                        .map(|control| DockHitTarget::Media(control.target))
+                                }
+                            })
+                        })
                         .or_else(|| {
                             self.status_items
                                 .iter()
@@ -736,6 +927,7 @@ impl<Asset> DockLayout<Asset> {
 pub enum DockHitTarget {
     Item(usize),
     Jirachi,
+    Media(MediaHitTarget),
     SystemStatus(SystemStatusKind),
     ShowDesktop,
 }

@@ -1,6 +1,7 @@
 mod context_menu;
 mod dock;
 mod launcher;
+mod media;
 mod runtime;
 mod runtime_helpers;
 mod settings;
@@ -19,9 +20,11 @@ use lotus_core::notification::NotificationSource;
 use lotus_core::search::SearchUsage;
 use lotus_core::settings::{
     DockSettings, DockZone, NotificationBadgeStyle, SettingsDecodeError, SettingsStore,
-    SettingsStoreError, decode_settings,
+    SettingsStoreError, WindowPickerStyle, decode_settings,
 };
-use lotus_core::window::WindowInfo;
+use lotus_core::window::{WindowId, WindowInfo};
+use lotus_dock::popup::order_picker_windows;
+use lotus_media::MediaSnapshot;
 use lotus_search::command::CommandId;
 use lotus_search::controller::{SearchController, SearchPresentation};
 use lotus_search::usage::SearchUsageStore;
@@ -30,7 +33,8 @@ use lotus_switcher::model::{RecentOrder, SwitcherSession};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::{
-    ActivationError, execute_activation, foreground_window, launch_target, switch_window,
+    ActivationError, execute_activation, foreground_window, launch_target,
+    request_window_close, switch_window,
 };
 use lotus_windows::alt_tab::{AltTabController, AltTabEvent, is_alt_tab_wake};
 use lotus_windows::appbar::ShellIntegration;
@@ -40,8 +44,12 @@ use lotus_windows::dialog::{
     confirm_install_update, confirm_restart, confirm_shutdown, show_error, show_information,
 };
 use lotus_windows::dpi::enable_per_monitor_v2;
+use lotus_windows::dwm_thumbnail::DwmThumbnailHost;
 use lotus_windows::interaction::{next_message, request_exit};
 use lotus_windows::launch::resolve_executable;
+use lotus_windows::media::{
+    MediaCommand, MediaController, MediaEvent, decode_artwork, is_media_wake,
+};
 use lotus_windows::native_icon::NativeIconCache;
 use lotus_windows::search_catalog::{SearchCatalogCache, is_search_catalog_wake};
 use lotus_windows::single_instance::SingleInstance;
@@ -58,6 +66,7 @@ use lotus_windows::window_tracker::{WindowTracker, WindowTrackerEvent};
 use lotus_windows::windows_key::{
     WindowsKeyController, WindowsKeyError, WindowsKeyEvent, is_windows_key_wake,
 };
+use media::MediaRuntime;
 use runtime::run_message_loop;
 use runtime_helpers::{
     apply_fullscreen_visibility, enable_optional_alt_tab, enable_optional_windows_key,
@@ -66,20 +75,20 @@ use runtime_helpers::{
     resize_launcher_surface, resize_surface, restart_current_process,
 };
 use settings::SettingsRuntime;
-use status::StatusRuntime;
+use status::{AuxiliaryZoneAction, StatusRuntime};
 use switcher::{AuxiliaryWindows, SwitcherRuntime};
 use thiserror::Error;
 
 use crate::graphics::assets::SvgAsset;
 use crate::graphics::context_menu_scene::{
-    ContextMenuAction, ContextMenuScene, MenuDirection,
+    AppMenuAction, ContextMenuAction, ContextMenuScene, NativePickerWindow, PopupAction,
 };
 use crate::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
 use crate::graphics::launcher_scene::{LauncherResult, LauncherScene};
 use crate::graphics::launcher_surface::LauncherCompositionSurfaceState;
 use crate::graphics::scene::{
-    DockAnchor, DockBadge, DockHitTarget, DockIcon, DockMetrics, DockScene,
-    SystemStatusItem, SystemStatusKind,
+    DockAnchor, DockBadge, DockHitTarget, DockIcon, DockMetrics, DockScene, MediaItem,
+    MediaSymbols, SystemStatusItem, SystemStatusKind,
 };
 use crate::graphics::scene_adapter::{
     adapt_dock_items_with_native, resolve_icon_with_native,
@@ -94,9 +103,9 @@ use crate::graphics::switcher_surface::SwitcherCompositionSurfaceState;
 use crate::graphics::{CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize};
 use crate::window::{
     ContextMenuEvent, ContextMenuWindow, CursorMove as WindowCursorMove,
-    DockContextRequest, DockWindow, PointerEvent, SearchEdit, SearchEvent, SearchWindow,
-    SelectionDirection, SettingsEvent, SettingsKey as WindowSettingsKey, SettingsWindow,
-    SignedPoint, StatusWindow, SwitcherEvent, SwitcherWindow, WindowEvent,
+    DockContextRequest, DockWindow, PointerEvent, PopupAlignment, SearchEdit, SearchEvent,
+    SearchWindow, SelectionDirection, SettingsEvent, SettingsKey as WindowSettingsKey,
+    SettingsWindow, SignedPoint, StatusWindow, SwitcherEvent, SwitcherWindow, WindowEvent,
 };
 
 #[derive(Debug, Error)]
@@ -199,9 +208,12 @@ pub fn run() -> Result<(), AppError> {
     resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
     let _shell_integration =
         ShellIntegration::setup(dock_model.settings(), &dock).unwrap_or(None);
-    auxiliary
-        .status
-        .sync(&dock, dock_model.settings(), &mut graphics)?;
+    auxiliary.status.sync(
+        &dock,
+        dock_model.settings(),
+        dock_model.media(),
+        &mut graphics,
+    )?;
     render_and_schedule(
         &dock,
         &mut graphics,
@@ -273,12 +285,17 @@ fn create_auxiliary_windows(
         dock_model.settings(),
     );
     let switcher = SwitcherRuntime::new(switcher_window, &theme_for(dock_model.settings()));
-    let status = StatusRuntime::new(dock.create_status_window()?, dock_model.settings())?;
+    let media = MediaRuntime::new(dock_model.settings().show_media_controls);
+    let status = StatusRuntime::new(
+        [dock.create_status_window()?, dock.create_status_window()?],
+        dock_model.settings(),
+    )?;
 
     Ok(AuxiliaryWindows {
         launcher,
         settings,
         context_menu,
+        media,
         status,
         switcher,
     })

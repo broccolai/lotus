@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 lotus-core.workspace = true
 lotus-dock.workspace = true
+lotus-media.workspace = true
 lotus-search.workspace = true
 lotus-settings.workspace = true
 lotus-switcher.workspace = true
