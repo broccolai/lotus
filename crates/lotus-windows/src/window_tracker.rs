@@ -21,9 +21,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, EnumWindows,
     GA_ROOT, GW_OWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetForegroundWindow,
     GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, IsWindowVisible, IsZoomed, KillTimer, OBJID_WINDOW,
-    PostThreadMessageW, SetTimer, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
-    WM_TIMER, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    GetWindowThreadProcessId, IsWindowVisible, KillTimer, OBJID_WINDOW, PostThreadMessageW,
+    SetTimer, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_TIMER,
+    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, Error, Result as WindowsResult};
 
@@ -37,7 +37,7 @@ const CLASS_NAME_CAPACITY: usize = 128;
 const FULLSCREEN_EDGE_TOLERANCE: i32 = 2;
 
 static CALLBACK_THREAD: AtomicU32 = AtomicU32::new(0);
-static NOTIFICATION_QUEUED: AtomicBool = AtomicBool::new(false);
+static DEFERRED_NOTIFICATION_QUEUED: AtomicBool = AtomicBool::new(false);
 
 pub struct WindowTracker {
     hooks: Vec<OwnedWinEventHook>,
@@ -51,6 +51,7 @@ pub struct WindowTracker {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WindowTrackerEvent {
     SnapshotRefreshed,
+    FullscreenRefreshed,
 }
 
 impl WindowTracker {
@@ -109,9 +110,17 @@ impl WindowTracker {
 
         match message_id {
             REFRESH_MESSAGE => {
-                NOTIFICATION_QUEUED.store(false, Ordering::Release);
+                let foreground = parameter == EVENT_SYSTEM_FOREGROUND as usize;
+                if !foreground {
+                    DEFERRED_NOTIFICATION_QUEUED.store(false, Ordering::Release);
+                }
                 self.restart_timer()?;
-                Ok(None)
+                if foreground {
+                    self.refresh_fullscreen();
+                    Ok(Some(WindowTrackerEvent::FullscreenRefreshed))
+                } else {
+                    Ok(None)
+                }
             }
             WM_TIMER if self.timer_id == Some(parameter) => {
                 self.cancel_timer();
@@ -140,8 +149,12 @@ impl WindowTracker {
 
     fn refresh(&mut self) -> Result<(), NativeError> {
         self.windows = enumerate_windows(self.own_process_id)?;
-        self.fullscreen_window = observe_fullscreen_window(self.own_process_id);
+        self.refresh_fullscreen();
         Ok(())
+    }
+
+    pub fn refresh_fullscreen(&mut self) {
+        self.fullscreen_window = observe_fullscreen_window(self.own_process_id);
     }
 
     fn refresh_if_changed(&mut self) -> Result<bool, NativeError> {
@@ -159,7 +172,7 @@ impl WindowTracker {
 impl Drop for WindowTracker {
     fn drop(&mut self) {
         CALLBACK_THREAD.store(0, Ordering::Release);
-        NOTIFICATION_QUEUED.store(false, Ordering::Release);
+        DEFERRED_NOTIFICATION_QUEUED.store(false, Ordering::Release);
         self.cancel_timer();
         if self.reconcile_timer_id != 0 {
             // SAFETY: This tracker owns the thread timer created during startup.
@@ -230,25 +243,33 @@ unsafe extern "system" fn win_event_callback(
     _event_thread: u32,
     _event_time: u32,
 ) {
-    if hwnd.0.is_null()
-        || (event != EVENT_SYSTEM_FOREGROUND && object_id != OBJID_WINDOW.0)
-        || NOTIFICATION_QUEUED.swap(true, Ordering::AcqRel)
+    if hwnd.0.is_null() || (event != EVENT_SYSTEM_FOREGROUND && object_id != OBJID_WINDOW.0)
     {
+        return;
+    }
+
+    let foreground = event == EVENT_SYSTEM_FOREGROUND;
+    if !foreground && DEFERRED_NOTIFICATION_QUEUED.swap(true, Ordering::AcqRel) {
         return;
     }
 
     let thread_id = CALLBACK_THREAD.load(Ordering::Acquire);
     if thread_id == 0 {
-        NOTIFICATION_QUEUED.store(false, Ordering::Release);
+        if !foreground {
+            DEFERRED_NOTIFICATION_QUEUED.store(false, Ordering::Release);
+        }
         return;
     }
 
-    // SAFETY: `thread_id` belongs to the tracker that installed this callback and owns an active
-    // GUI message queue. The custom message contains no borrowed pointers.
-    if unsafe { PostThreadMessageW(thread_id, REFRESH_MESSAGE, WPARAM(0), LPARAM(0)) }
-        .is_err()
+    let parameter = usize::try_from(event).unwrap_or_default();
+    // SAFETY: The target is the live tracker thread and the message transports only an event ID.
+    if unsafe {
+        PostThreadMessageW(thread_id, REFRESH_MESSAGE, WPARAM(parameter), LPARAM(0))
+    }
+    .is_err()
+        && !foreground
     {
-        NOTIFICATION_QUEUED.store(false, Ordering::Release);
+        DEFERRED_NOTIFICATION_QUEUED.store(false, Ordering::Release);
     }
 }
 
@@ -325,11 +346,8 @@ fn observe_fullscreen_window(own_process_id: u32) -> Option<WindowId> {
         process_id != 0 && process_id != own_process_id && should_include_window(hwnd);
     let window = window_bounds(hwnd)?;
     let monitor = monitor_bounds(hwnd)?;
-    // SAFETY: This read-only query accepts the live foreground HWND.
-    let maximized = unsafe { IsZoomed(hwnd).as_bool() };
     is_fullscreen_foreground(
         eligible,
-        maximized,
         screen_rect(window),
         screen_rect(monitor),
         FULLSCREEN_EDGE_TOLERANCE,

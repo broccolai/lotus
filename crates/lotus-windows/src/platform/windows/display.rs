@@ -77,6 +77,13 @@ pub fn primary_display() -> Result<Display> {
         .ok_or_else(no_display)?)
 }
 
+pub(crate) fn secondary_displays() -> Result<Vec<Display>> {
+    Ok(all_displays()?
+        .into_iter()
+        .filter(|display| !display.is_primary)
+        .collect())
+}
+
 fn all_displays() -> Result<Vec<Display>> {
     let mut displays = Vec::new();
     // SAFETY: Enumeration is synchronous and LPARAM carries a live vector pointer throughout.

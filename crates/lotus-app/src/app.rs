@@ -2,6 +2,7 @@ mod context_menu;
 mod dock;
 mod launcher;
 mod media;
+mod monitors;
 mod runtime;
 mod runtime_helpers;
 mod settings;
@@ -37,7 +38,7 @@ use lotus_windows::activation::{
     request_window_close, switch_window,
 };
 use lotus_windows::alt_tab::{AltTabController, AltTabEvent, is_alt_tab_wake};
-use lotus_windows::appbar::ShellIntegration;
+use lotus_windows::appbar::{ShellIntegration, fullscreen_notification};
 use lotus_windows::clipboard::{read_text, write_text};
 use lotus_windows::clock::{local_date, local_time_24h};
 use lotus_windows::dialog::{
@@ -67,6 +68,7 @@ use lotus_windows::windows_key::{
     WindowsKeyController, WindowsKeyError, WindowsKeyEvent, is_windows_key_wake,
 };
 use media::MediaRuntime;
+use monitors::{MonitorDockAction, MonitorDocks};
 use runtime::run_message_loop;
 use runtime_helpers::{
     apply_fullscreen_visibility, enable_optional_alt_tab, enable_optional_windows_key,
@@ -208,12 +210,16 @@ pub fn run() -> Result<(), AppError> {
     resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
     let _shell_integration =
         ShellIntegration::setup(dock_model.settings(), &dock).unwrap_or(None);
+    window_tracker.refresh_fullscreen();
     auxiliary.status.sync(
         &dock,
         dock_model.settings(),
         dock_model.media(),
         &mut graphics,
     )?;
+    auxiliary
+        .monitors
+        .sync(&dock, &mut dock_model, &mut graphics, &window_tracker)?;
     render_and_schedule(
         &dock,
         &mut graphics,
@@ -297,6 +303,7 @@ fn create_auxiliary_windows(
         context_menu,
         media,
         status,
+        monitors: MonitorDocks::new(),
         switcher,
     })
 }

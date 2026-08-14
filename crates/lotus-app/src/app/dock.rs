@@ -32,6 +32,7 @@ pub(super) struct DockRuntime {
     media: Option<MediaItem>,
     recent_windows: HashMap<String, Vec<WindowId>>,
     transient_unpinned: HashMap<String, (usize, DockItem)>,
+    revision: u64,
 }
 
 impl DockRuntime {
@@ -61,6 +62,7 @@ impl DockRuntime {
             media: None,
             recent_windows: HashMap::new(),
             transient_unpinned: HashMap::new(),
+            revision: 0,
         };
         runtime.refresh_scene_items();
         Ok(runtime)
@@ -88,6 +90,7 @@ impl DockRuntime {
             self.pending_items = None;
             self.exit_deadline = None;
         }
+        self.mark_changed();
     }
 
     pub(super) fn set_dpi(&mut self, dpi: u32) -> Result<(), AppError> {
@@ -108,6 +111,7 @@ impl DockRuntime {
         self.scene.replace_items(scene_items);
         self.pending_items = None;
         self.exit_deadline = None;
+        self.mark_changed();
     }
 
     pub(super) fn advance_departure(&mut self, now: Instant) -> bool {
@@ -119,6 +123,7 @@ impl DockRuntime {
             self.scene.replace_items(items);
         }
         self.exit_deadline = None;
+        self.mark_changed();
         true
     }
 
@@ -127,6 +132,10 @@ impl DockRuntime {
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
+        self.scene_items_at_size(icon_size)
+    }
+
+    fn scene_items_at_size(&mut self, icon_size: u32) -> Vec<SceneDockItem> {
         let mut scene_items =
             adapt_dock_items_with_native(self.model.items(), |_, item| {
                 self.native_icons
@@ -161,6 +170,34 @@ impl DockRuntime {
             );
         }
         scene_items
+    }
+
+    pub(super) fn replica_scene(&mut self, dpi: u32) -> Result<DockScene, AppError> {
+        let settings = self.model.settings().clone();
+        let mut scene =
+            DockScene::new(dpi, metrics(&settings)?, mascot(&settings), Vec::new())
+                .ok_or(AppError::InvalidScene)?;
+        scene.set_anchor(dock_anchor(settings.dock_zone));
+        let _ = scene.set_theme(theme_for(&settings));
+        scene.set_show_desktop_button(settings.show_desktop_button);
+        scene.replace_status_items(docked_status_items(&settings));
+        if settings.show_media_controls && settings.media_zone == settings.dock_zone {
+            scene.replace_media(self.media.clone());
+        }
+
+        let icon_size = scene
+            .icon_size_pixels()
+            .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
+        scene.replace_items(self.scene_items_at_size(icon_size));
+        Ok(scene)
+    }
+
+    pub(super) const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn mark_changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     pub(super) fn set_notifications(&mut self, notifications: Vec<NotificationSource>) {
@@ -520,6 +557,7 @@ impl DockRuntime {
         }
 
         self.scene.replace_status_items(next);
+        self.mark_changed();
         true
     }
 
@@ -533,6 +571,7 @@ impl DockRuntime {
             && self.model.settings().media_zone == self.model.settings().dock_zone;
         self.scene
             .replace_media(docked.then(|| self.media.clone()).flatten());
+        self.mark_changed();
         true
     }
 

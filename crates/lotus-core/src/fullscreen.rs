@@ -8,15 +8,11 @@ pub struct ScreenRect {
 
 pub fn is_fullscreen_foreground(
     is_eligible_foreground: bool,
-    is_maximized: bool,
     window: ScreenRect,
     monitor: ScreenRect,
     tolerance: i32,
 ) -> bool {
-    is_eligible_foreground
-        && !is_maximized
-        && tolerance >= 0
-        && covers_monitor(window, monitor, tolerance)
+    is_eligible_foreground && tolerance >= 0 && covers_monitor(window, monitor, tolerance)
 }
 
 fn covers_monitor(window: ScreenRect, monitor: ScreenRect, tolerance: i32) -> bool {

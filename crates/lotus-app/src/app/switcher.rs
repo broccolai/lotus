@@ -17,6 +17,7 @@ pub(super) struct AuxiliaryWindows {
     pub(super) context_menu: ContextMenuRuntime,
     pub(super) media: super::MediaRuntime,
     pub(super) status: super::StatusRuntime,
+    pub(super) monitors: super::MonitorDocks,
     pub(super) switcher: SwitcherRuntime,
 }
 

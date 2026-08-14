@@ -251,6 +251,19 @@ impl DockWindow {
         StatusWindow::create(Rc::clone(&self.class), self.hwnd())
     }
 
+    pub fn create_secondary_dock_windows(&self) -> Result<Vec<StatusWindow>> {
+        StatusWindow::create_secondary_displays(&self.class, self.hwnd())
+    }
+
+    pub fn place_secondary_dock_window(
+        &self,
+        window: &StatusWindow,
+        size: NonZeroPhysicalSize,
+        settings: &DockSettings,
+    ) -> Result<()> {
+        window.place_replica(self.hwnd(), size, settings)
+    }
+
     pub fn place_status_window(
         &self,
         status: &StatusWindow,

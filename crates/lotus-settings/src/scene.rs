@@ -65,6 +65,7 @@ impl SettingsPage {
 pub enum SettingsToggle {
     ShowUnpinnedRunningApps,
     ShowRunningIndicators,
+    ShowOnAllMonitors,
     ShowDesktopButton,
     ShowSystemStatus,
     ShowVolumeStatus,
@@ -616,6 +617,7 @@ impl SettingsScene {
                 SettingsControl::Toggle(SettingsToggle::ReplaceWindowsTaskbar),
                 SettingsControl::Toggle(SettingsToggle::ExclusiveTaskbarReplacement),
                 SettingsControl::Toggle(SettingsToggle::HideWhenFullscreen),
+                SettingsControl::Toggle(SettingsToggle::ShowOnAllMonitors),
                 SettingsControl::Toggle(SettingsToggle::ShowDesktopButton),
                 SettingsControl::Toggle(SettingsToggle::ShowRunningIndicators),
                 SettingsControl::DockZone,
@@ -888,6 +890,7 @@ impl SettingsScene {
                 self.draft.show_unpinned_running_apps
             }
             SettingsToggle::ShowRunningIndicators => self.draft.show_running_indicators,
+            SettingsToggle::ShowOnAllMonitors => self.draft.show_on_all_monitors,
             SettingsToggle::ShowDesktopButton => self.draft.show_desktop_button,
             SettingsToggle::ShowSystemStatus => self.draft.show_system_status,
             SettingsToggle::ShowVolumeStatus => self.draft.show_volume_status,
@@ -919,6 +922,9 @@ impl SettingsScene {
             }
             SettingsToggle::ShowRunningIndicators => {
                 self.draft.show_running_indicators = value;
+            }
+            SettingsToggle::ShowOnAllMonitors => {
+                self.draft.show_on_all_monitors = value;
             }
             SettingsToggle::ShowDesktopButton => self.draft.show_desktop_button = value,
             SettingsToggle::ShowSystemStatus => self.draft.show_system_status = value,

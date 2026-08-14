@@ -1059,6 +1059,7 @@ fn toggle_label(value: SettingsToggle) -> &'static str {
     match value {
         SettingsToggle::ShowUnpinnedRunningApps => "Show unpinned running applications",
         SettingsToggle::ShowRunningIndicators => "Show indicators for open applications",
+        SettingsToggle::ShowOnAllMonitors => "Show Lotus on every monitor",
         SettingsToggle::ShowDesktopButton => "Show a desktop button at the right edge",
         SettingsToggle::ShowSystemStatus => "Show system status",
         SettingsToggle::ShowVolumeStatus => "Show volume",

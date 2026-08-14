@@ -1,0 +1,290 @@
+use lotus_ui::geometry::NonZeroPhysicalSize;
+
+use super::{
+    AppError, CompositionSurfaceState, DeviceState, DockAnchor, DockContextRequest,
+    DockHitTarget, DockRuntime, DockScene, DockWindow, PointerEvent, PopupAlignment,
+    SignedPoint, StatusWindow, SurfaceSize, WindowEvent, WindowHandle, WindowTracker,
+    render_surface, resize_surface,
+};
+
+#[derive(Clone, Copy)]
+pub(super) enum MonitorDockAction {
+    Activate {
+        target: DockHitTarget,
+        owner: WindowHandle,
+        anchor: Option<SignedPoint>,
+    },
+    Context {
+        target: DockHitTarget,
+        anchor: SignedPoint,
+        alignment: PopupAlignment,
+    },
+}
+
+pub(super) struct MonitorDocks {
+    docks: Vec<MonitorDock>,
+    rendered_revision: u64,
+    topology_dirty: bool,
+}
+
+struct MonitorDock {
+    window: StatusWindow,
+    surface: CompositionSurfaceState,
+    scene: DockScene,
+}
+
+impl MonitorDocks {
+    pub(super) const fn new() -> Self {
+        Self {
+            docks: Vec::new(),
+            rendered_revision: u64::MAX,
+            topology_dirty: true,
+        }
+    }
+
+    pub(super) fn sync(
+        &mut self,
+        dock: &DockWindow,
+        model: &mut DockRuntime,
+        graphics: &mut DeviceState,
+        tracker: &WindowTracker,
+    ) -> Result<(), AppError> {
+        if !model.settings().show_on_all_monitors {
+            self.docks.clear();
+            self.rendered_revision = model.revision();
+            return Ok(());
+        }
+
+        if self.topology_dirty {
+            self.recreate(dock, model, graphics)?;
+        } else if self.rendered_revision != model.revision() {
+            self.refresh_content(dock, model, graphics)?;
+        }
+        self.rendered_revision = model.revision();
+        self.sync_visibility(model, tracker);
+        Ok(())
+    }
+
+    pub(super) fn mark_topology_dirty(&mut self) {
+        self.topology_dirty = true;
+    }
+
+    pub(super) fn sync_visibility(&self, model: &DockRuntime, tracker: &WindowTracker) {
+        for replica in &self.docks {
+            let fullscreen = tracker.fullscreen_on_same_monitor(replica.window.handle());
+            let visible = !model.settings().hide_when_fullscreen || !fullscreen;
+            replica.window.set_visible(visible);
+        }
+    }
+
+    pub(super) fn drain_events(
+        &mut self,
+        graphics: &mut DeviceState,
+    ) -> Result<Vec<MonitorDockAction>, AppError> {
+        let mut actions = Vec::new();
+        let mut refresh = false;
+        for replica in &mut self.docks {
+            let events = replica.window.drain_events().collect::<Vec<_>>();
+            for event in events {
+                match event {
+                    WindowEvent::Pointer(pointer) => {
+                        if let Some(action) = replica.handle_pointer(pointer, graphics)? {
+                            actions.push(action);
+                        }
+                    }
+                    WindowEvent::ContextMenuRequested(request) => {
+                        if let Some((target, anchor, alignment)) =
+                            replica.popup_target_anchor(request)
+                        {
+                            actions.push(MonitorDockAction::Context {
+                                target,
+                                anchor,
+                                alignment,
+                            });
+                        }
+                    }
+                    WindowEvent::Resized { width, height } => {
+                        if let Some(size) = SurfaceSize::new(width, height) {
+                            resize_surface(graphics, &mut replica.surface, size)?;
+                            replica.render(graphics)?;
+                        }
+                    }
+                    WindowEvent::DpiChanged { .. }
+                    | WindowEvent::PlacementRefreshRequested => refresh = true,
+                    WindowEvent::RenderRequested | WindowEvent::AnimationFrame => {
+                        replica.render(graphics)?;
+                    }
+                    WindowEvent::StatusRefreshRequested
+                    | WindowEvent::Search(_)
+                    | WindowEvent::Settings(_)
+                    | WindowEvent::ContextMenu(_)
+                    | WindowEvent::Switcher(_) => {}
+                }
+            }
+        }
+        if refresh {
+            self.topology_dirty = true;
+        }
+        Ok(actions)
+    }
+
+    fn recreate(
+        &mut self,
+        dock: &DockWindow,
+        model: &mut DockRuntime,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        self.docks.clear();
+        for window in dock.create_secondary_dock_windows()? {
+            let scene = model.replica_scene(window.dpi())?;
+            let size = scene.desired_size();
+            let physical = NonZeroPhysicalSize::new(size.width(), size.height())
+                .ok_or(AppError::ZeroSizedSurface)?;
+            dock.place_secondary_dock_window(&window, physical, model.settings())?;
+            lotus_windows::backdrop::apply_dock_settings(window.handle(), model.settings());
+            let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
+            let surface = CompositionSurfaceState::create(
+                device,
+                window.handle(),
+                SurfaceSize::from(size),
+            )?;
+            let mut replica = MonitorDock {
+                window,
+                surface,
+                scene,
+            };
+            replica.render(graphics)?;
+            self.docks.push(replica);
+        }
+        self.topology_dirty = false;
+        Ok(())
+    }
+
+    fn refresh_content(
+        &mut self,
+        dock: &DockWindow,
+        model: &mut DockRuntime,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        for replica in &mut self.docks {
+            replica.scene = model.replica_scene(replica.window.dpi())?;
+            let size = replica.scene.desired_size();
+            let physical = NonZeroPhysicalSize::new(size.width(), size.height())
+                .ok_or(AppError::ZeroSizedSurface)?;
+            dock.place_secondary_dock_window(&replica.window, physical, model.settings())?;
+            resize_surface(graphics, &mut replica.surface, SurfaceSize::from(size))?;
+            replica.render(graphics)?;
+        }
+        Ok(())
+    }
+}
+
+impl MonitorDock {
+    fn handle_pointer(
+        &mut self,
+        event: PointerEvent,
+        graphics: &mut DeviceState,
+    ) -> Result<Option<MonitorDockAction>, AppError> {
+        let action = match event {
+            PointerEvent::Moved { x, y } => {
+                let target = hit_test(&self.scene, x, y);
+                let _ = self.scene.set_hovered(target);
+                None
+            }
+            PointerEvent::Left => {
+                let _ = self.scene.set_hovered(None);
+                None
+            }
+            PointerEvent::LeftButtonPressed { x, y } => {
+                let target = hit_test(&self.scene, x, y);
+                let _ = self.scene.set_pressed(target);
+                None
+            }
+            PointerEvent::LeftButtonReleased { x, y } => {
+                let target = hit_test(&self.scene, x, y);
+                let pressed = self.scene.interaction().pressed;
+                let _ = self.scene.set_pressed(None);
+                if pressed == target {
+                    target.map(|target| MonitorDockAction::Activate {
+                        target,
+                        owner: self.window.handle(),
+                        anchor: self.activation_anchor(x, y),
+                    })
+                } else {
+                    None
+                }
+            }
+            PointerEvent::Cancelled => {
+                let _ = self.scene.set_pressed(None);
+                None
+            }
+        };
+        self.render(graphics)?;
+        Ok(action)
+    }
+
+    fn activation_anchor(&self, x: i32, y: i32) -> Option<SignedPoint> {
+        self.window.client_to_screen(SignedPoint { x, y }).ok()
+    }
+
+    fn popup_target_anchor(
+        &self,
+        request: DockContextRequest,
+    ) -> Option<(DockHitTarget, SignedPoint, PopupAlignment)> {
+        let DockContextRequest::Pointer { screen, client } = request else {
+            return None;
+        };
+        let target = hit_test(&self.scene, client.x, client.y)?;
+        let size = self.scene.desired_size();
+        let layout = self.scene.layout(size.width(), size.height());
+        let bounds = match target {
+            DockHitTarget::Item(source_index) => layout
+                .items
+                .iter()
+                .find(|item| item.source_index == source_index)
+                .map(|item| item.bounds)?,
+            DockHitTarget::Jirachi => layout.jirachi,
+            DockHitTarget::Media(_)
+            | DockHitTarget::SystemStatus(_)
+            | DockHitTarget::ShowDesktop => return None,
+        };
+        let (anchor_x, alignment) = match (target, self.scene.anchor()) {
+            (DockHitTarget::Jirachi, DockAnchor::Left) => (0, PopupAlignment::Start),
+            (DockHitTarget::Jirachi, DockAnchor::Right) => {
+                (size.width(), PopupAlignment::End)
+            }
+            _ => (
+                bounds.left.saturating_add(bounds.width / 2),
+                PopupAlignment::Center,
+            ),
+        };
+        let anchor_x = i32::try_from(anchor_x).ok()?;
+        let overlap = i32::try_from((u64::from(self.scene.dpi()) * 6 + 48) / 96).ok()?;
+        let top = i32::try_from(bounds.top).ok()?;
+        Some((
+            target,
+            SignedPoint {
+                x: screen.x.saturating_sub(client.x).saturating_add(anchor_x),
+                y: screen
+                    .y
+                    .saturating_sub(client.y)
+                    .saturating_add(top)
+                    .saturating_add(overlap),
+            },
+            alignment,
+        ))
+    }
+
+    fn render(&mut self, graphics: &mut DeviceState) -> Result<(), AppError> {
+        let needs_animation = render_surface(graphics, &mut self.surface, &self.scene)?;
+        self.window.set_animation_active(needs_animation)?;
+        Ok(())
+    }
+}
+
+fn hit_test(scene: &DockScene, x: i32, y: i32) -> Option<DockHitTarget> {
+    let x = u32::try_from(x).ok()?;
+    let y = u32::try_from(y).ok()?;
+    let size = scene.desired_size();
+    scene.layout(size.width(), size.height()).hit_test(x, y)
+}

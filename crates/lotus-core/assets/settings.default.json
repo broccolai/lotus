@@ -12,6 +12,7 @@
   "mascotImagePath": null,
   "showUnpinnedRunningApps": true,
   "showRunningIndicators": true,
+  "showOnAllMonitors": false,
   "showDesktopButton": false,
   "showMediaControls": true,
   "showMediaMetadata": true,

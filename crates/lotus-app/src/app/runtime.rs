@@ -5,17 +5,18 @@ use super::{
     AppError, AppMenuAction, AuxiliaryWindows, AuxiliaryZoneAction, CommandId,
     CompositionSurfaceState, ContextMenuAction, ContextMenuEvent, DeviceState,
     DockContextRequest, DockHitTarget, DockRuntime, DockWindow, LauncherSubmission,
-    PointerEvent, PopupAction, RuntimePolicy, SceneSettingsKey, SelectionDirection,
-    SettingsAction, SettingsEvent, SettingsRuntime, SettingsUpdateActivity, SurfaceSize,
-    SystemStatusKind, UpdateResult, UpdateStatus, WindowEvent, WindowHandle,
-    WindowSettingsKey, WindowTracker, WindowTrackerEvent, apply_fullscreen_visibility,
-    confirm_install_update, confirm_restart, confirm_shutdown, handle_alt_tab_events,
-    handle_pointer_event, handle_search_event, handle_windows_key_events, is_alt_tab_wake,
-    is_installed, is_media_wake, is_search_catalog_wake, is_taskbar_badge_wake,
-    is_update_wake, is_windows_key_wake, launch_current_installer, launch_installer,
-    launch_target, next_message, render_and_schedule, render_surface, request_exit,
-    request_window_close, resize_dock, resize_surface, restart_current_process, show_error,
-    show_information, startup_registration, write_text,
+    MonitorDockAction, PointerEvent, PopupAction, RuntimePolicy, SceneSettingsKey,
+    SelectionDirection, SettingsAction, SettingsEvent, SettingsRuntime,
+    SettingsUpdateActivity, SurfaceSize, SystemStatusKind, UpdateResult, UpdateStatus,
+    WindowEvent, WindowHandle, WindowSettingsKey, WindowTracker, WindowTrackerEvent,
+    apply_fullscreen_visibility, confirm_install_update, confirm_restart, confirm_shutdown,
+    fullscreen_notification, handle_alt_tab_events, handle_pointer_event,
+    handle_search_event, handle_windows_key_events, is_alt_tab_wake, is_installed,
+    is_media_wake, is_search_catalog_wake, is_taskbar_badge_wake, is_update_wake,
+    is_windows_key_wake, launch_current_installer, launch_installer, launch_target,
+    next_message, render_and_schedule, render_surface, request_exit, request_window_close,
+    resize_dock, resize_surface, restart_current_process, show_error, show_information,
+    startup_registration, write_text,
 };
 
 pub(super) fn run_message_loop(
@@ -55,6 +56,15 @@ fn process_message(
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
 ) -> Result<(), AppError> {
+    let shell_fullscreen_wake = fullscreen_notification(
+        message.is_thread_message(),
+        message.id(),
+        message.parameter(),
+    )
+    .is_some();
+    if shell_fullscreen_wake {
+        window_tracker.refresh_fullscreen();
+    }
     handle_tracker_message(
         message,
         dock,
@@ -64,6 +74,15 @@ fn process_message(
         dock_model,
         auxiliary,
     )?;
+    if shell_fullscreen_wake {
+        apply_fullscreen_visibility(
+            dock,
+            window_tracker,
+            dock_model,
+            &mut auxiliary.launcher,
+            &auxiliary.status,
+        )?;
+    }
     let windows_key_wake = runtime
         .windows_key
         .is_some_and(|_| is_windows_key_wake(message.id()));
@@ -93,6 +112,9 @@ fn process_message(
         dock_model,
         auxiliary,
     })?;
+    for action in auxiliary.monitors.drain_events(graphics)? {
+        handle_monitor_dock_action(action, dock, graphics, dock_model, auxiliary)?;
+    }
 
     if update_wake {
         handle_update_results(&mut auxiliary.settings, graphics)?;
@@ -150,6 +172,9 @@ fn process_message(
         let launcher_animation = auxiliary.launcher.render(graphics)?;
         dock.set_animation_active(dock_animation || launcher_animation)?;
     }
+    auxiliary
+        .monitors
+        .sync(dock, dock_model, graphics, window_tracker)?;
     Ok(())
 }
 
@@ -1160,6 +1185,7 @@ fn handle_window_event(
         }
         WindowEvent::PlacementRefreshRequested => {
             dock.refresh_placement(dock_model.settings())?;
+            auxiliary.monitors.mark_topology_dirty();
             auxiliary.status.sync(
                 dock,
                 dock_model.settings(),
@@ -1252,11 +1278,14 @@ fn handle_dock_pointer(
     };
     match target {
         DockHitTarget::Item(source_index) => {
+            let anchor = release_request
+                .and_then(|request| dock_model.popup_target_anchor(request))
+                .map(|(_, anchor, _)| anchor);
             activate_dock_item(
                 source_index,
                 target,
-                release_request,
-                dock,
+                anchor,
+                dock.handle(),
                 graphics,
                 dock_model,
                 auxiliary,
@@ -1288,12 +1317,11 @@ fn handle_dock_pointer(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn activate_dock_item(
     source_index: usize,
     target: DockHitTarget,
-    release_request: Option<DockContextRequest>,
-    dock: &DockWindow,
+    anchor: Option<super::SignedPoint>,
+    owner: WindowHandle,
     graphics: &mut DeviceState,
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
@@ -1302,15 +1330,12 @@ fn activate_dock_item(
     let window_count = dock_model
         .item(source_index)
         .map_or(0, |item| item.windows.len());
-    let anchor = release_request
-        .and_then(|request| dock_model.popup_target_anchor(request))
-        .map(|(_, anchor, _)| anchor);
     if window_count <= 1 {
-        dock_model.activate(target, dock.handle());
+        dock_model.activate(target, owner);
         return Ok(());
     }
     let Some(anchor) = anchor else {
-        dock_model.activate(target, dock.handle());
+        dock_model.activate(target, owner);
         return Ok(());
     };
 
@@ -1372,6 +1397,17 @@ fn handle_context_menu(
     if dock_model.pointer_cancelled() {
         render_and_schedule(dock, graphics, surface, dock_model.scene(), false)?;
     }
+    open_context_target(target, anchor, alignment, graphics, dock_model, auxiliary)
+}
+
+fn open_context_target(
+    target: DockHitTarget,
+    anchor: super::SignedPoint,
+    alignment: super::PopupAlignment,
+    graphics: &mut DeviceState,
+    dock_model: &DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
     match target {
         DockHitTarget::Jirachi => {
             auxiliary.context_menu.open(anchor, alignment, graphics)?;
@@ -1391,6 +1427,66 @@ fn handle_context_menu(
         DockHitTarget::Media(_)
         | DockHitTarget::SystemStatus(_)
         | DockHitTarget::ShowDesktop => {}
+    }
+    Ok(())
+}
+
+fn handle_monitor_dock_action(
+    action: MonitorDockAction,
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    dock_model: &mut DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
+    match action {
+        MonitorDockAction::Activate {
+            target,
+            owner,
+            anchor,
+        } => match target {
+            DockHitTarget::Item(source_index) => activate_dock_item(
+                source_index,
+                target,
+                anchor,
+                owner,
+                graphics,
+                dock_model,
+                auxiliary,
+            )?,
+            DockHitTarget::Jirachi => {
+                let needs_animation =
+                    auxiliary.launcher.toggle(dock, dock_model, graphics)?;
+                dock.set_animation_active(needs_animation)?;
+            }
+            DockHitTarget::Media(target) => {
+                auxiliary.launcher.hide();
+                auxiliary.media.activate(target, dock_model, owner);
+            }
+            DockHitTarget::SystemStatus(kind) => {
+                auxiliary.launcher.hide();
+                activate_system_status(kind, owner);
+            }
+            DockHitTarget::ShowDesktop => {
+                auxiliary.launcher.hide();
+                if let Err(error) = lotus_windows::desktop::toggle() {
+                    show_error(
+                        owner,
+                        "Lotus",
+                        &format!("Lotus could not show the desktop.\n\n{error}"),
+                    );
+                }
+            }
+        },
+        MonitorDockAction::Context {
+            target,
+            anchor,
+            alignment,
+        } => {
+            auxiliary.launcher.hide();
+            open_context_target(
+                target, anchor, alignment, graphics, dock_model, auxiliary,
+            )?;
+        }
     }
     Ok(())
 }
