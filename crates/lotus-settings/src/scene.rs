@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 
-use lotus_core::settings::{DockSettings, NotificationBadgeStyle};
+use lotus_core::settings::{DockSettings, DockZone, NotificationBadgeStyle};
 use lotus_ui::theme::Theme;
 
 use crate::appearance::{AccentPreset, SurfacePreset, theme_for};
@@ -32,15 +32,17 @@ pub enum SettingsPage {
     Appearance,
     General,
     Taskbar,
+    Status,
     Search,
     About,
 }
 
 impl SettingsPage {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::General,
         Self::Appearance,
         Self::Taskbar,
+        Self::Status,
         Self::Search,
         Self::About,
     ];
@@ -50,6 +52,7 @@ impl SettingsPage {
             Self::Appearance => "Appearance",
             Self::General => "General",
             Self::Taskbar => "Taskbar",
+            Self::Status => "Status",
             Self::Search => "Search",
             Self::About => "About",
         }
@@ -60,6 +63,12 @@ impl SettingsPage {
 pub enum SettingsToggle {
     ShowUnpinnedRunningApps,
     ShowDesktopButton,
+    ShowSystemStatus,
+    ShowVolumeStatus,
+    ShowNetworkStatus,
+    ShowBackgroundAppsStatus,
+    ShowDateTimeStatus,
+    ShowDateInStatus,
     StartWithWindows,
     ReplaceWindowsTaskbar,
     ExclusiveTaskbarReplacement,
@@ -101,6 +110,8 @@ pub enum SettingsControl {
     SurfacePreset,
     AccentPreset,
     NotificationBadgeStyle,
+    DockZone,
+    SystemStatusZone,
     Toggle(SettingsToggle),
     Slider(SettingsSlider),
     ChooseMascotImage,
@@ -313,7 +324,11 @@ impl SettingsScene {
     pub fn layout(&self) -> SettingsLayout {
         let size = self.desired_size();
         let mut controls = Vec::new();
-        for (index, page) in SettingsPage::ALL.into_iter().take(4).enumerate() {
+        for (index, page) in SettingsPage::ALL
+            .into_iter()
+            .filter(|page| *page != SettingsPage::About)
+            .enumerate()
+        {
             controls.push(SettingsControlLayout {
                 control: SettingsControl::Navigate(page),
                 bounds: self.rect(
@@ -412,6 +427,8 @@ impl SettingsScene {
             SettingsControl::SurfacePreset
                 | SettingsControl::AccentPreset
                 | SettingsControl::NotificationBadgeStyle
+                | SettingsControl::DockZone
+                | SettingsControl::SystemStatusZone
         ) {
             let bounds = self
                 .layout()
@@ -450,6 +467,8 @@ impl SettingsScene {
             | SettingsControl::SurfacePreset
             | SettingsControl::AccentPreset
             | SettingsControl::NotificationBadgeStyle
+            | SettingsControl::DockZone
+            | SettingsControl::SystemStatusZone
             | SettingsControl::Toggle(_)
             | SettingsControl::ChooseMascotImage
             | SettingsControl::ResetMascotImage
@@ -533,6 +552,16 @@ impl SettingsScene {
             (SettingsKey::Right, SettingsControl::NotificationBadgeStyle) => {
                 self.cycle_notification_badge_style(false)
             }
+            (SettingsKey::Left, SettingsControl::DockZone) => self.cycle_zone(false, true),
+            (SettingsKey::Right, SettingsControl::DockZone) => {
+                self.cycle_zone(false, false)
+            }
+            (SettingsKey::Left, SettingsControl::SystemStatusZone) => {
+                self.cycle_zone(true, true)
+            }
+            (SettingsKey::Right, SettingsControl::SystemStatusZone) => {
+                self.cycle_zone(true, false)
+            }
             _ => SettingsAction::None,
         }
     }
@@ -569,11 +598,21 @@ impl SettingsScene {
                 SettingsControl::Toggle(SettingsToggle::ExclusiveTaskbarReplacement),
                 SettingsControl::Toggle(SettingsToggle::HideWhenFullscreen),
                 SettingsControl::Toggle(SettingsToggle::ShowDesktopButton),
+                SettingsControl::DockZone,
                 SettingsControl::Slider(SettingsSlider::IconSize),
                 SettingsControl::Slider(SettingsSlider::ItemSpacing),
                 SettingsControl::Slider(SettingsSlider::HorizontalPadding),
                 SettingsControl::Slider(SettingsSlider::VerticalPadding),
                 SettingsControl::Slider(SettingsSlider::BottomOffset),
+            ],
+            SettingsPage::Status => vec![
+                SettingsControl::Toggle(SettingsToggle::ShowSystemStatus),
+                SettingsControl::SystemStatusZone,
+                SettingsControl::Toggle(SettingsToggle::ShowVolumeStatus),
+                SettingsControl::Toggle(SettingsToggle::ShowNetworkStatus),
+                SettingsControl::Toggle(SettingsToggle::ShowBackgroundAppsStatus),
+                SettingsControl::Toggle(SettingsToggle::ShowDateTimeStatus),
+                SettingsControl::Toggle(SettingsToggle::ShowDateInStatus),
             ],
             SettingsPage::Search => vec![
                 SettingsControl::Toggle(SettingsToggle::SearchOpenWithWindowsKey),
@@ -615,6 +654,8 @@ impl SettingsScene {
             SettingsControl::SurfacePreset => SettingsAction::ChooseBackgroundColor,
             SettingsControl::AccentPreset => SettingsAction::ChooseAccentColor,
             SettingsControl::NotificationBadgeStyle
+            | SettingsControl::DockZone
+            | SettingsControl::SystemStatusZone
             | SettingsControl::Slider(_)
             | SettingsControl::CheckForUpdates
             | SettingsControl::Revert
@@ -695,6 +736,18 @@ impl SettingsScene {
                 };
                 self.draft.notification_badge_style = *style;
             }
+            SettingsControl::DockZone | SettingsControl::SystemStatusZone => {
+                let index =
+                    usize::try_from(offset.saturating_mul(3) / width).unwrap_or_default();
+                let Some(zone) = DockZone::ALL.get(index) else {
+                    return SettingsAction::None;
+                };
+                if control == SettingsControl::DockZone {
+                    self.draft.dock_zone = *zone;
+                } else {
+                    self.draft.system_status_zone = *zone;
+                }
+            }
             _ => return SettingsAction::None,
         }
         SettingsAction::Changed
@@ -741,6 +794,25 @@ impl SettingsScene {
         SettingsAction::Changed
     }
 
+    fn cycle_zone(&mut self, status: bool, reverse: bool) -> SettingsAction {
+        let selected = if status {
+            self.draft.system_status_zone
+        } else {
+            self.draft.dock_zone
+        };
+        let current = DockZone::ALL
+            .iter()
+            .position(|zone| *zone == selected)
+            .unwrap_or_default();
+        let next = DockZone::ALL[cycle_index(current, DockZone::ALL.len(), reverse)];
+        if status {
+            self.draft.system_status_zone = next;
+        } else {
+            self.draft.dock_zone = next;
+        }
+        SettingsAction::Changed
+    }
+
     fn adjust_slider(&mut self, slider: SettingsSlider, delta: i32) -> SettingsAction {
         let (minimum, maximum) = slider.range();
         let value = self.slider_value(slider);
@@ -760,6 +832,14 @@ impl SettingsScene {
                 self.draft.show_unpinned_running_apps
             }
             SettingsToggle::ShowDesktopButton => self.draft.show_desktop_button,
+            SettingsToggle::ShowSystemStatus => self.draft.show_system_status,
+            SettingsToggle::ShowVolumeStatus => self.draft.show_volume_status,
+            SettingsToggle::ShowNetworkStatus => self.draft.show_network_status,
+            SettingsToggle::ShowBackgroundAppsStatus => {
+                self.draft.show_background_apps_status
+            }
+            SettingsToggle::ShowDateTimeStatus => self.draft.show_date_time_status,
+            SettingsToggle::ShowDateInStatus => self.draft.show_date_in_status,
             SettingsToggle::StartWithWindows => self.draft.start_with_windows,
             SettingsToggle::ReplaceWindowsTaskbar => self.draft.replace_windows_taskbar,
             SettingsToggle::ExclusiveTaskbarReplacement => {
@@ -779,6 +859,16 @@ impl SettingsScene {
                 self.draft.show_unpinned_running_apps = value;
             }
             SettingsToggle::ShowDesktopButton => self.draft.show_desktop_button = value,
+            SettingsToggle::ShowSystemStatus => self.draft.show_system_status = value,
+            SettingsToggle::ShowVolumeStatus => self.draft.show_volume_status = value,
+            SettingsToggle::ShowNetworkStatus => self.draft.show_network_status = value,
+            SettingsToggle::ShowBackgroundAppsStatus => {
+                self.draft.show_background_apps_status = value;
+            }
+            SettingsToggle::ShowDateTimeStatus => {
+                self.draft.show_date_time_status = value;
+            }
+            SettingsToggle::ShowDateInStatus => self.draft.show_date_in_status = value,
             SettingsToggle::StartWithWindows => self.draft.start_with_windows = value,
             SettingsToggle::ReplaceWindowsTaskbar => {
                 self.draft.replace_windows_taskbar = value;

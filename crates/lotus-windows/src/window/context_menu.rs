@@ -131,6 +131,7 @@ fn context_event_from_window_event(event: WindowEvent) -> Option<ContextMenuEven
         | WindowEvent::Settings(_)
         | WindowEvent::Switcher(_)
         | WindowEvent::PlacementRefreshRequested
-        | WindowEvent::AnimationFrame => None,
+        | WindowEvent::AnimationFrame
+        | WindowEvent::StatusRefreshRequested => None,
     }
 }

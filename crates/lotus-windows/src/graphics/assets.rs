@@ -11,6 +11,7 @@ const FLUENT_CALCULATOR_SVG: &[u8] =
 const FLUENT_POWER_SVG: &[u8] = include_bytes!("../../assets/fluent/power-24-regular.svg");
 const FLUENT_VOLUME_SVG: &[u8] =
     include_bytes!("../../assets/fluent/speaker-2-24-regular.svg");
+const FLUENT_NETWORK_SVG: &[u8] = include_bytes!("../../assets/fluent/wifi-24-regular.svg");
 const FLUENT_SETTINGS_SVG: &[u8] =
     include_bytes!("../../assets/fluent/settings-24-regular.svg");
 const FLUENT_TRAY_SVG: &[u8] =
@@ -33,6 +34,7 @@ pub enum SvgAsset {
     FluentCalculator,
     FluentPower,
     FluentVolume,
+    FluentNetwork,
     FluentSettings,
     FluentTray,
     FluentDismiss,
@@ -43,11 +45,12 @@ pub enum SvgAsset {
 }
 
 impl SvgAsset {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::LotusPixel,
         Self::FluentCalculator,
         Self::FluentPower,
         Self::FluentVolume,
+        Self::FluentNetwork,
         Self::FluentSettings,
         Self::FluentTray,
         Self::FluentDismiss,
@@ -63,6 +66,7 @@ impl SvgAsset {
             Self::FluentCalculator => FLUENT_CALCULATOR_SVG,
             Self::FluentPower => FLUENT_POWER_SVG,
             Self::FluentVolume => FLUENT_VOLUME_SVG,
+            Self::FluentNetwork => FLUENT_NETWORK_SVG,
             Self::FluentSettings => FLUENT_SETTINGS_SVG,
             Self::FluentTray => FLUENT_TRAY_SVG,
             Self::FluentDismiss => FLUENT_DISMISS_SVG,
@@ -79,6 +83,7 @@ impl SvgAsset {
             Self::FluentCalculator
                 | Self::FluentPower
                 | Self::FluentVolume
+                | Self::FluentNetwork
                 | Self::FluentSettings
                 | Self::FluentTray
                 | Self::FluentDismiss

@@ -45,6 +45,7 @@ use crate::platform::windows::interaction::{
 enum WindowKind {
     #[default]
     Dock,
+    Status,
     Search,
     Settings,
     ContextMenu,
@@ -67,6 +68,13 @@ impl WindowState {
     pub fn search() -> Self {
         Self {
             kind: WindowKind::Search,
+            ..Self::default()
+        }
+    }
+
+    pub fn status() -> Self {
+        Self {
+            kind: WindowKind::Status,
             ..Self::default()
         }
     }
@@ -131,6 +139,7 @@ impl WindowState {
 }
 
 const ANIMATION_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5455, 16);
+const DOCK_STATUS_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5453, 30_000);
 const SEARCH_CLOCK_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5443, 30_000);
 const SEARCH_FOCUS_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5446, 50);
 const WNDPROC_PANIC_EXIT_CODE: i32 = 1;
@@ -217,7 +226,7 @@ fn dispatch(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT
             // SAFETY: Default non-client destruction behavior must receive original arguments.
             unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
         }
-        WM_MOUSEACTIVATE if is_dock_window(hwnd) => {
+        WM_MOUSEACTIVATE if is_nonactivating_window(hwnd) => {
             LRESULT(isize::try_from(MA_NOACTIVATE).unwrap_or_default())
         }
         WM_SETCURSOR
@@ -335,7 +344,7 @@ fn dispatch_close_message(hwnd: HWND) -> LRESULT {
         Some(WindowKind::Switcher) => {
             Some(WindowEvent::Switcher(SwitcherEvent::CloseRequested))
         }
-        Some(WindowKind::Dock) | None => None,
+        Some(WindowKind::Dock | WindowKind::Status) | None => None,
     };
     if let Some(event) = event {
         push_window_event(hwnd, event);
@@ -365,6 +374,10 @@ fn dispatch_timer_message(hwnd: HWND, wparam: WPARAM) -> Option<LRESULT> {
         if animation_is_active(hwnd) {
             push_window_event(hwnd, WindowEvent::AnimationFrame);
         }
+        return Some(LRESULT(0));
+    }
+    if DOCK_STATUS_TIMER.matches(wparam.0) && is_dock_window(hwnd) {
+        push_window_event(hwnd, WindowEvent::StatusRefreshRequested);
         return Some(LRESULT(0));
     }
     if SEARCH_CLOCK_TIMER.matches(wparam.0) && is_search_window(hwnd) {
@@ -592,6 +605,13 @@ fn is_dock_window(hwnd: HWND) -> bool {
     window_kind(hwnd) == Some(WindowKind::Dock)
 }
 
+fn is_nonactivating_window(hwnd: HWND) -> bool {
+    matches!(
+        window_kind(hwnd),
+        Some(WindowKind::Dock | WindowKind::Status)
+    )
+}
+
 fn window_kind(hwnd: HWND) -> Option<WindowKind> {
     let mut kind = None;
     with_window_state(hwnd, |state| kind = Some(state.kind));
@@ -755,6 +775,15 @@ fn stop_animation_timer(hwnd: HWND) {
 
 pub fn start_search_clock_timer(hwnd: HWND) -> Result<()> {
     SEARCH_CLOCK_TIMER.start(hwnd)
+}
+
+pub fn set_dock_status_timer(hwnd: HWND, active: bool) -> Result<()> {
+    if active {
+        DOCK_STATUS_TIMER.start(hwnd)
+    } else {
+        DOCK_STATUS_TIMER.stop(hwnd);
+        Ok(())
+    }
 }
 
 pub fn stop_search_clock_timer(hwnd: HWND) {

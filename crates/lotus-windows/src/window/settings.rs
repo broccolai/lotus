@@ -122,7 +122,8 @@ fn settings_event_from_window_event(event: WindowEvent) -> Option<SettingsEvent>
         | WindowEvent::Switcher(_)
         | WindowEvent::Search(_)
         | WindowEvent::PlacementRefreshRequested
-        | WindowEvent::AnimationFrame => None,
+        | WindowEvent::AnimationFrame
+        | WindowEvent::StatusRefreshRequested => None,
     }
 }
 

@@ -19,7 +19,7 @@ use windows::Win32::Graphics::Direct2D::{
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
@@ -31,7 +31,7 @@ use super::assets::{AssetError, RasterImage, RasterSize, SvgAsset, SvgAssetCache
 use super::device::GraphicsDevice;
 use super::scene::{
     DockBadge, DockDragState, DockHitTarget, DockIcon, DockInteractionState, DockLayout,
-    DockScene, LaidOutItem, PixelRect, RasterIcon, RasterIconId,
+    DockScene, LaidOutItem, LaidOutStatusItem, PixelRect, RasterIcon, RasterIconId,
 };
 use super::surface::SurfaceSize;
 use super::theme;
@@ -54,6 +54,12 @@ pub(super) enum DrawResult {
     RecreateTarget,
 }
 
+#[derive(Clone)]
+struct StatusTextFormats {
+    time: IDWriteTextFormat,
+    date: IDWriteTextFormat,
+}
+
 pub(super) struct Direct2DRenderer {
     _factory: ID2D1Factory1,
     _device: ID2D1Device,
@@ -64,8 +70,11 @@ pub(super) struct Direct2DRenderer {
     show_desktop_brush: ID2D1SolidColorBrush,
     badge_brush: ID2D1SolidColorBrush,
     badge_text_brush: ID2D1SolidColorBrush,
+    status_text_brush: ID2D1SolidColorBrush,
+    status_muted_text_brush: ID2D1SolidColorBrush,
     write_factory: IDWriteFactory,
     badge_formats: HashMap<u32, IDWriteTextFormat>,
+    status_formats: HashMap<u32, StatusTextFormats>,
     interaction: InteractionAnimator,
     reorder: ReorderAnimator,
     assets: SvgAssetCache,
@@ -99,15 +108,27 @@ impl Direct2DRenderer {
         let show_desktop_tint = theme::d2d(default_theme.control_hover);
         let badge_tint = theme::d2d(default_theme.accent);
         let badge_text_tint = theme::d2d(default_theme.on_accent);
+        let status_text_tint = theme::d2d(default_theme.text);
+        let status_muted_text_tint = theme::d2d(default_theme.text_muted);
         // SAFETY: The context is live, and all color pointers remain valid for
         // their synchronous brush-creation calls.
-        let (dock_brush, divider_brush, show_desktop_brush, badge_brush, badge_text_brush) = unsafe {
+        let (
+            dock_brush,
+            divider_brush,
+            show_desktop_brush,
+            badge_brush,
+            badge_text_brush,
+            status_text_brush,
+            status_muted_text_brush,
+        ) = unsafe {
             (
                 context.CreateSolidColorBrush(&raw const dock_tint, None)?,
                 context.CreateSolidColorBrush(&raw const divider_tint, None)?,
                 context.CreateSolidColorBrush(&raw const show_desktop_tint, None)?,
                 context.CreateSolidColorBrush(&raw const badge_tint, None)?,
                 context.CreateSolidColorBrush(&raw const badge_text_tint, None)?,
+                context.CreateSolidColorBrush(&raw const status_text_tint, None)?,
+                context.CreateSolidColorBrush(&raw const status_muted_text_tint, None)?,
             )
         };
 
@@ -121,8 +142,11 @@ impl Direct2DRenderer {
             show_desktop_brush,
             badge_brush,
             badge_text_brush,
+            status_text_brush,
+            status_muted_text_brush,
             write_factory,
             badge_formats: HashMap::new(),
+            status_formats: HashMap::new(),
             interaction: InteractionAnimator::default(),
             reorder: ReorderAnimator::default(),
             assets: SvgAssetCache::create()?,
@@ -181,11 +205,9 @@ impl Direct2DRenderer {
                 .sample(now, scene.interaction(), &layout.items);
         let (reorder_offsets, reorder_animating) =
             self.reorder.sample(now, scene.drag(), &layout.items);
-        for item in &layout.items {
-            self.ensure_icon(&item.icon, layout.icon_size)?;
-        }
-        self.ensure_icon(scene.mascot(), layout.icon_size)?;
+        self.ensure_scene_icons(scene, &layout)?;
         let badge_format = self.badge_format(scene.dpi())?;
+        let status_formats = self.status_formats(scene.dpi())?;
         let drag = scene.drag();
         let mut item_draws = layout
             .items
@@ -237,7 +259,10 @@ impl Direct2DRenderer {
             })
             .collect::<Result<Vec<_>, _>>()?;
         item_draws.sort_by_key(|(is_dragged, ..)| *is_dragged);
-        let jirachi = self.bitmap(scene.mascot(), layout.icon_size)?;
+        let jirachi = layout
+            .launcher_button_visible
+            .then(|| self.bitmap(scene.mascot(), layout.icon_size))
+            .transpose()?;
         let dpi = f32::from(u16::try_from(scene.dpi()).unwrap_or(u16::MAX));
         let dock = dock_rectangle(size, theme.radii.window * dpi / TARGET_DPI);
         let divider = rounded_pixel_rectangle(layout.divider, DIVIDER_CORNER_RADIUS);
@@ -259,17 +284,28 @@ impl Direct2DRenderer {
             self.context
                 .FillRoundedRectangle(&raw const dock, &self.dock_brush);
             self.draw_items(&item_draws, scene.dpi(), &badge_format);
-            self.context
-                .FillRoundedRectangle(&raw const divider, &self.divider_brush);
+            if layout.launcher_button_visible {
+                self.context
+                    .FillRoundedRectangle(&raw const divider, &self.divider_brush);
+            }
+            if let Some(status_divider) = layout.status_divider {
+                let status_divider =
+                    rounded_pixel_rectangle(status_divider, DIVIDER_CORNER_RADIUS);
+                self.context
+                    .FillRoundedRectangle(&raw const status_divider, &self.divider_brush);
+            }
+            self.draw_status_items(&layout, scene.interaction(), &status_formats)?;
             self.draw_show_desktop(&layout, scene.interaction());
-            self.context.DrawBitmap(
-                jirachi,
-                Some(&raw const mascot_bounds),
-                jirachi_visual.icon_opacity,
-                mascot_interpolation(scene.mascot()),
-                None,
-                None,
-            );
+            if let Some(jirachi) = jirachi {
+                self.context.DrawBitmap(
+                    jirachi,
+                    Some(&raw const mascot_bounds),
+                    jirachi_visual.icon_opacity,
+                    mascot_interpolation(scene.mascot()),
+                    None,
+                    None,
+                );
+            }
             self.context.EndDraw(None, None)
         };
 
@@ -290,6 +326,40 @@ impl Direct2DRenderer {
         theme::set(&self.show_desktop_brush, value.control_hover);
         theme::set(&self.badge_brush, value.accent);
         theme::set(&self.badge_text_brush, value.on_accent);
+        theme::set(&self.status_text_brush, value.text);
+        theme::set(&self.status_muted_text_brush, value.text_muted);
+    }
+
+    fn ensure_scene_icons(
+        &mut self,
+        scene: &DockScene,
+        layout: &DockLayout,
+    ) -> Result<(), RendererError> {
+        for item in &layout.items {
+            self.ensure_icon(&item.icon, layout.icon_size)?;
+        }
+        for item in &layout.status_items {
+            if let Some(icon) = &item.icon {
+                self.ensure_icon(&icon.icon, nonzero_or_one(icon.bounds.width))?;
+            }
+        }
+        if layout.launcher_button_visible {
+            self.ensure_icon(scene.mascot(), layout.icon_size)?;
+        }
+        Ok(())
+    }
+
+    fn status_formats(&mut self, dpi: u32) -> Result<StatusTextFormats, WindowsError> {
+        if let Some(formats) = self.status_formats.get(&dpi) {
+            return Ok(formats.clone());
+        }
+
+        let scale = f32::from(u16::try_from(dpi).unwrap_or(u16::MAX)) / TARGET_DPI;
+        let time = centered_text_format(&self.write_factory, 12.5 * scale)?;
+        let date = centered_text_format(&self.write_factory, 10.5 * scale)?;
+        let formats = StatusTextFormats { time, date };
+        self.status_formats.insert(dpi, formats.clone());
+        Ok(formats)
     }
 
     fn badge_format(&mut self, dpi: u32) -> Result<IDWriteTextFormat, WindowsError> {
@@ -414,6 +484,112 @@ impl Direct2DRenderer {
                 self.context
                     .FillRoundedRectangle(&raw const highlight, &self.show_desktop_brush);
             }
+        }
+    }
+
+    fn draw_status_items(
+        &self,
+        layout: &DockLayout,
+        interaction: DockInteractionState,
+        formats: &StatusTextFormats,
+    ) -> Result<(), RendererError> {
+        for item in &layout.status_items {
+            let target = DockHitTarget::SystemStatus(item.kind);
+            let opacity = status_opacity(interaction, target);
+            if let Some(icon) = &item.icon {
+                let bitmap = self.bitmap(&icon.icon, nonzero_or_one(icon.bounds.width))?;
+                let bounds = pixel_rectangle(icon.bounds);
+                // SAFETY: Drawing occurs between BeginDraw and EndDraw with retained resources.
+                unsafe {
+                    self.context.DrawBitmap(
+                        bitmap,
+                        Some(&raw const bounds),
+                        opacity,
+                        D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                        None,
+                        None,
+                    );
+                }
+            } else {
+                self.draw_status_clock(item, opacity, formats);
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_status_clock(
+        &self,
+        item: &LaidOutStatusItem,
+        opacity: f32,
+        formats: &StatusTextFormats,
+    ) {
+        let bounds = item.hit_bounds;
+        if item.secondary_text.is_empty() {
+            self.draw_status_text(
+                &item.primary_text,
+                pixel_rectangle(bounds),
+                &formats.time,
+                &self.status_text_brush,
+                opacity,
+            );
+            return;
+        }
+
+        let stack_height = bounds.height.saturating_mul(3) / 5;
+        let stack_top = bounds
+            .top
+            .saturating_add(bounds.height.saturating_sub(stack_height) / 2);
+        let midpoint = stack_top.saturating_add(stack_height / 2);
+        let time_bounds = pixel_rectangle(PixelRect {
+            left: bounds.left,
+            top: stack_top,
+            width: bounds.width,
+            height: midpoint.saturating_sub(stack_top),
+        });
+        let date_bounds = pixel_rectangle(PixelRect {
+            left: bounds.left,
+            top: midpoint,
+            width: bounds.width,
+            height: stack_top
+                .saturating_add(stack_height)
+                .saturating_sub(midpoint),
+        });
+        self.draw_status_text(
+            &item.primary_text,
+            time_bounds,
+            &formats.time,
+            &self.status_text_brush,
+            opacity,
+        );
+        self.draw_status_text(
+            &item.secondary_text,
+            date_bounds,
+            &formats.date,
+            &self.status_muted_text_brush,
+            opacity,
+        );
+    }
+
+    fn draw_status_text(
+        &self,
+        value: &str,
+        bounds: D2D_RECT_F,
+        format: &IDWriteTextFormat,
+        brush: &ID2D1SolidColorBrush,
+        opacity: f32,
+    ) {
+        let text = value.encode_utf16().collect::<Vec<_>>();
+        // SAFETY: Drawing occurs between BeginDraw and EndDraw with retained resources.
+        unsafe {
+            brush.SetOpacity(opacity);
+            self.context.DrawText(
+                &text,
+                format,
+                &raw const bounds,
+                brush,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
         }
     }
 
@@ -920,6 +1096,45 @@ fn pixel_rectangle(rectangle: PixelRect) -> D2D_RECT_F {
         right: pixels_to_f32(rectangle.left.saturating_add(rectangle.width)),
         bottom: pixels_to_f32(rectangle.top.saturating_add(rectangle.height)),
     }
+}
+
+fn centered_text_format(
+    factory: &IDWriteFactory,
+    size: f32,
+) -> Result<IDWriteTextFormat, WindowsError> {
+    // SAFETY: Static family and locale strings are NUL terminated.
+    let format = unsafe {
+        factory.CreateTextFormat(
+            w!("Segoe UI Variable Text"),
+            None,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            size,
+            w!("en-us"),
+        )?
+    };
+    // SAFETY: The newly created format accepts these documented layout values.
+    unsafe {
+        format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+    }
+    Ok(format)
+}
+
+fn status_opacity(interaction: DockInteractionState, target: DockHitTarget) -> f32 {
+    if interaction.pressed == Some(target) {
+        0.62
+    } else if interaction.hovered == Some(target) {
+        1.0
+    } else {
+        0.78
+    }
+}
+
+fn nonzero_or_one(value: u32) -> NonZeroU32 {
+    NonZeroU32::new(value).unwrap_or(NonZeroU32::MIN)
 }
 
 fn scaled_pixel_rectangle(rectangle: PixelRect, scale: f32) -> D2D_RECT_F {

@@ -15,6 +15,7 @@ pub(super) struct AuxiliaryWindows {
     pub(super) launcher: LauncherRuntime,
     pub(super) settings: SettingsRuntime,
     pub(super) context_menu: ContextMenuRuntime,
+    pub(super) status: super::StatusRuntime,
     pub(super) switcher: SwitcherRuntime,
 }
 

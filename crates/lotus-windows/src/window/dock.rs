@@ -1,8 +1,8 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use lotus_core::settings::DockSettings;
-use lotus_ui::geometry::DpiScale;
+use lotus_core::settings::{DockSettings, DockZone};
+use lotus_ui::geometry::{DpiScale, NonZeroPhysicalSize};
 use windows::Win32::Foundation::{E_INVALIDARG, HWND};
 use windows::Win32::UI::WindowsAndMessaging::{
     WINDOW_EX_STYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
@@ -25,8 +25,10 @@ use crate::platform::windows::native_window::{
 use crate::window::procedure::{WindowClass, WindowEvent, WindowState};
 use crate::window::search::SearchWindow;
 use crate::window::settings::SettingsWindow;
+use crate::window::status::StatusWindow;
 
 const PREVIEW_WIDTH: u32 = 118;
+const EDGE_INSET_DIP: u32 = 12;
 
 pub struct DockWindow {
     window: NativeWindow<WindowState>,
@@ -84,19 +86,36 @@ impl DockWindow {
         self.apply_visibility(visible)
     }
 
+    pub fn is_visible(&self) -> bool {
+        self.window.is_visible()
+    }
+
     pub fn apply_appbar_layout(
         &self,
         layout: AppBarLayout,
         settings: &DockSettings,
     ) -> Result<()> {
         let rect = layout.content_rect();
+        let reserved = layout.reserved_rect();
         let width = rect.right - rect.left;
         let height = rect.bottom - rect.top;
+        let inset = DpiScale::from_system(self.dpi()).physical_i32(EDGE_INSET_DIP);
+        let x = zone_x(
+            ScreenArea {
+                left: reserved.left,
+                top: reserved.top,
+                right: reserved.right,
+                bottom: reserved.bottom,
+            },
+            width,
+            settings.dock_zone,
+            inset,
+        );
         self.window
             .state()
             .set_corner_radius(settings.corner_radius);
         self.window.place_topmost(
-            rect.left,
+            x,
             rect.top,
             width,
             height,
@@ -141,8 +160,13 @@ impl DockWindow {
         } else {
             reserved_gutter
         };
-        let (x, y) =
-            normal_position(primary_placement_area(appbar_active)?, size, bottom_offset);
+        let (x, y) = normal_position(
+            primary_placement_area(appbar_active)?,
+            size,
+            bottom_offset,
+            settings.dock_zone,
+            dpi.physical_i32(EDGE_INSET_DIP),
+        );
 
         self.window.place_topmost(
             x,
@@ -187,6 +211,10 @@ impl DockWindow {
             .set_animation_active(self.hwnd(), active)
     }
 
+    pub fn set_status_refresh_active(&self, active: bool) -> Result<()> {
+        super::procedure::set_dock_status_timer(self.hwnd(), active)
+    }
+
     pub fn create_search_window(&self) -> Result<SearchWindow> {
         SearchWindow::create(Rc::clone(&self.class))
     }
@@ -201,6 +229,20 @@ impl DockWindow {
 
     pub fn create_switcher_window(&self) -> Result<super::SwitcherWindow> {
         super::SwitcherWindow::create(Rc::clone(&self.class))
+    }
+
+    pub fn create_status_window(&self) -> Result<StatusWindow> {
+        StatusWindow::create(Rc::clone(&self.class), self.hwnd())
+    }
+
+    pub fn place_status_window(
+        &self,
+        status: &StatusWindow,
+        size: NonZeroPhysicalSize,
+        zone: DockZone,
+        settings: &DockSettings,
+    ) -> Result<()> {
+        status.place_aligned(self.hwnd(), size, zone, settings)
     }
 }
 
@@ -251,17 +293,26 @@ fn normal_position(
     work_area: ScreenArea,
     size: ContentSize,
     bottom_offset: i32,
+    zone: DockZone,
+    edge_inset: i32,
 ) -> (i32, i32) {
-    let available_width = work_area.right.saturating_sub(work_area.left);
     (
-        work_area
-            .left
-            .saturating_add(available_width.saturating_sub(size.width) / 2),
+        zone_x(work_area, size.width, zone, edge_inset),
         work_area
             .bottom
             .saturating_sub(size.height)
             .saturating_sub(bottom_offset),
     )
+}
+
+fn zone_x(area: ScreenArea, width: i32, zone: DockZone, edge_inset: i32) -> i32 {
+    match zone {
+        DockZone::Left => area.left.saturating_add(edge_inset),
+        DockZone::Center => area
+            .left
+            .saturating_add(area.right.saturating_sub(area.left).saturating_sub(width) / 2),
+        DockZone::Right => area.right.saturating_sub(edge_inset).saturating_sub(width),
+    }
 }
 
 const fn centered_bottom_offset(reserved_gutter: i32) -> i32 {

@@ -7,9 +7,9 @@ use lotus_settings::appearance::theme_for;
 use super::{
     AppError, DockBadge, DockContextRequest, DockHitTarget, DockIcon, DockMetrics,
     DockScene, DockSettings, NativeIconCache, NotificationBadgeStyle, NotificationSource,
-    Path, SettingsStore, SignedPoint, SvgAsset, WindowHandle, WindowInfo,
-    adapt_dock_items_with_native, execute_activation, foreground_window,
-    resolve_executable, show_error,
+    Path, SettingsStore, SignedPoint, SvgAsset, SystemStatusItem, SystemStatusKind,
+    WindowHandle, WindowInfo, adapt_dock_items_with_native, execute_activation,
+    foreground_window, local_date, local_time_24h, resolve_executable, show_error,
 };
 
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
@@ -36,6 +36,7 @@ impl DockRuntime {
             .ok_or(AppError::InvalidScene)?;
         let _ = scene.set_theme(theme_for(&settings));
         scene.set_show_desktop_button(settings.show_desktop_button);
+        scene.replace_status_items(docked_status_items(&settings));
         let mut runtime = Self {
             model: DockModel::new(settings, settings_store, items),
             scene,
@@ -137,6 +138,7 @@ impl DockRuntime {
                     .ok_or(AppError::InvalidScene)?;
             let _ = scene.set_theme(theme_for(self.model.settings()));
             scene.set_show_desktop_button(self.model.settings().show_desktop_button);
+            scene.replace_status_items(docked_status_items(self.model.settings()));
             self.scene = scene;
             self.refresh_scene_items();
         }
@@ -242,6 +244,16 @@ impl DockRuntime {
         self.interaction.cancel(&mut self.scene)
     }
 
+    pub(super) fn refresh_status(&mut self) -> bool {
+        let next = docked_status_items(self.model.settings());
+        if self.scene.status_items() == next {
+            return false;
+        }
+
+        self.scene.replace_status_items(next);
+        true
+    }
+
     pub(super) fn activate(&self, target: DockHitTarget, owner: WindowHandle) {
         let DockHitTarget::Item(source_index) = target else {
             return;
@@ -262,13 +274,56 @@ impl DockRuntime {
     }
 }
 
+pub(super) fn status_items(settings: &DockSettings) -> Vec<SystemStatusItem> {
+    if !settings.show_system_status {
+        return Vec::new();
+    }
+
+    let mut items = Vec::with_capacity(4);
+    if settings.show_volume_status {
+        items.push(SystemStatusItem::icon(
+            SystemStatusKind::Volume,
+            SvgAsset::FluentVolume,
+        ));
+    }
+    if settings.show_network_status {
+        items.push(SystemStatusItem::icon(
+            SystemStatusKind::Network,
+            SvgAsset::FluentNetwork,
+        ));
+    }
+    if settings.show_background_apps_status {
+        items.push(SystemStatusItem::icon(
+            SystemStatusKind::BackgroundApps,
+            SvgAsset::FluentTray,
+        ));
+    }
+    if settings.show_date_time_status {
+        let date = if settings.show_date_in_status {
+            local_date()
+        } else {
+            String::new()
+        };
+        items.push(SystemStatusItem::date_time(local_time_24h(), date));
+    }
+    items
+}
+
+fn docked_status_items(settings: &DockSettings) -> Vec<SystemStatusItem> {
+    if settings.system_status_zone == settings.dock_zone {
+        status_items(settings)
+    } else {
+        Vec::new()
+    }
+}
+
 fn projected_items(settings: &DockSettings, windows: &[WindowInfo]) -> Vec<DockItem> {
     project_snapshot(settings, windows, |target| {
         resolve_executable(target).map(|path| path.to_string_lossy().into_owned())
     })
 }
 
-fn metrics(settings: &DockSettings) -> Result<DockMetrics, AppError> {
+pub(super) fn metrics(settings: &DockSettings) -> Result<DockMetrics, AppError> {
     DockMetrics::new(
         settings.icon_size,
         settings.item_spacing,

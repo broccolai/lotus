@@ -192,6 +192,14 @@ pub struct DockSettings {
     pub mascot_image_path: Option<String>,
     pub show_unpinned_running_apps: bool,
     pub show_desktop_button: bool,
+    pub show_system_status: bool,
+    pub dock_zone: DockZone,
+    pub system_status_zone: DockZone,
+    pub show_volume_status: bool,
+    pub show_network_status: bool,
+    pub show_background_apps_status: bool,
+    pub show_date_time_status: bool,
+    pub show_date_in_status: bool,
     pub start_with_windows: bool,
     pub hide_when_fullscreen: bool,
     pub replace_windows_taskbar: bool,
@@ -223,6 +231,14 @@ impl Default for DockSettings {
             mascot_image_path: None,
             show_unpinned_running_apps: true,
             show_desktop_button: false,
+            show_system_status: true,
+            dock_zone: DockZone::Center,
+            system_status_zone: DockZone::Center,
+            show_volume_status: true,
+            show_network_status: true,
+            show_background_apps_status: true,
+            show_date_time_status: true,
+            show_date_in_status: true,
             start_with_windows: true,
             hide_when_fullscreen: true,
             replace_windows_taskbar: true,
@@ -418,6 +434,14 @@ fn canonicalize_property_names_in_json(json: &mut [u8]) {
         "mascotImagePath",
         "showUnpinnedRunningApps",
         "showDesktopButton",
+        "showSystemStatus",
+        "dockZone",
+        "systemStatusZone",
+        "showVolumeStatus",
+        "showNetworkStatus",
+        "showBackgroundAppsStatus",
+        "showDateTimeStatus",
+        "showDateInStatus",
         "startWithWindows",
         "hideWhenFullscreen",
         "replaceWindowsTaskbar",
@@ -479,6 +503,19 @@ fn canonicalize_property_names_in_json(json: &mut [u8]) {
         }
         index = end + 1;
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DockZone {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+impl DockZone {
+    pub const ALL: [Self; 3] = [Self::Left, Self::Center, Self::Right];
 }
 
 fn repair_legacy_nulls(value: &mut Value) {

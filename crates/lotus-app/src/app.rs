@@ -4,6 +4,7 @@ mod launcher;
 mod runtime;
 mod runtime_helpers;
 mod settings;
+mod status;
 mod switcher;
 
 use std::fs;
@@ -15,6 +16,7 @@ use dock::DockRuntime;
 use launcher::{LauncherRuntime, LauncherSubmission};
 use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit, SelectionMove};
 use lotus_core::notification::NotificationSource;
+use lotus_core::search::SearchUsage;
 use lotus_core::settings::{
     DockSettings, NotificationBadgeStyle, SettingsDecodeError, SettingsStore,
     SettingsStoreError, decode_settings,
@@ -33,7 +35,7 @@ use lotus_windows::activation::{
 use lotus_windows::alt_tab::{AltTabController, AltTabEvent, is_alt_tab_wake};
 use lotus_windows::appbar::ShellIntegration;
 use lotus_windows::clipboard::{read_text, write_text};
-use lotus_windows::clock::local_time_24h;
+use lotus_windows::clock::{local_date, local_time_24h};
 use lotus_windows::dialog::{
     confirm_install_update, confirm_restart, confirm_shutdown, show_error, show_information,
 };
@@ -64,6 +66,7 @@ use runtime_helpers::{
     resize_launcher_surface, resize_surface, restart_current_process,
 };
 use settings::SettingsRuntime;
+use status::StatusRuntime;
 use switcher::{AuxiliaryWindows, SwitcherRuntime};
 use thiserror::Error;
 
@@ -74,7 +77,10 @@ use crate::graphics::context_menu_scene::{
 use crate::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
 use crate::graphics::launcher_scene::{LauncherResult, LauncherScene};
 use crate::graphics::launcher_surface::LauncherCompositionSurfaceState;
-use crate::graphics::scene::{DockBadge, DockHitTarget, DockIcon, DockMetrics, DockScene};
+use crate::graphics::scene::{
+    DockBadge, DockHitTarget, DockIcon, DockMetrics, DockScene, SystemStatusItem,
+    SystemStatusKind,
+};
 use crate::graphics::scene_adapter::{
     adapt_dock_items_with_native, resolve_icon_with_native,
 };
@@ -90,7 +96,7 @@ use crate::window::{
     ContextMenuEvent, ContextMenuWindow, CursorMove as WindowCursorMove,
     DockContextRequest, DockWindow, PointerEvent, SearchEdit, SearchEvent, SearchWindow,
     SelectionDirection, SettingsEvent, SettingsKey as WindowSettingsKey, SettingsWindow,
-    SignedPoint, SwitcherEvent, SwitcherWindow, WindowEvent,
+    SignedPoint, StatusWindow, SwitcherEvent, SwitcherWindow, WindowEvent,
 };
 
 #[derive(Debug, Error)]
@@ -176,43 +182,11 @@ pub fn run() -> Result<(), AppError> {
         dock.drag_threshold(),
     )?;
     let taskbar_badges = enable_notification_badges(&mut dock_model);
-    let search_window = dock.create_search_window()?;
-    lotus_windows::backdrop::apply_search_settings(
-        search_window.handle(),
-        dock_model.settings(),
-    );
-    let launcher = LauncherRuntime::new(
-        search_window,
-        dock_model.settings().search_result_limit,
-        &theme_for(dock_model.settings()),
-        usage,
-        usage_store,
-    );
-    let installed = is_installed().unwrap_or(false);
-    let settings = SettingsRuntime::new(
-        dock.create_settings_window()?,
-        dock_model.settings().clone(),
-        installed,
+    dock.set_status_refresh_active(
+        dock_model.settings().show_system_status
+            && dock_model.settings().show_date_time_status,
     )?;
-    let context_menu_window = dock.create_context_menu_window()?;
-    lotus_windows::backdrop::apply_popup_settings(
-        context_menu_window.handle(),
-        dock_model.settings(),
-    );
-    let context_menu =
-        ContextMenuRuntime::new(context_menu_window, &theme_for(dock_model.settings()))?;
-    let switcher_window = dock.create_switcher_window()?;
-    lotus_windows::backdrop::apply_popup_settings(
-        switcher_window.handle(),
-        dock_model.settings(),
-    );
-    let switcher = SwitcherRuntime::new(switcher_window, &theme_for(dock_model.settings()));
-    let mut auxiliary = AuxiliaryWindows {
-        launcher,
-        settings,
-        context_menu,
-        switcher,
-    };
+    let mut auxiliary = create_auxiliary_windows(&dock, &dock_model, usage, usage_store)?;
     let windows_key = enable_optional_windows_key(
         dock_model.settings().search_open_with_windows_key,
         || {
@@ -225,6 +199,9 @@ pub fn run() -> Result<(), AppError> {
     resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
     let _shell_integration =
         ShellIntegration::setup(dock_model.settings(), &dock).unwrap_or(None);
+    auxiliary
+        .status
+        .sync(&dock, dock_model.settings(), &mut graphics)?;
     render_and_schedule(
         &dock,
         &mut graphics,
@@ -237,6 +214,7 @@ pub fn run() -> Result<(), AppError> {
         &window_tracker,
         &dock_model,
         &mut auxiliary.launcher,
+        &auxiliary.status,
     )?;
     if startup.open_settings {
         auxiliary
@@ -257,6 +235,53 @@ pub fn run() -> Result<(), AppError> {
         &mut dock_model,
         &mut auxiliary,
     )
+}
+
+fn create_auxiliary_windows(
+    dock: &DockWindow,
+    dock_model: &DockRuntime,
+    usage: SearchUsage,
+    usage_store: SearchUsageStore,
+) -> Result<AuxiliaryWindows, AppError> {
+    let search_window = dock.create_search_window()?;
+    lotus_windows::backdrop::apply_search_settings(
+        search_window.handle(),
+        dock_model.settings(),
+    );
+    let launcher = LauncherRuntime::new(
+        search_window,
+        dock_model.settings().search_result_limit,
+        &theme_for(dock_model.settings()),
+        usage,
+        usage_store,
+    );
+    let settings = SettingsRuntime::new(
+        dock.create_settings_window()?,
+        dock_model.settings().clone(),
+        is_installed().unwrap_or(false),
+    )?;
+    let context_menu_window = dock.create_context_menu_window()?;
+    lotus_windows::backdrop::apply_popup_settings(
+        context_menu_window.handle(),
+        dock_model.settings(),
+    );
+    let context_menu =
+        ContextMenuRuntime::new(context_menu_window, &theme_for(dock_model.settings()))?;
+    let switcher_window = dock.create_switcher_window()?;
+    lotus_windows::backdrop::apply_popup_settings(
+        switcher_window.handle(),
+        dock_model.settings(),
+    );
+    let switcher = SwitcherRuntime::new(switcher_window, &theme_for(dock_model.settings()));
+    let status = StatusRuntime::new(dock.create_status_window()?, dock_model.settings())?;
+
+    Ok(AuxiliaryWindows {
+        launcher,
+        settings,
+        context_menu,
+        status,
+        switcher,
+    })
 }
 
 fn sync_startup_preference(enabled: bool) {

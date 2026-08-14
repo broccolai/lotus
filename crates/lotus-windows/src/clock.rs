@@ -5,3 +5,9 @@ pub fn local_time_24h() -> String {
     let local = unsafe { GetLocalTime() };
     format!("{:02}:{:02}", local.wHour, local.wMinute)
 }
+
+pub fn local_date() -> String {
+    // SAFETY: This parameterless query returns a copied SYSTEMTIME value.
+    let local = unsafe { GetLocalTime() };
+    format!("{:02}/{:02}/{}", local.wDay, local.wMonth, local.wYear)
+}

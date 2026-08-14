@@ -2,9 +2,9 @@ use super::{
     AltTabController, AltTabEvent, AppError, CompositionSurfaceState, DeviceState,
     DockHitTarget, DockRuntime, DockScene, DockWindow, LauncherCompositionSurfaceState,
     LauncherRuntime, LauncherSubmission, ModelCursorMove, PointerEvent, QueryEdit,
-    RestartError, SearchEdit, SearchEvent, SurfaceError, SurfaceSize, SwitcherRuntime,
-    WindowCursorMove, WindowTracker, WindowsKeyController, WindowsKeyEvent, launch_target,
-    local_time_24h, read_text,
+    RestartError, SearchEdit, SearchEvent, StatusRuntime, SurfaceError, SurfaceSize,
+    SwitcherRuntime, WindowCursorMove, WindowTracker, WindowsKeyController,
+    WindowsKeyEvent, launch_target, local_time_24h, read_text,
 };
 
 pub(super) fn restart_current_process() -> Result<(), RestartError> {
@@ -89,6 +89,7 @@ pub(super) fn apply_fullscreen_visibility(
     tracker: &WindowTracker,
     model: &DockRuntime,
     launcher: &mut LauncherRuntime,
+    status: &StatusRuntime,
 ) -> Result<(), AppError> {
     let visible = dock_visible(
         model.settings().hide_when_fullscreen,
@@ -99,6 +100,7 @@ pub(super) fn apply_fullscreen_visibility(
         dock.set_animation_active(false)?;
     }
     let _changed = dock.set_visible(visible);
+    status.set_visible(visible);
     Ok(())
 }
 

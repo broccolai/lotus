@@ -12,6 +12,9 @@ const DEFAULT_VERTICAL_PADDING_DIP: u32 = 8;
 const DIVIDER_WIDTH_DIP: u32 = 2;
 const DIVIDER_HEIGHT_DIP: u32 = 18;
 const SHOW_DESKTOP_WIDTH_DIP: u32 = 10;
+const STATUS_ICON_SIZE_DIP: u32 = 18;
+const STATUS_ICON_SLOT_WIDTH_DIP: u32 = 32;
+const STATUS_CLOCK_WIDTH_DIP: u32 = 72;
 const DRAG_VERTICAL_TOLERANCE_DIP: u32 = 24;
 const DIPS_PER_INCH: u64 = 96;
 
@@ -27,6 +30,42 @@ pub struct DockItem<Asset> {
     source_index: usize,
     pub icon: DockIcon<Asset>,
     pub badge: Option<DockBadge>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SystemStatusKind {
+    Volume,
+    Network,
+    BackgroundApps,
+    DateTime,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemStatusItem<Asset> {
+    pub kind: SystemStatusKind,
+    pub icon: Option<DockIcon<Asset>>,
+    pub primary_text: String,
+    pub secondary_text: String,
+}
+
+impl<Asset> SystemStatusItem<Asset> {
+    pub fn icon(kind: SystemStatusKind, icon: Asset) -> Self {
+        Self {
+            kind,
+            icon: Some(DockIcon::Embedded(icon)),
+            primary_text: String::new(),
+            secondary_text: String::new(),
+        }
+    }
+
+    pub fn date_time(primary_text: String, secondary_text: String) -> Self {
+        Self {
+            kind: SystemStatusKind::DateTime,
+            icon: None,
+            primary_text,
+            secondary_text,
+        }
+    }
 }
 
 impl<Asset> DockItem<Asset> {
@@ -120,7 +159,9 @@ pub struct DockScene<Asset> {
     dpi: NonZeroU32,
     metrics: DockMetrics,
     mascot: DockIcon<Asset>,
+    launcher_button_visible: bool,
     show_desktop_button: bool,
+    status_items: Vec<SystemStatusItem<Asset>>,
     items: Vec<DockItem<Asset>>,
     interaction: DockInteractionState,
     drag: Option<DockDragState>,
@@ -138,7 +179,9 @@ impl<Asset: Clone> DockScene<Asset> {
             dpi,
             metrics,
             mascot,
+            launcher_button_visible: true,
             show_desktop_button: false,
+            status_items: Vec::new(),
             items,
             interaction: DockInteractionState::default(),
             drag: None,
@@ -199,8 +242,24 @@ impl<Asset: Clone> DockScene<Asset> {
         &self.mascot
     }
 
+    pub fn set_launcher_button_visible(&mut self, visible: bool) {
+        self.launcher_button_visible = visible;
+    }
+
+    pub const fn launcher_button_visible(&self) -> bool {
+        self.launcher_button_visible
+    }
+
     pub fn set_show_desktop_button(&mut self, visible: bool) {
         self.show_desktop_button = visible;
+    }
+
+    pub fn replace_status_items(&mut self, items: Vec<SystemStatusItem<Asset>>) {
+        self.status_items = items;
+    }
+
+    pub fn status_items(&self) -> &[SystemStatusItem<Asset>] {
+        &self.status_items
     }
 
     pub fn items(&self) -> &[DockItem<Asset>] {
@@ -289,14 +348,35 @@ impl<Asset: Clone> DockScene<Asset> {
         let show_desktop_width = self
             .show_desktop_button
             .then_some(metrics.show_desktop_width);
+        let status_width = self.status_items.iter().fold(0_u32, |width, item| {
+            width.saturating_add(match item.kind {
+                SystemStatusKind::DateTime => metrics.status_clock_width,
+                SystemStatusKind::Volume
+                | SystemStatusKind::Network
+                | SystemStatusKind::BackgroundApps => metrics.status_icon_slot_width,
+            })
+        });
+        let status_chrome_width = if self.status_separator_visible() {
+            metrics
+                .spacing
+                .saturating_add(metrics.divider_width)
+                .saturating_add(metrics.spacing)
+        } else {
+            0
+        };
+        let launcher_width = self.launcher_button_visible.then_some(
+            slot_width
+                .saturating_add(metrics.spacing)
+                .saturating_add(metrics.divider_width)
+                .saturating_add(metrics.spacing),
+        );
         let width = metrics
             .horizontal_padding
             .saturating_mul(2)
             .saturating_add(item_strip_width)
-            .saturating_add(slot_width)
-            .saturating_add(metrics.spacing)
-            .saturating_add(metrics.divider_width)
-            .saturating_add(metrics.spacing)
+            .saturating_add(launcher_width.unwrap_or_default())
+            .saturating_add(status_chrome_width)
+            .saturating_add(status_width)
             .saturating_add(show_desktop_width.unwrap_or_default());
         let height = metrics
             .icon_size
@@ -328,17 +408,20 @@ impl<Asset: Clone> DockScene<Asset> {
             icon_top,
             metrics.icon_size,
         );
-        cursor = cursor.saturating_add(slot_width);
         let divider = PixelRect {
-            left: cursor.saturating_add(metrics.spacing),
+            left: cursor
+                .saturating_add(slot_width)
+                .saturating_add(metrics.spacing),
             top: surface_height.saturating_sub(metrics.divider_height) / 2,
             width: metrics.divider_width,
             height: metrics.divider_height,
         };
-        cursor = cursor
-            .saturating_add(metrics.spacing)
-            .saturating_add(metrics.divider_width)
-            .saturating_add(metrics.spacing);
+        if self.launcher_button_visible {
+            cursor = divider
+                .left
+                .saturating_add(metrics.divider_width)
+                .saturating_add(metrics.spacing);
+        }
         let items = self
             .items
             .iter()
@@ -365,9 +448,17 @@ impl<Asset: Clone> DockScene<Asset> {
             })
             .collect();
 
+        let (status_divider, status_items) = self.layout_status_items(
+            &mut cursor,
+            content_top,
+            surface_height,
+            desired,
+            &metrics,
+        );
+
         let show_desktop = if self.show_desktop_button {
             Some(PixelRect {
-                left: cursor.saturating_add(metrics.horizontal_padding),
+                left: cursor,
                 top: content_top,
                 width: metrics.show_desktop_width,
                 height: desired.height(),
@@ -378,12 +469,48 @@ impl<Asset: Clone> DockScene<Asset> {
 
         DockLayout {
             items,
+            launcher_button_visible: self.launcher_button_visible,
             divider,
+            status_divider,
             jirachi,
             jirachi_hit_bounds,
+            status_items,
             show_desktop,
             icon_size: nonzero_or_one(metrics.icon_size),
         }
+    }
+
+    fn layout_status_items(
+        &self,
+        cursor: &mut u32,
+        content_top: u32,
+        surface_height: u32,
+        desired: DockSize,
+        metrics: &ScaledMetrics,
+    ) -> (Option<PixelRect>, Vec<LaidOutStatusItem<Asset>>) {
+        let divider = self.status_separator_visible().then(|| {
+            let divider = PixelRect {
+                left: cursor.saturating_add(metrics.spacing),
+                top: surface_height.saturating_sub(metrics.divider_height) / 2,
+                width: metrics.divider_width,
+                height: metrics.divider_height,
+            };
+            *cursor = cursor
+                .saturating_add(metrics.spacing)
+                .saturating_add(metrics.divider_width)
+                .saturating_add(metrics.spacing);
+            divider
+        });
+        let items = self
+            .status_items
+            .iter()
+            .map(|item| layout_status_item(item, cursor, content_top, desired, metrics))
+            .collect();
+        (divider, items)
+    }
+
+    fn status_separator_visible(&self) -> bool {
+        !self.items.is_empty() && !self.status_items.is_empty()
     }
 
     fn scaled_metrics(&self) -> ScaledMetrics {
@@ -395,8 +522,51 @@ impl<Asset: Clone> DockScene<Asset> {
             divider_width: scale_dips(DIVIDER_WIDTH_DIP, self.dpi),
             divider_height: scale_dips(DIVIDER_HEIGHT_DIP, self.dpi),
             show_desktop_width: scale_dips(SHOW_DESKTOP_WIDTH_DIP, self.dpi),
+            status_icon_size: scale_dips(STATUS_ICON_SIZE_DIP, self.dpi),
+            status_icon_slot_width: scale_dips(STATUS_ICON_SLOT_WIDTH_DIP, self.dpi),
+            status_clock_width: scale_dips(STATUS_CLOCK_WIDTH_DIP, self.dpi),
         }
     }
+}
+
+fn layout_status_item<Asset: Clone>(
+    item: &SystemStatusItem<Asset>,
+    cursor: &mut u32,
+    content_top: u32,
+    desired: DockSize,
+    metrics: &ScaledMetrics,
+) -> LaidOutStatusItem<Asset> {
+    let width = match item.kind {
+        SystemStatusKind::DateTime => metrics.status_clock_width,
+        SystemStatusKind::Volume
+        | SystemStatusKind::Network
+        | SystemStatusKind::BackgroundApps => metrics.status_icon_slot_width,
+    };
+    let hit_bounds = PixelRect {
+        left: *cursor,
+        top: content_top,
+        width,
+        height: desired.height(),
+    };
+    let icon = item.icon.as_ref().map(|icon| LaidOutStatusIcon {
+        icon: icon.clone(),
+        bounds: PixelRect::square(
+            cursor.saturating_add(width.saturating_sub(metrics.status_icon_size) / 2),
+            content_top.saturating_add(
+                desired.height().saturating_sub(metrics.status_icon_size) / 2,
+            ),
+            metrics.status_icon_size,
+        ),
+    });
+    let laid_out = LaidOutStatusItem {
+        kind: item.kind,
+        hit_bounds,
+        icon,
+        primary_text: item.primary_text.clone(),
+        secondary_text: item.secondary_text.clone(),
+    };
+    *cursor = cursor.saturating_add(width);
+    laid_out
 }
 
 struct ScaledMetrics {
@@ -407,6 +577,9 @@ struct ScaledMetrics {
     divider_width: u32,
     divider_height: u32,
     show_desktop_width: u32,
+    status_icon_size: u32,
+    status_icon_slot_width: u32,
+    status_clock_width: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -460,12 +633,30 @@ pub struct LaidOutItem<Asset> {
     pub hit_bounds: PixelRect,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LaidOutStatusIcon<Asset> {
+    pub icon: DockIcon<Asset>,
+    pub bounds: PixelRect,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LaidOutStatusItem<Asset> {
+    pub kind: SystemStatusKind,
+    pub hit_bounds: PixelRect,
+    pub icon: Option<LaidOutStatusIcon<Asset>>,
+    pub primary_text: String,
+    pub secondary_text: String,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct DockLayout<Asset> {
     pub items: Vec<LaidOutItem<Asset>>,
+    pub launcher_button_visible: bool,
     pub divider: PixelRect,
+    pub status_divider: Option<PixelRect>,
     pub jirachi: PixelRect,
     pub jirachi_hit_bounds: PixelRect,
+    pub status_items: Vec<LaidOutStatusItem<Asset>>,
     pub show_desktop: Option<PixelRect>,
     pub icon_size: NonZeroU32,
 }
@@ -477,9 +668,14 @@ impl<Asset> DockLayout<Asset> {
             .find(|item| item.hit_bounds.contains(x, y))
             .map_or_else(
                 || {
-                    self.jirachi_hit_bounds
-                        .contains(x, y)
+                    (self.launcher_button_visible && self.jirachi_hit_bounds.contains(x, y))
                         .then_some(DockHitTarget::Jirachi)
+                        .or_else(|| {
+                            self.status_items
+                                .iter()
+                                .find(|item| item.hit_bounds.contains(x, y))
+                                .map(|item| DockHitTarget::SystemStatus(item.kind))
+                        })
                         .or_else(|| {
                             self.show_desktop
                                 .filter(|bounds| bounds.contains(x, y))
@@ -505,6 +701,7 @@ impl<Asset> DockLayout<Asset> {
 pub enum DockHitTarget {
     Item(usize),
     Jirachi,
+    SystemStatus(SystemStatusKind),
     ShowDesktop,
 }
 

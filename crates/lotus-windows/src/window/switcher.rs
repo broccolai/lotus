@@ -112,6 +112,7 @@ fn switcher_event(event: WindowEvent) -> Option<SwitcherEvent> {
         | WindowEvent::Search(_)
         | WindowEvent::Settings(_)
         | WindowEvent::ContextMenu(_)
-        | WindowEvent::AnimationFrame => None,
+        | WindowEvent::AnimationFrame
+        | WindowEvent::StatusRefreshRequested => None,
     }
 }

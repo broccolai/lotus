@@ -75,7 +75,12 @@ impl DockInteraction {
                 origin_x: x,
                 origin_y: y,
             }),
-            Some(DockHitTarget::Jirachi | DockHitTarget::ShowDesktop) | None => None,
+            Some(
+                DockHitTarget::Jirachi
+                | DockHitTarget::SystemStatus(_)
+                | DockHitTarget::ShowDesktop,
+            )
+            | None => None,
         };
         scene.set_hovered(target) | scene.set_pressed(target)
     }

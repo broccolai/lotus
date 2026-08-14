@@ -6,15 +6,15 @@ use super::{
     ContextMenuEvent, DeviceState, DockContextRequest, DockHitTarget, DockRuntime,
     DockWindow, LauncherSubmission, MenuDirection, PointerEvent, RuntimePolicy,
     SceneSettingsKey, SelectionDirection, SettingsAction, SettingsEvent, SettingsRuntime,
-    SettingsUpdateActivity, SurfaceSize, UpdateResult, UpdateStatus, WindowEvent,
-    WindowSettingsKey, WindowTracker, WindowTrackerEvent, apply_fullscreen_visibility,
-    confirm_install_update, confirm_restart, confirm_shutdown, handle_alt_tab_events,
-    handle_pointer_event, handle_search_event, handle_windows_key_events, is_alt_tab_wake,
-    is_installed, is_search_catalog_wake, is_taskbar_badge_wake, is_update_wake,
-    is_windows_key_wake, launch_current_installer, launch_installer, launch_target,
-    next_message, render_and_schedule, render_surface, request_exit, resize_dock,
-    resize_surface, restart_current_process, show_error, show_information,
-    startup_registration, write_text,
+    SettingsUpdateActivity, SurfaceSize, SystemStatusKind, UpdateResult, UpdateStatus,
+    WindowEvent, WindowHandle, WindowSettingsKey, WindowTracker, WindowTrackerEvent,
+    apply_fullscreen_visibility, confirm_install_update, confirm_restart, confirm_shutdown,
+    handle_alt_tab_events, handle_pointer_event, handle_search_event,
+    handle_windows_key_events, is_alt_tab_wake, is_installed, is_search_catalog_wake,
+    is_taskbar_badge_wake, is_update_wake, is_windows_key_wake, launch_current_installer,
+    launch_installer, launch_target, next_message, render_and_schedule, render_surface,
+    request_exit, resize_dock, resize_surface, restart_current_process, show_error,
+    show_information, startup_registration, write_text,
 };
 
 pub(super) fn run_message_loop(
@@ -62,6 +62,9 @@ fn process_message(
         if event == WindowTrackerEvent::SnapshotRefreshed {
             dock_model.rebuild(window_tracker.current_windows());
             resize_dock(dock, graphics, surface, dock_model)?;
+            auxiliary
+                .status
+                .sync(dock, dock_model.settings(), graphics)?;
             render_and_schedule(
                 dock,
                 graphics,
@@ -75,6 +78,7 @@ fn process_message(
             window_tracker,
             dock_model,
             &mut auxiliary.launcher,
+            &auxiliary.status,
         )?;
     }
     let windows_key_wake = runtime
@@ -106,6 +110,11 @@ fn process_message(
     }
     for event in auxiliary.context_menu.drain_events() {
         handle_context_menu_event(event, dock, graphics, dock_model, auxiliary)?;
+    }
+    for event in auxiliary.status.drain_events() {
+        if let Some(kind) = auxiliary.status.handle_event(event, graphics)? {
+            activate_system_status(kind, auxiliary.status.window.handle());
+        }
     }
     drain_settings_and_switcher_events(&mut SettingsEventContext {
         dock,
@@ -593,6 +602,11 @@ fn apply_settings_action(
                 return Ok(());
             }
 
+            context.dock.set_status_refresh_active(
+                context.dock_model.settings().show_system_status
+                    && context.dock_model.settings().show_date_time_status,
+            )?;
+
             lotus_windows::backdrop::apply_dock_settings(
                 context.dock.handle(),
                 context.dock_model.settings(),
@@ -603,6 +617,11 @@ fn apply_settings_action(
                 context.graphics,
                 context.dock_surface,
                 context.dock_model,
+            )?;
+            context.auxiliary.status.sync(
+                context.dock,
+                context.dock_model.settings(),
+                context.graphics,
             )?;
             render_and_schedule(
                 context.dock,
@@ -616,6 +635,7 @@ fn apply_settings_action(
                 context.window_tracker,
                 context.dock_model,
                 &mut context.auxiliary.launcher,
+                &context.auxiliary.status,
             )?;
             context
                 .auxiliary
@@ -873,6 +893,9 @@ fn handle_window_event(
             dock_model.set_dpi(dpi)?;
             dock_model.set_drag_threshold(dock.drag_threshold());
             resize_dock(dock, graphics, surface, dock_model)?;
+            auxiliary
+                .status
+                .sync(dock, dock_model.settings(), graphics)?;
             render_and_schedule(
                 dock,
                 graphics,
@@ -883,6 +906,9 @@ fn handle_window_event(
         }
         WindowEvent::PlacementRefreshRequested => {
             dock.refresh_placement(dock_model.settings())?;
+            auxiliary
+                .status
+                .sync(dock, dock_model.settings(), graphics)?;
             if auxiliary.launcher.is_visible() {
                 auxiliary.launcher.sync_size(dock, graphics)?;
             }
@@ -912,6 +938,10 @@ fn handle_window_event(
                             auxiliary.launcher.toggle(dock, dock_model, graphics)?;
                         dock.set_animation_active(needs_animation)?;
                     }
+                    DockHitTarget::SystemStatus(kind) => {
+                        auxiliary.launcher.hide();
+                        activate_system_status(kind, dock.handle());
+                    }
                     DockHitTarget::ShowDesktop => {
                         auxiliary.launcher.hide();
                         if let Err(error) = lotus_windows::desktop::toggle() {
@@ -938,6 +968,18 @@ fn handle_window_event(
             let launcher_animation = auxiliary.launcher.render(graphics)?;
             dock.set_animation_active(dock_animation || launcher_animation)?;
         }
+        WindowEvent::StatusRefreshRequested => {
+            if dock_model.refresh_status() {
+                render_and_schedule(
+                    dock,
+                    graphics,
+                    surface,
+                    dock_model.scene(),
+                    auxiliary.launcher.needs_animation(),
+                )?;
+            }
+            auxiliary.status.refresh(dock_model.settings(), graphics)?;
+        }
         WindowEvent::RenderRequested => {
             render_and_schedule(
                 dock,
@@ -949,6 +991,32 @@ fn handle_window_event(
         }
     }
     Ok(())
+}
+
+fn activate_system_status(kind: SystemStatusKind, owner: WindowHandle) {
+    let result = match kind {
+        SystemStatusKind::Volume => launch_target("sndvol.exe", None),
+        SystemStatusKind::Network => launch_target("ms-settings:network", None),
+        SystemStatusKind::BackgroundApps => {
+            if let Err(error) = lotus_windows::tray::open_overflow() {
+                show_error(
+                    owner,
+                    "Lotus",
+                    &format!("Lotus could not open background applications.\n\n{error}"),
+                );
+            }
+            return;
+        }
+        SystemStatusKind::DateTime => launch_target("ms-settings:dateandtime", None),
+    };
+
+    if let Err(error) = result {
+        show_error(
+            owner,
+            "Lotus",
+            &format!("Lotus could not open that system control.\n\n{error}"),
+        );
+    }
 }
 
 fn handle_context_menu(
