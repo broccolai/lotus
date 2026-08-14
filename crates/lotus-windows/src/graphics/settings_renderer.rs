@@ -11,8 +11,9 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+    D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
     D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext,
     ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush,
@@ -42,6 +43,9 @@ use crate::font::BundledFontCollection;
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = color(0.0, 0.0, 0.0, 0.0);
+const ONBOARDING_CANVAS_ALPHA: f32 = 0.72;
+const SETTINGS_CANVAS_ALPHA: f32 = 0.84;
+const SETTINGS_SURFACE_ALPHA: f32 = 0.9;
 const FRAUNCES_SOFTNESS: DWRITE_FONT_AXIS_TAG =
     DWRITE_FONT_AXIS_TAG(u32::from_le_bytes(*b"SOFT"));
 const FRAUNCES_WONK: DWRITE_FONT_AXIS_TAG =
@@ -78,6 +82,7 @@ pub(super) struct SettingsRenderer {
     divider: ID2D1SolidColorBrush,
     title_format: IDWriteTextFormat,
     _bundled_fonts: BundledFontCollection,
+    brand_format: IDWriteTextFormat,
     hero_format: IDWriteTextFormat,
     onboarding_format: IDWriteTextFormat,
     onboarding_body_format: IDWriteTextFormat,
@@ -109,6 +114,8 @@ impl SettingsRenderer {
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let bundled_fonts = BundledFontCollection::create(&write_factory)?;
         let title_format = text_format(&write_factory, 18.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let brand_format =
+            fraunces_format(&write_factory, bundled_fonts.collection(), 22.0, 600.0)?;
         let hero_format =
             fraunces_format(&write_factory, bundled_fonts.collection(), 88.0, 600.0)?;
         let onboarding_format =
@@ -126,6 +133,7 @@ impl SettingsRenderer {
         // SAFETY: Each retained format is live and accepts these valid layout values.
         unsafe {
             title_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            brand_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             hero_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             onboarding_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             onboarding_body_format
@@ -164,6 +172,7 @@ impl SettingsRenderer {
             divider: brush(&context, &theme::d2d(theme.divider))?,
             title_format,
             _bundled_fonts: bundled_fonts,
+            brand_format,
             hero_format,
             onboarding_format,
             onboarding_body_format,
@@ -247,13 +256,21 @@ impl SettingsRenderer {
 
     fn apply_theme(&self, scene: &SettingsScene) {
         let value = scene.theme();
-        let canvas = if scene.onboarding_step().is_some() {
-            value.canvas.with_alpha(0.72)
+        let onboarding = scene.onboarding_step().is_some();
+        let canvas = if onboarding {
+            value.canvas.with_alpha(ONBOARDING_CANVAS_ALPHA)
         } else {
-            value.canvas
+            value.canvas.with_alpha(SETTINGS_CANVAS_ALPHA)
         };
         theme::set(&self.panel, canvas);
-        theme::set(&self.group, value.surface);
+        theme::set(
+            &self.group,
+            if onboarding {
+                value.surface
+            } else {
+                value.surface.with_alpha(SETTINGS_SURFACE_ALPHA)
+            },
+        );
         theme::set(&self.row, value.control);
         theme::set(&self.selected, value.control_selected);
         theme::set(&self.accent, value.accent);
@@ -313,7 +330,7 @@ impl SettingsRenderer {
                 width: scale(scene, 160),
                 height: scale(scene, 44),
             },
-            &self.title_format,
+            &self.brand_format,
             &self.accent,
             false,
         );
@@ -353,66 +370,89 @@ impl SettingsRenderer {
     }
 
     fn draw_content(&self, scene: &SettingsScene, layout: &SettingsLayout) {
+        let viewport = rect(layout.content_viewport);
+        // SAFETY: The active context accepts this finite scene-owned clip for the balanced
+        // PushAxisAlignedClip/PopAxisAlignedClip pair below.
+        unsafe {
+            self.context.PushAxisAlignedClip(
+                &raw const viewport,
+                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            );
+        }
         self.draw_content_group(scene, layout);
         if scene.page() == SettingsPage::About {
             self.draw_about(scene);
         }
-        for entry in &layout.controls {
-            match entry.control {
-                SettingsControl::SurfacePreset => {
-                    self.draw_surface_picker(scene, entry.bounds);
-                }
-                SettingsControl::AccentPreset => {
-                    self.draw_accent_picker(scene, entry.bounds);
-                }
-                SettingsControl::NotificationBadgeStyle => {
-                    self.draw_notification_badge_style(scene, entry.bounds);
-                }
-                SettingsControl::DockZone => {
-                    self.draw_zone_picker(scene, entry.bounds, false);
-                }
-                SettingsControl::SystemStatusZone => {
-                    self.draw_zone_picker(scene, entry.bounds, true);
-                }
-                SettingsControl::MediaZone => {
-                    self.draw_media_zone_picker(scene, entry.bounds);
-                }
-                SettingsControl::WindowPickerStyle => {
-                    self.draw_window_picker_style(scene, entry.bounds);
-                }
-                SettingsControl::Toggle(toggle) => {
-                    self.draw_toggle(scene, entry.bounds, toggle);
-                }
-                SettingsControl::Slider(slider) => {
-                    self.draw_slider(scene, entry.bounds, slider);
-                }
-                SettingsControl::ChooseMascotImage => {
-                    self.draw_mascot_image(scene, entry.bounds);
-                }
-                SettingsControl::ResetMascotImage => {
-                    self.draw_reset_mascot(scene, entry.bounds);
-                }
-                SettingsControl::CheckForUpdates => {
-                    self.draw_check_for_updates(scene, entry.bounds);
-                }
-                SettingsControl::ReplaySetup => self.draw_button(
-                    scene,
-                    entry.bounds,
-                    SettingsControl::ReplaySetup,
-                    "Run first setup again",
-                    true,
-                    ButtonEmphasis::Secondary,
-                ),
-                SettingsControl::Revert => self.draw_revert(scene, entry.bounds),
-                SettingsControl::Apply => self.draw_apply(scene, entry.bounds),
-                SettingsControl::Close => self.draw_close(scene, entry.bounds),
-                SettingsControl::Navigate(_)
-                | SettingsControl::OnboardingModule(_)
-                | SettingsControl::OnboardingZone(_)
-                | SettingsControl::OnboardingBack
-                | SettingsControl::OnboardingNext
-                | SettingsControl::OnboardingFinish => {}
+        for entry in layout
+            .controls
+            .iter()
+            .filter(|entry| is_page_content(entry.control))
+        {
+            self.draw_settings_control(scene, entry.control, entry.bounds);
+        }
+        // SAFETY: This balances the clip pushed immediately above on the same active context.
+        unsafe {
+            self.context.PopAxisAlignedClip();
+        }
+
+        if let Some(thumb) = layout.scrollbar_thumb {
+            let thumb = rounded(rect(thumb), scale_f32(scene, 1.5));
+            // SAFETY: The active context, local geometry, and retained muted brush are live.
+            unsafe {
+                self.context
+                    .FillRoundedRectangle(&raw const thumb, &self.muted);
             }
+        }
+
+        for entry in layout
+            .controls
+            .iter()
+            .filter(|entry| !is_page_content(entry.control))
+        {
+            self.draw_settings_control(scene, entry.control, entry.bounds);
+        }
+    }
+
+    fn draw_settings_control(
+        &self,
+        scene: &SettingsScene,
+        control: SettingsControl,
+        bounds: SettingsRect,
+    ) {
+        match control {
+            SettingsControl::SurfacePreset => self.draw_surface_picker(scene, bounds),
+            SettingsControl::AccentPreset => self.draw_accent_picker(scene, bounds),
+            SettingsControl::NotificationBadgeStyle => {
+                self.draw_notification_badge_style(scene, bounds);
+            }
+            SettingsControl::DockZone => self.draw_zone_picker(scene, bounds, false),
+            SettingsControl::SystemStatusZone => self.draw_zone_picker(scene, bounds, true),
+            SettingsControl::MediaZone => self.draw_media_zone_picker(scene, bounds),
+            SettingsControl::WindowPickerStyle => {
+                self.draw_window_picker_style(scene, bounds);
+            }
+            SettingsControl::Toggle(toggle) => self.draw_toggle(scene, bounds, toggle),
+            SettingsControl::Slider(slider) => self.draw_slider(scene, bounds, slider),
+            SettingsControl::ChooseMascotImage => self.draw_mascot_image(scene, bounds),
+            SettingsControl::ResetMascotImage => self.draw_reset_mascot(scene, bounds),
+            SettingsControl::CheckForUpdates => self.draw_check_for_updates(scene, bounds),
+            SettingsControl::ReplaySetup => self.draw_button(
+                scene,
+                bounds,
+                SettingsControl::ReplaySetup,
+                "Run first setup again",
+                true,
+                ButtonEmphasis::Secondary,
+            ),
+            SettingsControl::Revert => self.draw_revert(scene, bounds),
+            SettingsControl::Apply => self.draw_apply(scene, bounds),
+            SettingsControl::Close => self.draw_close(scene, bounds),
+            SettingsControl::Navigate(_)
+            | SettingsControl::OnboardingModule(_)
+            | SettingsControl::OnboardingZone(_)
+            | SettingsControl::OnboardingBack
+            | SettingsControl::OnboardingNext
+            | SettingsControl::OnboardingFinish => {}
         }
     }
 
@@ -1662,6 +1702,24 @@ fn rect(value: SettingsRect) -> D2D_RECT_F {
         right: as_f32(value.left.saturating_add(value.width)),
         bottom: as_f32(value.top.saturating_add(value.height)),
     }
+}
+
+fn is_page_content(control: SettingsControl) -> bool {
+    matches!(
+        control,
+        SettingsControl::SurfacePreset
+            | SettingsControl::AccentPreset
+            | SettingsControl::NotificationBadgeStyle
+            | SettingsControl::DockZone
+            | SettingsControl::SystemStatusZone
+            | SettingsControl::MediaZone
+            | SettingsControl::WindowPickerStyle
+            | SettingsControl::Toggle(_)
+            | SettingsControl::Slider(_)
+            | SettingsControl::ChooseMascotImage
+            | SettingsControl::ResetMascotImage
+            | SettingsControl::ReplaySetup
+    )
 }
 fn rounded(rect: D2D_RECT_F, radius: f32) -> D2D1_ROUNDED_RECT {
     D2D1_ROUNDED_RECT {

@@ -42,7 +42,7 @@ impl SettingsRuntime {
             self.window.focus();
             return Ok(());
         }
-        self.window.use_settings_material();
+        self.window.use_settings_material(applied);
         self.scene.end_onboarding();
         self.scene.mark_applied(applied.clone());
         self.show(graphics)

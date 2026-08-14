@@ -78,12 +78,12 @@ impl SettingsWindow {
         Ok(())
     }
 
-    pub fn use_settings_material(&self) {
-        backdrop::apply_settings_window(self.hwnd());
+    pub fn use_settings_material(&self, settings: &DockSettings) {
+        backdrop::apply_translucent_settings_window(self.hwnd(), settings);
     }
 
     pub fn use_onboarding_material(&self, settings: &DockSettings) {
-        backdrop::apply_onboarding_window(self.hwnd(), settings);
+        backdrop::apply_translucent_settings_window(self.hwnd(), settings);
     }
 
     pub fn focus(&self) {

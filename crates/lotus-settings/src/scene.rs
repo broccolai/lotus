@@ -17,6 +17,7 @@ const NAV_HEIGHT_DIP: u32 = 44;
 const CONTENT_LEFT_DIP: u32 = 244;
 const CONTENT_RIGHT_DIP: u32 = 32;
 const CONTENT_TOP_DIP: u32 = 76;
+const CONTENT_BOTTOM_INSET_DIP: u32 = 12;
 const CONTROL_COLUMN_LEFT_DIP: u32 = 250;
 const CONTROL_COLUMN_RIGHT_DIP: u32 = 16;
 const CONTROL_VALUE_GAP_DIP: u32 = 14;
@@ -259,6 +260,8 @@ pub struct SettingsControlLayout {
 pub struct SettingsLayout {
     pub size: SettingsSize,
     pub controls: Vec<SettingsControlLayout>,
+    pub content_viewport: SettingsRect,
+    pub scrollbar_thumb: Option<SettingsRect>,
 }
 
 impl SettingsLayout {
@@ -266,7 +269,11 @@ impl SettingsLayout {
         self.controls
             .iter()
             .rev()
-            .find(|entry| entry.bounds.contains(x, y))
+            .find(|entry| {
+                entry.bounds.contains(x, y)
+                    && (!is_page_content(entry.control)
+                        || self.content_viewport.contains(x, y))
+            })
             .map(|entry| entry.control)
     }
 
@@ -317,6 +324,7 @@ pub struct SettingsScene {
     update_activity: SettingsUpdateActivity,
     onboarding: Option<OnboardingStep>,
     onboarding_required: bool,
+    scroll_offset_dip: u32,
 }
 
 impl SettingsScene {
@@ -335,6 +343,7 @@ impl SettingsScene {
             update_activity: SettingsUpdateActivity::Idle,
             onboarding: None,
             onboarding_required: false,
+            scroll_offset_dip: 0,
         })
     }
 
@@ -396,6 +405,7 @@ impl SettingsScene {
         self.page = SettingsPage::General;
         self.onboarding = Some(OnboardingStep::Welcome);
         self.onboarding_required = required;
+        self.scroll_offset_dip = 0;
         self.hovered = None;
         self.focused = Some(SettingsControl::OnboardingNext);
         self.focus_visible = false;
@@ -404,6 +414,7 @@ impl SettingsScene {
     pub fn end_onboarding(&mut self) {
         self.onboarding = None;
         self.onboarding_required = false;
+        self.scroll_offset_dip = 0;
         self.hovered = None;
         self.focused = Some(SettingsControl::Navigate(SettingsPage::General));
     }
@@ -427,6 +438,12 @@ impl SettingsScene {
             return self.onboarding_layout(step);
         }
         let size = self.desired_size();
+        let content_viewport = self.rect(
+            CONTENT_LEFT_DIP,
+            CONTENT_TOP_DIP,
+            WIDTH_DIP - CONTENT_LEFT_DIP - 14,
+            Self::content_viewport_height_dip(),
+        );
         let mut controls = Vec::new();
         for (index, page) in SettingsPage::ALL
             .into_iter()
@@ -466,7 +483,8 @@ impl SettingsScene {
             let top = if control == SettingsControl::ReplaySetup {
                 HEIGHT_DIP - FOOTER_HEIGHT_DIP - ROW_HEIGHT_DIP - 22
             } else {
-                CONTENT_TOP_DIP + u32_index(index) * (ROW_HEIGHT_DIP + ROW_GAP_DIP)
+                (CONTENT_TOP_DIP + u32_index(index) * (ROW_HEIGHT_DIP + ROW_GAP_DIP))
+                    .saturating_sub(self.scroll_offset_dip)
             };
             let bounds = self.rect(CONTENT_LEFT_DIP, top, content_width, ROW_HEIGHT_DIP);
             controls.push(SettingsControlLayout { control, bounds });
@@ -504,7 +522,35 @@ impl SettingsScene {
                 CLOSE_SIZE_DIP,
             ),
         });
-        SettingsLayout { size, controls }
+        SettingsLayout {
+            size,
+            controls,
+            content_viewport,
+            scrollbar_thumb: self.scrollbar_thumb(),
+        }
+    }
+
+    pub fn scroll(&mut self, direction: i32) -> bool {
+        if self.onboarding.is_some() || direction == 0 {
+            return false;
+        }
+
+        let maximum = self.maximum_scroll_offset_dip();
+        let next = if direction > 0 {
+            self.scroll_offset_dip
+                .saturating_add(ROW_HEIGHT_DIP + ROW_GAP_DIP)
+                .min(maximum)
+        } else {
+            self.scroll_offset_dip
+                .saturating_sub(ROW_HEIGHT_DIP + ROW_GAP_DIP)
+        };
+        if next == self.scroll_offset_dip {
+            return false;
+        }
+
+        self.scroll_offset_dip = next;
+        self.hovered = None;
+        true
     }
 
     pub fn set_hovered(&mut self, control: Option<SettingsControl>) -> bool {
@@ -767,6 +813,49 @@ impl SettingsScene {
         }
     }
 
+    const fn content_viewport_height_dip() -> u32 {
+        HEIGHT_DIP - FOOTER_HEIGHT_DIP - CONTENT_BOTTOM_INSET_DIP - CONTENT_TOP_DIP
+    }
+
+    fn content_height_dip(&self) -> u32 {
+        let count = u32::try_from(self.page_controls().len()).unwrap_or(u32::MAX);
+        if count == 0 || self.page == SettingsPage::About {
+            return 0;
+        }
+
+        count
+            .saturating_mul(ROW_HEIGHT_DIP)
+            .saturating_add(count.saturating_sub(1).saturating_mul(ROW_GAP_DIP))
+    }
+
+    fn maximum_scroll_offset_dip(&self) -> u32 {
+        self.content_height_dip()
+            .saturating_sub(Self::content_viewport_height_dip())
+    }
+
+    fn scrollbar_thumb(&self) -> Option<SettingsRect> {
+        let content_height = self.content_height_dip();
+        let viewport_height = Self::content_viewport_height_dip();
+        let maximum = self.maximum_scroll_offset_dip();
+        if maximum == 0 {
+            return None;
+        }
+
+        let thumb_height = viewport_height
+            .saturating_mul(viewport_height)
+            .checked_div(content_height)
+            .unwrap_or(viewport_height)
+            .max(32);
+        let travel = viewport_height.saturating_sub(thumb_height);
+        let thumb_top = CONTENT_TOP_DIP.saturating_add(
+            travel
+                .saturating_mul(self.scroll_offset_dip)
+                .checked_div(maximum)
+                .unwrap_or_default(),
+        );
+        Some(self.rect(WIDTH_DIP - 18, thumb_top, 3, thumb_height))
+    }
+
     fn onboarding_layout(&self, step: OnboardingStep) -> SettingsLayout {
         let size = self.desired_size();
         let mut controls = Vec::new();
@@ -857,13 +946,24 @@ impl SettingsScene {
                 ),
             });
         }
-        SettingsLayout { size, controls }
+        SettingsLayout {
+            size,
+            controls,
+            content_viewport: SettingsRect {
+                left: 0,
+                top: 0,
+                width: size.width(),
+                height: size.height(),
+            },
+            scrollbar_thumb: None,
+        }
     }
 
     fn activate(&mut self, control: SettingsControl) -> SettingsAction {
         match control {
             SettingsControl::Navigate(page) => {
                 self.page = page;
+                self.scroll_offset_dip = 0;
                 self.focused = Some(SettingsControl::Navigate(page));
                 SettingsAction::Changed
             }
@@ -1049,6 +1149,29 @@ impl SettingsScene {
             (None, false) => 0,
         };
         self.focused = Some(focusable[next]);
+        self.reveal_focused_control();
+    }
+
+    fn reveal_focused_control(&mut self) {
+        let Some(control) = self.focused.filter(|control| is_page_content(*control)) else {
+            return;
+        };
+        let Some(index) = self
+            .page_controls()
+            .iter()
+            .position(|item| *item == control)
+        else {
+            return;
+        };
+
+        let top = u32_index(index).saturating_mul(ROW_HEIGHT_DIP + ROW_GAP_DIP);
+        let bottom = top.saturating_add(ROW_HEIGHT_DIP);
+        let viewport_height = Self::content_viewport_height_dip();
+        if top < self.scroll_offset_dip {
+            self.scroll_offset_dip = top;
+        } else if bottom > self.scroll_offset_dip.saturating_add(viewport_height) {
+            self.scroll_offset_dip = bottom.saturating_sub(viewport_height);
+        }
     }
 
     fn set_picker_from_pointer(
@@ -1383,6 +1506,25 @@ impl SettingsScene {
 fn nonzero(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).unwrap_or(NonZeroU32::MIN)
 }
+
+fn is_page_content(control: SettingsControl) -> bool {
+    matches!(
+        control,
+        SettingsControl::SurfacePreset
+            | SettingsControl::AccentPreset
+            | SettingsControl::NotificationBadgeStyle
+            | SettingsControl::DockZone
+            | SettingsControl::SystemStatusZone
+            | SettingsControl::MediaZone
+            | SettingsControl::WindowPickerStyle
+            | SettingsControl::Toggle(_)
+            | SettingsControl::Slider(_)
+            | SettingsControl::ChooseMascotImage
+            | SettingsControl::ResetMascotImage
+            | SettingsControl::ReplaySetup
+    )
+}
+
 fn u32_index(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }

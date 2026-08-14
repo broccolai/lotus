@@ -211,17 +211,10 @@ fn dispatch(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT
     {
         return result;
     }
-    if message == WM_MOUSEWHEEL && is_search_window(hwnd) {
-        return dispatch_search_wheel(hwnd, wparam);
-    }
-    if message == WM_MOUSEWHEEL && is_context_menu_window(hwnd) {
-        if let Some(direction) = wheel_selection_direction(wparam) {
-            push_window_event(
-                hwnd,
-                WindowEvent::ContextMenu(ContextMenuEvent::Scroll(direction)),
-            );
-        }
-        return LRESULT(0);
+    if message == WM_MOUSEWHEEL
+        && let Some(result) = dispatch_wheel_message(hwnd, wparam)
+    {
+        return result;
     }
 
     match message {
@@ -498,6 +491,36 @@ fn dispatch_search_wheel(hwnd: HWND, wparam: WPARAM) -> LRESULT {
         );
     }
     LRESULT(0)
+}
+
+fn dispatch_wheel_message(hwnd: HWND, wparam: WPARAM) -> Option<LRESULT> {
+    let direction = wheel_selection_direction(wparam);
+    match window_kind(hwnd) {
+        Some(WindowKind::Search) => Some(dispatch_search_wheel(hwnd, wparam)),
+        Some(WindowKind::ContextMenu) => {
+            if let Some(direction) = direction {
+                push_window_event(
+                    hwnd,
+                    WindowEvent::ContextMenu(ContextMenuEvent::Scroll(direction)),
+                );
+            }
+            Some(LRESULT(0))
+        }
+        Some(WindowKind::Settings) => {
+            if let Some(direction) = direction {
+                let direction = match direction {
+                    SelectionDirection::Previous => -1,
+                    SelectionDirection::Next => 1,
+                };
+                push_window_event(
+                    hwnd,
+                    WindowEvent::Settings(SettingsEvent::Scroll { direction }),
+                );
+            }
+            Some(LRESULT(0))
+        }
+        Some(WindowKind::Dock | WindowKind::Status | WindowKind::Switcher) | None => None,
+    }
 }
 
 fn dispatch_search_activation(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

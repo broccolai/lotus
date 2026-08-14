@@ -768,6 +768,12 @@ fn handle_settings_event(
                     context.auxiliary.settings.scene.pointer_activate(x, y)
                 })
         }
+        SettingsEvent::Scroll { direction } => {
+            if context.auxiliary.settings.scene.scroll(direction) {
+                context.auxiliary.settings.render(context.graphics)?;
+            }
+            return Ok(());
+        }
         SettingsEvent::CloseRequested => SettingsAction::Close,
         SettingsEvent::KeyPressed(key) => {
             settings_key_action(&mut context.auxiliary.settings, key)

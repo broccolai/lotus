@@ -23,6 +23,7 @@ pub enum SettingsEvent {
     PointerLeft,
     PointerPressed { x: i32, y: i32 },
     PointerReleased { x: i32, y: i32 },
+    Scroll { direction: i32 },
     CloseRequested,
     KeyPressed(SettingsKey),
 }
