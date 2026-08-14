@@ -52,6 +52,7 @@ function InitializeSetup: Boolean;
 begin
   LegacyPortableInstall :=
     FileExists(ExpandConstant('{localappdata}\Programs\Lotus\lotus.exe')) and
+    not FileExists(ExpandConstant('{localappdata}\Programs\Lotus\unins000.exe')) and
     not RegKeyExists(
       HKCU,
       'Software\Microsoft\Windows\CurrentVersion\Uninstall\{EB208C8B-11C0-4B22-93A9-8113140647AA}_is1'
@@ -62,24 +63,6 @@ end;
 function RestartAfterUpdate: Boolean;
 begin
   Result := ExpandConstant('{param:RESTARTLOTUS|0}') = '1';
-end;
-
-function PrepareToInstall(var NeedsRestart: Boolean): String;
-var
-  Attempts: Integer;
-begin
-  Result := '';
-  if not RestartAfterUpdate then
-    Exit;
-
-  for Attempts := 1 to 100 do
-  begin
-    if not CheckForMutexes('Local\Lotus.Dock.SingleInstance') then
-      Exit;
-    Sleep(100);
-  end;
-
-  Result := 'Lotus is still running. Close Lotus and run the update again.';
 end;
 
 function UpdateLaunchParameters(Param: String): String;

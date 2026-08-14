@@ -16,7 +16,7 @@ const NAV_WIDTH_DIP: u32 = 180;
 const NAV_HEIGHT_DIP: u32 = 44;
 const CONTENT_LEFT_DIP: u32 = 244;
 const CONTENT_RIGHT_DIP: u32 = 32;
-const CONTENT_TOP_DIP: u32 = 76;
+const CONTENT_TOP_DIP: u32 = 18;
 const CONTENT_BOTTOM_INSET_DIP: u32 = 12;
 const CONTROL_COLUMN_LEFT_DIP: u32 = 250;
 const CONTROL_COLUMN_RIGHT_DIP: u32 = 16;
@@ -489,35 +489,37 @@ impl SettingsScene {
             let bounds = self.rect(CONTENT_LEFT_DIP, top, content_width, ROW_HEIGHT_DIP);
             controls.push(SettingsControlLayout { control, bounds });
         }
-        controls.push(SettingsControlLayout {
-            control: SettingsControl::Revert,
-            bounds: self.rect(
-                WIDTH_DIP
-                    - CONTENT_RIGHT_DIP
-                    - APPLY_WIDTH_DIP
-                    - ACTION_GAP_DIP
-                    - REVERT_WIDTH_DIP,
-                HEIGHT_DIP - FOOTER_HEIGHT_DIP
-                    + (FOOTER_HEIGHT_DIP - ACTION_HEIGHT_DIP) / 2,
-                REVERT_WIDTH_DIP,
-                ACTION_HEIGHT_DIP,
-            ),
-        });
-        controls.push(SettingsControlLayout {
-            control: SettingsControl::Apply,
-            bounds: self.rect(
-                WIDTH_DIP - CONTENT_RIGHT_DIP - APPLY_WIDTH_DIP,
-                HEIGHT_DIP - FOOTER_HEIGHT_DIP
-                    + (FOOTER_HEIGHT_DIP - ACTION_HEIGHT_DIP) / 2,
-                APPLY_WIDTH_DIP,
-                ACTION_HEIGHT_DIP,
-            ),
-        });
+        if self.page != SettingsPage::About {
+            controls.push(SettingsControlLayout {
+                control: SettingsControl::Revert,
+                bounds: self.rect(
+                    WIDTH_DIP
+                        - CONTENT_RIGHT_DIP
+                        - APPLY_WIDTH_DIP
+                        - ACTION_GAP_DIP
+                        - REVERT_WIDTH_DIP,
+                    HEIGHT_DIP - FOOTER_HEIGHT_DIP
+                        + (FOOTER_HEIGHT_DIP - ACTION_HEIGHT_DIP) / 2,
+                    REVERT_WIDTH_DIP,
+                    ACTION_HEIGHT_DIP,
+                ),
+            });
+            controls.push(SettingsControlLayout {
+                control: SettingsControl::Apply,
+                bounds: self.rect(
+                    WIDTH_DIP - CONTENT_RIGHT_DIP - APPLY_WIDTH_DIP,
+                    HEIGHT_DIP - FOOTER_HEIGHT_DIP
+                        + (FOOTER_HEIGHT_DIP - ACTION_HEIGHT_DIP) / 2,
+                    APPLY_WIDTH_DIP,
+                    ACTION_HEIGHT_DIP,
+                ),
+            });
+        }
         controls.push(SettingsControlLayout {
             control: SettingsControl::Close,
             bounds: self.rect(
-                WIDTH_DIP - CONTENT_RIGHT_DIP - CLOSE_SIZE_DIP,
-                12,
+                NAV_LEFT_DIP + NAV_WIDTH_DIP - CLOSE_SIZE_DIP,
+                20,
                 CLOSE_SIZE_DIP,
                 CLOSE_SIZE_DIP,
             ),

@@ -43,9 +43,8 @@ use crate::font::BundledFontCollection;
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = color(0.0, 0.0, 0.0, 0.0);
-const ONBOARDING_CANVAS_ALPHA: f32 = 0.72;
-const SETTINGS_CANVAS_ALPHA: f32 = 0.84;
-const SETTINGS_SURFACE_ALPHA: f32 = 0.9;
+const MATERIAL_CANVAS_ALPHA: f32 = 0.72;
+const SETTINGS_SURFACE_ALPHA: f32 = 0.72;
 const FRAUNCES_SOFTNESS: DWRITE_FONT_AXIS_TAG =
     DWRITE_FONT_AXIS_TAG(u32::from_le_bytes(*b"SOFT"));
 const FRAUNCES_WONK: DWRITE_FONT_AXIS_TAG =
@@ -69,6 +68,8 @@ pub(super) struct SettingsRenderer {
     context: ID2D1DeviceContext,
     target: Option<ID2D1Bitmap1>,
     panel: ID2D1SolidColorBrush,
+    sidebar: ID2D1SolidColorBrush,
+    sidebar_selected: ID2D1SolidColorBrush,
     group: ID2D1SolidColorBrush,
     row: ID2D1SolidColorBrush,
     selected: ID2D1SolidColorBrush,
@@ -159,6 +160,8 @@ impl SettingsRenderer {
             context: context.clone(),
             target: None,
             panel: brush(&context, &theme::d2d(theme.canvas))?,
+            sidebar: brush(&context, &theme::d2d(theme.accent_soft))?,
+            sidebar_selected: brush(&context, &theme::d2d(theme.border_strong))?,
             group: brush(&context, &theme::d2d(theme.surface))?,
             row: brush(&context, &theme::d2d(theme.control))?,
             selected: brush(&context, &theme::d2d(theme.control_selected))?,
@@ -257,12 +260,10 @@ impl SettingsRenderer {
     fn apply_theme(&self, scene: &SettingsScene) {
         let value = scene.theme();
         let onboarding = scene.onboarding_step().is_some();
-        let canvas = if onboarding {
-            value.canvas.with_alpha(ONBOARDING_CANVAS_ALPHA)
-        } else {
-            value.canvas.with_alpha(SETTINGS_CANVAS_ALPHA)
-        };
+        let canvas = value.canvas.with_alpha(MATERIAL_CANVAS_ALPHA);
         theme::set(&self.panel, canvas);
+        theme::set(&self.sidebar, value.accent.with_alpha(0.38));
+        theme::set(&self.sidebar_selected, value.text.with_alpha(0.14));
         theme::set(
             &self.group,
             if onboarding {
@@ -290,34 +291,25 @@ impl SettingsRenderer {
             right: as_f32(size.width()),
             bottom: as_f32(size.height()),
         };
-        let divider = D2D_RECT_F {
-            left: scale_f32(scene, 208.0),
+        let sidebar = D2D_RECT_F {
+            left: 0.0,
             top: 0.0,
             right: scale_f32(scene, 209.0),
             bottom: as_f32(size.height()),
         };
-        let footer = D2D_RECT_F {
-            left: scale_f32(scene, 209.0),
-            top: (as_f32(size.height()) - scale_f32(scene, 72.0)).max(0.0),
-            right: as_f32(size.width()),
-            bottom: as_f32(size.height()),
+        let main = D2D_RECT_F {
+            left: sidebar.right,
+            ..surface
         };
-        let footer_divider = D2D_RECT_F {
-            bottom: footer.top + scale_f32(scene, 1.0),
-            ..footer
-        };
-        // SAFETY: The active context and retained brushes are live. One continuous translucent
-        // Lotus surface covers both areas, with only a quiet structural divider between them.
+        // SAFETY: The active context and retained brushes are live for these finite rectangles.
         unsafe {
-            self.context.FillRectangle(&raw const surface, &self.panel);
             if scene.onboarding_step().is_some() {
+                self.context.FillRectangle(&raw const surface, &self.panel);
                 return;
             }
-            self.context.FillRectangle(&raw const footer, &self.group);
+            self.context.FillRectangle(&raw const main, &self.panel);
             self.context
-                .FillRectangle(&raw const divider, &self.divider);
-            self.context
-                .FillRectangle(&raw const footer_divider, &self.divider);
+                .FillRectangle(&raw const sidebar, &self.sidebar);
         }
     }
 
@@ -331,7 +323,7 @@ impl SettingsRenderer {
                 height: scale(scene, 44),
             },
             &self.brand_format,
-            &self.accent,
+            &self.text,
             false,
         );
         for page in SettingsPage::ALL {
@@ -340,8 +332,9 @@ impl SettingsRenderer {
                 continue;
             };
             let selected = scene.page() == page;
-            self.draw_control_surface(scene, bounds, selected);
             if selected {
+                let surface =
+                    rounded(rect(bounds), scale_f32(scene, scene.theme().radii.control));
                 let marker = SettingsRect {
                     left: bounds.left + scale(scene, 3),
                     top: bounds.top + scale(scene, 12),
@@ -349,10 +342,12 @@ impl SettingsRenderer {
                     height: bounds.height.saturating_sub(scale(scene, 24)),
                 };
                 let marker = rounded(rect(marker), scale_f32(scene, 1.5));
-                // SAFETY: Active context, local geometry, and retained accent brush are live.
+                // SAFETY: Active context, local geometry, and retained brushes are live.
                 unsafe {
                     self.context
-                        .FillRoundedRectangle(&raw const marker, &self.accent);
+                        .FillRoundedRectangle(&raw const surface, &self.sidebar_selected);
+                    self.context
+                        .FillRoundedRectangle(&raw const marker, &self.text);
                 };
             }
             self.draw_text(
@@ -805,22 +800,9 @@ impl SettingsRenderer {
                 )
             })
             .collect();
-        let (Some(first), Some(last)) = (controls.first(), controls.last()) else {
+        if controls.is_empty() {
             return;
-        };
-        let bottom = last.bounds.top.saturating_add(last.bounds.height);
-        let bounds = SettingsRect {
-            left: first.bounds.left,
-            top: first.bounds.top,
-            width: first.bounds.width,
-            height: bottom.saturating_sub(first.bounds.top),
-        };
-        let card = rounded(rect(bounds), scale_f32(scene, scene.theme().radii.panel));
-        // SAFETY: Active context, local geometry, and retained group brush are live.
-        unsafe {
-            self.context
-                .FillRoundedRectangle(&raw const card, &self.group);
-        };
+        }
         for entry in controls.iter().take(controls.len().saturating_sub(1)) {
             let y = entry
                 .bounds
@@ -1154,7 +1136,6 @@ impl SettingsRenderer {
         bounds: SettingsRect,
         toggle: SettingsToggle,
     ) {
-        self.draw_control_surface(scene, bounds, false);
         let label_format = if scene.onboarding_step().is_some() {
             &self.onboarding_body_format
         } else {
@@ -1214,7 +1195,6 @@ impl SettingsRenderer {
         bounds: SettingsRect,
         slider: SettingsSlider,
     ) {
-        self.draw_control_surface(scene, bounds, false);
         self.draw_text(
             slider_label(slider),
             inset(bounds, scale(scene, 16), 0),
@@ -1281,7 +1261,6 @@ impl SettingsRenderer {
     }
 
     fn draw_mascot_image(&self, scene: &SettingsScene, bounds: SettingsRect) {
-        self.draw_control_surface(scene, bounds, false);
         self.draw_text(
             "Dock image",
             inset(bounds, scale(scene, 16), 0),
@@ -1312,7 +1291,6 @@ impl SettingsRenderer {
     }
 
     fn draw_reset_mascot(&self, scene: &SettingsScene, bounds: SettingsRect) {
-        self.draw_control_surface(scene, bounds, false);
         self.draw_text(
             "Restore lotus icon",
             inset(bounds, scale(scene, 16), 0),
@@ -1448,24 +1426,6 @@ impl SettingsRenderer {
 
     fn draw_close(&self, _scene: &SettingsScene, bounds: SettingsRect) {
         self.draw_text("×", bounds, &self.title_format, &self.muted, true);
-    }
-
-    fn draw_control_surface(
-        &self,
-        scene: &SettingsScene,
-        bounds: SettingsRect,
-        selected: bool,
-    ) {
-        let surface = rounded(rect(bounds), scale_f32(scene, scene.theme().radii.control));
-        let brush = if selected {
-            Some(&self.selected)
-        } else {
-            None
-        };
-        if let Some(brush) = brush {
-            // SAFETY: Active context and retained brush remain live.
-            unsafe { self.context.FillRoundedRectangle(&raw const surface, brush) };
-        }
     }
 
     fn draw_focus(

@@ -176,6 +176,7 @@ pub fn decode_settings(source: &str) -> Result<DockSettings, SettingsDecodeError
 }
 
 fn decode_compatible_value(source: &str) -> Result<Value, SettingsDecodeError> {
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     let mut compatible_json = strip_json_comments_and_trailing_commas(source).into_bytes();
     canonicalize_property_names_in_json(&mut compatible_json);
     Ok(serde_json::from_slice(&compatible_json)?)
