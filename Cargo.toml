@@ -14,7 +14,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.12.5"
+version = "0.12.6"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
@@ -46,6 +46,7 @@ windows = { version = "0.62.2", features = [
     "Foundation",
     "Media_Control",
     "Storage_Streams",
+    "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_Graphics_Direct2D",
     "Win32_Graphics_Direct2D_Common",

@@ -40,6 +40,7 @@ use super::settings_scene::{
 use super::surface::SurfaceSize;
 use super::theme;
 use crate::font::BundledFontCollection;
+use crate::platform::windows::backdrop::{self, SettingsMaterial};
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = color(0.0, 0.0, 0.0, 0.0);
@@ -92,6 +93,7 @@ pub(super) struct SettingsRenderer {
     body_format: IDWriteTextFormat,
     small_format: IDWriteTextFormat,
     button_format: IDWriteTextFormat,
+    material: SettingsMaterial,
     assets: SvgAssetCache,
     embedded: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
 }
@@ -184,6 +186,7 @@ impl SettingsRenderer {
             body_format,
             small_format,
             button_format,
+            material: backdrop::settings_material(),
             assets: SvgAssetCache::create().map_err(|error| asset_error(&error))?,
             embedded: HashMap::new(),
         };
@@ -260,9 +263,19 @@ impl SettingsRenderer {
     fn apply_theme(&self, scene: &SettingsScene) {
         let value = scene.theme();
         let onboarding = scene.onboarding_step().is_some();
-        let canvas = value.canvas.with_alpha(MATERIAL_CANVAS_ALPHA);
+        let acrylic = self.material == SettingsMaterial::Acrylic;
+        let canvas = value.canvas.with_alpha(if acrylic {
+            MATERIAL_CANVAS_ALPHA
+        } else {
+            1.0
+        });
+        let sidebar = if acrylic {
+            value.accent.with_alpha(0.38)
+        } else {
+            value.canvas.blend(value.accent, 0.18)
+        };
         theme::set(&self.panel, canvas);
-        theme::set(&self.sidebar, value.accent.with_alpha(0.38));
+        theme::set(&self.sidebar, sidebar);
         theme::set(&self.sidebar_selected, value.text.with_alpha(0.14));
         theme::set(
             &self.group,

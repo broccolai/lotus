@@ -1,6 +1,5 @@
 use std::rc::Rc;
 
-use lotus_core::settings::DockSettings;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{WS_EX_APPWINDOW, WS_POPUP};
 use windows::core::w;
@@ -78,12 +77,8 @@ impl SettingsWindow {
         Ok(())
     }
 
-    pub fn use_settings_material(&self, settings: &DockSettings) {
-        backdrop::apply_translucent_settings_window(self.hwnd(), settings);
-    }
-
-    pub fn use_onboarding_material(&self, settings: &DockSettings) {
-        backdrop::apply_translucent_settings_window(self.hwnd(), settings);
+    pub fn use_material(&self) {
+        backdrop::apply_settings_material(self.hwnd());
     }
 
     pub fn focus(&self) {

@@ -42,7 +42,7 @@ impl SettingsRuntime {
             self.window.focus();
             return Ok(());
         }
-        self.window.use_settings_material(applied);
+        self.window.use_material();
         self.scene.end_onboarding();
         self.scene.mark_applied(applied.clone());
         self.show(graphics)
@@ -54,7 +54,7 @@ impl SettingsRuntime {
         required: bool,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        self.window.use_onboarding_material(applied);
+        self.window.use_material();
         self.scene.begin_onboarding(applied.clone(), required);
         self.show(graphics)
     }

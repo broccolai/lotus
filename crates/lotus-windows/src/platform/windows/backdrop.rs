@@ -1,7 +1,9 @@
 use std::ffi::c_void;
 use std::mem::{size_of, size_of_val};
+use std::sync::OnceLock;
 
 use lotus_core::settings::DockSettings;
+use windows::Wdk::System::SystemServices::RtlGetVersion;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{
     DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
@@ -10,6 +12,7 @@ use windows::Win32::Graphics::Dwm::{
     DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows::Win32::UI::Controls::MARGINS;
 use windows::core::{BOOL, s, w};
 
@@ -20,6 +23,13 @@ const ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND: i32 = 4;
 const DEFAULT_ACRYLIC_TINT: u32 = 0x8F1A_1411;
 const STRONG_UI_ACRYLIC_ALPHA: u32 = 0xB3;
 const POPUP_ELEVATION_ALPHA: u32 = 0x1F;
+const WINDOWS_11_22H2_BUILD: u32 = 22_621;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum SettingsMaterial {
+    Acrylic,
+    Opaque,
+}
 
 #[repr(C)]
 struct AccentPolicy {
@@ -120,12 +130,27 @@ pub(crate) fn apply_settings_window(hwnd: HWND) {
     }
 }
 
-pub(crate) fn apply_translucent_settings_window(hwnd: HWND, settings: &DockSettings) {
-    apply_common(hwnd, DWMWCP_ROUND);
-    let _ = apply_explicit_acrylic(hwnd, acrylic_tint(settings));
+pub(crate) fn apply_settings_material(hwnd: HWND) {
+    match settings_material() {
+        SettingsMaterial::Acrylic => apply_system_backdrop(hwnd, DWMWCP_ROUND),
+        SettingsMaterial::Opaque => apply_settings_window(hwnd),
+    }
+}
+
+pub(crate) fn settings_material() -> SettingsMaterial {
+    static MATERIAL: OnceLock<SettingsMaterial> = OnceLock::new();
+    *MATERIAL.get_or_init(detect_settings_material)
 }
 
 fn apply_common(
+    hwnd: HWND,
+    corner: windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE,
+) {
+    apply_system_backdrop(hwnd, corner);
+    let _ = apply_explicit_acrylic(hwnd, DEFAULT_ACRYLIC_TINT);
+}
+
+fn apply_system_backdrop(
     hwnd: HWND,
     corner: windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE,
 ) {
@@ -161,8 +186,21 @@ fn apply_common(
         );
         let _ = DwmExtendFrameIntoClientArea(hwnd, &raw const margins);
     }
+}
 
-    let _ = apply_explicit_acrylic(hwnd, DEFAULT_ACRYLIC_TINT);
+fn detect_settings_material() -> SettingsMaterial {
+    let mut version = OSVERSIONINFOW {
+        dwOSVersionInfoSize: size_u32::<OSVERSIONINFOW>(),
+        ..OSVERSIONINFOW::default()
+    };
+    // SAFETY: The initialized structure has the required size and remains writable for the
+    // synchronous version query.
+    let status = unsafe { RtlGetVersion(&raw mut version) };
+    if status.is_ok() && version.dwBuildNumber >= WINDOWS_11_22H2_BUILD {
+        SettingsMaterial::Acrylic
+    } else {
+        SettingsMaterial::Opaque
+    }
 }
 
 fn apply_explicit_acrylic(hwnd: HWND, tint: u32) -> bool {
