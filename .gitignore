@@ -1,6 +1,7 @@
 # Build output
 /target/
 /artifacts/
+/dist/
 /Lotus.zip
 bin/
 obj/

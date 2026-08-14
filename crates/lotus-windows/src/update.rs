@@ -125,7 +125,14 @@ pub fn is_installed() -> Result<bool, UpdateInstallError> {
 }
 
 pub fn launch_installer(staged: &StagedUpdate) -> Result<(), UpdateInstallError> {
-    launch_helper(&staged.executable)
+    Command::new(&staged.executable)
+        .arg("/VERYSILENT")
+        .arg("/SUPPRESSMSGBOXES")
+        .arg("/NORESTART")
+        .arg("/RESTARTLOTUS=1")
+        .spawn()
+        .map_err(UpdateInstallError::LaunchHelper)?;
+    Ok(())
 }
 
 pub fn launch_current_installer() -> Result<(), UpdateInstallError> {

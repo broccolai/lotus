@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 use std::fs::{self, File};
-use std::io::{self, Cursor};
+use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -20,7 +20,7 @@ const DOWNLOAD_LIMIT: u64 = 64 * 1024 * 1024;
 pub struct Release {
     pub version: String,
     pub page_url: String,
-    archive_url: String,
+    installer_url: String,
     checksum_url: String,
 }
 
@@ -54,10 +54,6 @@ pub enum UpdateError {
     InvalidChecksum,
     #[error("the downloaded release did not match its published SHA-256 checksum")]
     ChecksumMismatch,
-    #[error("the Lotus release archive was invalid: {0}")]
-    Archive(#[source] zip::result::ZipError),
-    #[error("the Lotus release archive did not contain lotus.exe")]
-    MissingExecutable,
     #[error("Lotus could not stage the update: {0}")]
     Staging(#[source] io::Error),
 }
@@ -92,8 +88,8 @@ pub fn stage(release: &Release) -> Result<StagedUpdate, UpdateError> {
             value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
         })
         .ok_or(UpdateError::InvalidChecksum)?;
-    let archive = download(&release.archive_url)?;
-    let digest = Sha256::digest(&archive);
+    let installer = download(&release.installer_url)?;
+    let digest = Sha256::digest(&installer);
     let mut actual = String::with_capacity(64);
     for byte in digest {
         write!(actual, "{byte:02x}").expect("writing to a String cannot fail");
@@ -104,15 +100,9 @@ pub fn stage(release: &Release) -> Result<StagedUpdate, UpdateError> {
 
     let directory = staging_directory(&release.version);
     fs::create_dir_all(&directory).map_err(UpdateError::Staging)?;
-    let executable = directory.join("lotus.exe");
-    let mut archive =
-        zip::ZipArchive::new(Cursor::new(archive)).map_err(UpdateError::Archive)?;
-    let mut entry = archive.by_name("lotus.exe").map_err(|error| match error {
-        zip::result::ZipError::FileNotFound => UpdateError::MissingExecutable,
-        error => UpdateError::Archive(error),
-    })?;
+    let executable = directory.join("lotus-setup.exe");
     let mut output = File::create(&executable).map_err(UpdateError::Staging)?;
-    io::copy(&mut entry, &mut output).map_err(UpdateError::Staging)?;
+    output.write_all(&installer).map_err(UpdateError::Staging)?;
     output.sync_all().map_err(UpdateError::Staging)?;
     Ok(StagedUpdate {
         version: release.version.clone(),
@@ -138,13 +128,13 @@ fn fetch_release() -> Result<Release, UpdateError> {
         tag: release.tag_name.clone(),
         source,
     })?;
-    let archive_name = format!("lotus-v{version}-windows-x86_64.zip");
+    let installer_name = format!("lotus-v{version}-windows-x86_64-setup.exe");
     let download_base = format!("{RELEASE_BASE_URL}/download/{}", release.tag_name);
     Ok(Release {
         version: version.to_owned(),
         page_url: format!("{RELEASE_BASE_URL}/tag/{}", release.tag_name),
-        archive_url: format!("{download_base}/{archive_name}"),
-        checksum_url: format!("{download_base}/{archive_name}.sha256"),
+        installer_url: format!("{download_base}/{installer_name}"),
+        checksum_url: format!("{download_base}/{installer_name}.sha256"),
     })
 }
 

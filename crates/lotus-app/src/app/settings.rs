@@ -42,7 +42,24 @@ impl SettingsRuntime {
             self.window.focus();
             return Ok(());
         }
+        self.window.use_settings_material();
+        self.scene.end_onboarding();
         self.scene.mark_applied(applied.clone());
+        self.show(graphics)
+    }
+
+    pub(super) fn open_onboarding(
+        &mut self,
+        applied: &DockSettings,
+        required: bool,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        self.window.use_onboarding_material(applied);
+        self.scene.begin_onboarding(applied.clone(), required);
+        self.show(graphics)
+    }
+
+    fn show(&mut self, graphics: &mut DeviceState) -> Result<(), AppError> {
         let _ = self.scene.set_dpi(self.window.dpi());
         let (width, height) = self.window.client_size()?;
         let size =

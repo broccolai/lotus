@@ -11,6 +11,7 @@ pub mod desktop;
 pub mod dpi;
 pub mod dwm_thumbnail;
 pub mod exclusive_taskbar;
+mod font;
 pub mod graphics;
 pub mod image_picker;
 pub mod launch;

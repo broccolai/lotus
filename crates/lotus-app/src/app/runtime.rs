@@ -13,9 +13,9 @@ use super::{
     fullscreen_notification, handle_alt_tab_events, handle_pointer_event,
     handle_search_event, handle_windows_key_events, is_alt_tab_wake, is_installed,
     is_media_wake, is_search_catalog_wake, is_taskbar_badge_wake, is_update_wake,
-    is_windows_key_wake, launch_current_installer, launch_installer, launch_target,
-    next_message, render_and_schedule, render_surface, request_exit, request_window_close,
-    resize_dock, resize_surface, restart_current_process, show_error, show_information,
+    is_windows_key_wake, launch_installer, launch_target, next_message,
+    render_and_schedule, render_surface, request_exit, request_window_close, resize_dock,
+    resize_surface, restart_current_process, show_error, show_information,
     startup_registration, write_text,
 };
 
@@ -67,6 +67,7 @@ fn process_message(
     }
     handle_tracker_message(
         message,
+        runtime,
         dock,
         graphics,
         surface,
@@ -74,7 +75,7 @@ fn process_message(
         dock_model,
         auxiliary,
     )?;
-    if shell_fullscreen_wake {
+    if shell_fullscreen_wake && !runtime.onboarding_required {
         apply_fullscreen_visibility(
             dock,
             window_tracker,
@@ -226,6 +227,7 @@ fn drain_window_events(
 #[allow(clippy::too_many_arguments)]
 fn handle_tracker_message(
     message: &NativeMessage,
+    runtime: &RuntimePolicy<'_>,
     dock: &DockWindow,
     graphics: &mut DeviceState,
     surface: &mut CompositionSurfaceState,
@@ -257,13 +259,17 @@ fn handle_tracker_message(
             auxiliary.launcher.needs_animation(),
         )?;
     }
-    apply_fullscreen_visibility(
-        dock,
-        window_tracker,
-        dock_model,
-        &mut auxiliary.launcher,
-        &auxiliary.status,
-    )
+    if runtime.onboarding_required {
+        Ok(())
+    } else {
+        apply_fullscreen_visibility(
+            dock,
+            window_tracker,
+            dock_model,
+            &mut auxiliary.launcher,
+            &auxiliary.status,
+        )
+    }
 }
 
 fn reconcile_visible_picker(
@@ -845,22 +851,62 @@ fn apply_settings_action(
             }
         }
         SettingsAction::CheckForUpdates => start_update_check(context),
+        SettingsAction::ReplaySetup => context.auxiliary.settings.open_onboarding(
+            context.dock_model.settings(),
+            false,
+            context.graphics,
+        ),
         SettingsAction::Close => {
+            if context.auxiliary.settings.scene.onboarding_required() {
+                return Ok(());
+            }
             context.auxiliary.settings.hide();
             Ok(())
         }
-        SettingsAction::Apply(next) => apply_changed_settings(*next, context),
+        SettingsAction::Apply(next) => apply_changed_settings(*next, context, false),
+        SettingsAction::CompleteOnboarding(next) => {
+            let initial_setup = context.auxiliary.settings.scene.onboarding_required();
+            context.auxiliary.settings.scene.end_onboarding();
+            apply_changed_settings(*next, context, initial_setup)?;
+            if !initial_setup {
+                context.auxiliary.settings.hide();
+            }
+            Ok(())
+        }
     }
 }
 
 fn apply_changed_settings(
     next: lotus_core::settings::DockSettings,
     context: &mut SettingsEventContext<'_>,
+    restart_after_apply: bool,
 ) -> Result<(), AppError> {
     let start_with_windows = next.start_with_windows;
     let impact = context
         .dock_model
         .apply_settings(next, context.window_tracker.current_windows())?;
+    if restart_after_apply {
+        context
+            .auxiliary
+            .settings
+            .scene
+            .mark_applied(context.dock_model.settings().clone());
+        context.auxiliary.settings.hide();
+        if let Err(error) = restart_current_process() {
+            context
+                .auxiliary
+                .settings
+                .open(context.dock_model.settings(), context.graphics)?;
+            show_error(
+                context.auxiliary.settings.window.handle(),
+                "Lotus Settings",
+                &format!("Lotus saved your settings but could not restart.\n\n{error}"),
+            );
+        } else {
+            request_exit(0);
+        }
+        return Ok(());
+    }
     if let Err(error) = startup_registration::sync(start_with_windows) {
         show_error(
             context.auxiliary.settings.window.handle(),
@@ -1046,8 +1092,9 @@ fn handle_update_check(
         }
         Ok(UpdateStatus::Current { release }) => {
             if confirm_install_update(owner, &release.version, false) {
-                match launch_current_installer() {
-                    Ok(()) => request_exit(0),
+                match settings.start_update_download(release) {
+                    Ok(true) => settings.render(graphics)?,
+                    Ok(false) => {}
                     Err(error) => {
                         let _ = settings
                             .scene
@@ -1292,8 +1339,11 @@ fn handle_dock_pointer(
             )?;
         }
         DockHitTarget::Jirachi => {
-            let needs_animation = auxiliary.launcher.toggle(dock, dock_model, graphics)?;
-            dock.set_animation_active(needs_animation)?;
+            if dock_model.settings().search_enabled {
+                let needs_animation =
+                    auxiliary.launcher.toggle(dock, dock_model, graphics)?;
+                dock.set_animation_active(needs_animation)?;
+            }
         }
         DockHitTarget::Media(target) => {
             auxiliary.launcher.hide();
@@ -1454,9 +1504,11 @@ fn handle_monitor_dock_action(
                 auxiliary,
             )?,
             DockHitTarget::Jirachi => {
-                let needs_animation =
-                    auxiliary.launcher.toggle(dock, dock_model, graphics)?;
-                dock.set_animation_active(needs_animation)?;
+                if dock_model.settings().search_enabled {
+                    let needs_animation =
+                        auxiliary.launcher.toggle(dock, dock_model, graphics)?;
+                    dock.set_animation_active(needs_animation)?;
+                }
             }
             DockHitTarget::Media(target) => {
                 auxiliary.launcher.hide();

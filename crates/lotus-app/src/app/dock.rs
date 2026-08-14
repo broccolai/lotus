@@ -8,13 +8,13 @@ use lotus_dock::model::{DockModel, SettingsImpact, project_snapshot};
 use lotus_settings::appearance::theme_for;
 
 use super::{
-    AppError, DockAnchor, DockBadge, DockContextRequest, DockHitTarget, DockIcon,
-    DockMetrics, DockScene, DockSettings, DockZone, MediaItem, MediaSnapshot, MediaSymbols,
-    NativeIconCache, NativePickerWindow, NotificationBadgeStyle, NotificationSource, Path,
-    PopupAlignment, SettingsStore, SignedPoint, SvgAsset, SystemStatusItem,
-    SystemStatusKind, WindowHandle, WindowId, WindowInfo, adapt_dock_items_with_native,
-    decode_artwork, execute_activation, foreground_window, local_date, local_time_24h,
-    order_picker_windows, resolve_executable, show_error,
+    ActivationError, AppError, DockAnchor, DockBadge, DockContextRequest, DockHitTarget,
+    DockIcon, DockMetrics, DockScene, DockSettings, DockZone, MediaItem, MediaSnapshot,
+    MediaSymbols, NativeIconCache, NativePickerWindow, NotificationBadgeStyle,
+    NotificationSource, Path, PopupAlignment, SettingsStore, SignedPoint, SvgAsset,
+    SystemStatusItem, SystemStatusKind, WindowHandle, WindowId, WindowInfo,
+    adapt_dock_items_with_native, decode_artwork, execute_activation, foreground_window,
+    local_date, local_time_24h, order_picker_windows, resolve_executable, show_error,
 };
 use crate::graphics::scene::DockItem as SceneDockItem;
 
@@ -48,6 +48,7 @@ impl DockRuntime {
         let mut scene = DockScene::new(dpi, metrics, mascot(&settings), Vec::new())
             .ok_or(AppError::InvalidScene)?;
         scene.set_anchor(dock_anchor(settings.dock_zone));
+        scene.set_launcher_button_visible(settings.show_app_dock);
         let _ = scene.set_theme(theme_for(&settings));
         scene.set_show_desktop_button(settings.show_desktop_button);
         scene.replace_status_items(docked_status_items(&settings));
@@ -136,6 +137,10 @@ impl DockRuntime {
     }
 
     fn scene_items_at_size(&mut self, icon_size: u32) -> Vec<SceneDockItem> {
+        if !self.model.settings().show_app_dock {
+            return Vec::new();
+        }
+
         let mut scene_items =
             adapt_dock_items_with_native(self.model.items(), |_, item| {
                 self.native_icons
@@ -178,6 +183,7 @@ impl DockRuntime {
             DockScene::new(dpi, metrics(&settings)?, mascot(&settings), Vec::new())
                 .ok_or(AppError::InvalidScene)?;
         scene.set_anchor(dock_anchor(settings.dock_zone));
+        scene.set_launcher_button_visible(settings.show_app_dock);
         let _ = scene.set_theme(theme_for(&settings));
         scene.set_show_desktop_button(settings.show_desktop_button);
         scene.replace_status_items(docked_status_items(&settings));
@@ -235,6 +241,7 @@ impl DockRuntime {
                 DockScene::new(dpi, metrics, mascot(self.model.settings()), Vec::new())
                     .ok_or(AppError::InvalidScene)?;
             scene.set_anchor(dock_anchor(self.model.settings().dock_zone));
+            scene.set_launcher_button_visible(self.model.settings().show_app_dock);
             let _ = scene.set_theme(theme_for(self.model.settings()));
             scene.set_show_desktop_button(self.model.settings().show_desktop_button);
             if self.model.settings().show_media_controls
@@ -631,14 +638,19 @@ impl DockRuntime {
             return;
         };
         let display_name = item.display_name.clone();
-        if let Err(error) = execute_activation(decision, item) {
-            show_error(
+        match execute_activation(decision, item) {
+            Ok(()) => {
+                if let lotus_core::activation::ActivationDecision::Focus(window) = decision
+                {
+                    self.record_window_activation(source_index, window);
+                }
+            }
+            Err(ActivationError::ForegroundDenied(_)) => {}
+            Err(error) => show_error(
                 owner,
                 "Lotus",
                 &format!("Lotus could not activate {display_name}.\n\n{error}"),
-            );
-        } else if let lotus_core::activation::ActivationDecision::Focus(window) = decision {
-            self.record_window_activation(source_index, window);
+            ),
         }
     }
 }

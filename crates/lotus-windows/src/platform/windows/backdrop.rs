@@ -120,6 +120,11 @@ pub(crate) fn apply_settings_window(hwnd: HWND) {
     }
 }
 
+pub(crate) fn apply_onboarding_window(hwnd: HWND, settings: &DockSettings) {
+    apply_common(hwnd, DWMWCP_ROUND);
+    let _ = apply_explicit_acrylic(hwnd, acrylic_tint(settings));
+}
+
 fn apply_common(
     hwnd: HWND,
     corner: windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE,

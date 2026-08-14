@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use lotus_core::settings::DockSettings;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{WS_EX_APPWINDOW, WS_POPUP};
 use windows::core::w;
@@ -35,7 +36,7 @@ impl SettingsWindow {
             WindowCreation {
                 instance: class.instance(),
                 class_name: WindowClass::NAME,
-                title: w!("Lotus Settings"),
+                title: w!("lotus settings"),
                 extended_style: WS_EX_APPWINDOW,
                 style: WS_POPUP,
                 x,
@@ -75,6 +76,14 @@ impl SettingsWindow {
         self.window.reveal_without_repositioning()?;
         self.focus();
         Ok(())
+    }
+
+    pub fn use_settings_material(&self) {
+        backdrop::apply_settings_window(self.hwnd());
+    }
+
+    pub fn use_onboarding_material(&self, settings: &DockSettings) {
+        backdrop::apply_onboarding_window(self.hwnd(), settings);
     }
 
     pub fn focus(&self) {

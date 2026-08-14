@@ -10,6 +10,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub const CURRENT_APPEARANCE_VERSION: u32 = 3;
+pub const CURRENT_ONBOARDING_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -187,6 +188,7 @@ fn decode_compatible_value(source: &str) -> Result<Value, SettingsDecodeError> {
     reason = "independent persisted preferences are not mutually exclusive state"
 )]
 pub struct DockSettings {
+    pub onboarding_version: u32,
     pub icon_size: u32,
     pub item_spacing: u32,
     pub horizontal_padding: u32,
@@ -198,6 +200,7 @@ pub struct DockSettings {
     pub background_color: String,
     pub accent_color: String,
     pub mascot_image_path: Option<String>,
+    pub show_app_dock: bool,
     pub show_unpinned_running_apps: bool,
     pub show_running_indicators: bool,
     pub show_on_all_monitors: bool,
@@ -217,6 +220,7 @@ pub struct DockSettings {
     pub hide_when_fullscreen: bool,
     pub replace_windows_taskbar: bool,
     pub exclusive_taskbar_replacement: bool,
+    pub search_enabled: bool,
     pub search_open_with_windows_key: bool,
     pub alt_tab_enabled: bool,
     pub window_picker_style: WindowPickerStyle,
@@ -232,6 +236,7 @@ pub struct DockSettings {
 impl Default for DockSettings {
     fn default() -> Self {
         Self {
+            onboarding_version: 0,
             icon_size: 38,
             item_spacing: 8,
             horizontal_padding: 12,
@@ -243,6 +248,7 @@ impl Default for DockSettings {
             background_color: "#11141A".into(),
             accent_color: "#F5A5A5".into(),
             mascot_image_path: None,
+            show_app_dock: true,
             show_unpinned_running_apps: true,
             show_running_indicators: true,
             show_on_all_monitors: false,
@@ -261,7 +267,8 @@ impl Default for DockSettings {
             start_with_windows: true,
             hide_when_fullscreen: true,
             replace_windows_taskbar: true,
-            exclusive_taskbar_replacement: false,
+            exclusive_taskbar_replacement: true,
+            search_enabled: true,
             search_open_with_windows_key: true,
             alt_tab_enabled: false,
             window_picker_style: WindowPickerStyle::Thumbnails,
@@ -448,10 +455,12 @@ fn canonicalize_property_names_in_json(json: &mut [u8]) {
         "bottomOffset",
         "cornerRadius",
         "appearanceVersion",
+        "onboardingVersion",
         "backgroundOpacity",
         "backgroundColor",
         "accentColor",
         "mascotImagePath",
+        "showAppDock",
         "showUnpinnedRunningApps",
         "showRunningIndicators",
         "showOnAllMonitors",
@@ -471,6 +480,7 @@ fn canonicalize_property_names_in_json(json: &mut [u8]) {
         "hideWhenFullscreen",
         "replaceWindowsTaskbar",
         "exclusiveTaskbarReplacement",
+        "searchEnabled",
         "searchOpenWithWindowsKey",
         "altTabEnabled",
         "windowPickerStyle",

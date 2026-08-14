@@ -35,7 +35,7 @@ jobs:
       - name: build
         shell: cmd
         run: scripts\cargo.cmd build --release --locked -p lotus-app
-      - name: package
+      - name: package portable build
         shell: powershell
         run: |
           $archive = "lotus-v$env:LOTUS_VERSION-windows-x86_64.zip"
@@ -46,6 +46,23 @@ jobs:
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $archive" | Set-Content "$archive.sha256" -Encoding ascii
           "LOTUS_ARCHIVE=$archive" >> $env:GITHUB_ENV
+      - name: package installer
+        shell: powershell
+        run: |
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress --yes
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc installer\lotus.iss
+          $setup = "dist\lotus-v$env:LOTUS_VERSION-windows-x86_64-setup.exe"
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path $setup -Leaf)" | Set-Content "$setup.sha256" -Encoding ascii
+          "LOTUS_SETUP=$setup" >> $env:GITHUB_ENV
       - name: publish
         shell: powershell
         env:
@@ -54,6 +71,8 @@ jobs:
           gh release create $env:GITHUB_REF_NAME `
             $env:LOTUS_ARCHIVE `
             "$env:LOTUS_ARCHIVE.sha256" `
+            $env:LOTUS_SETUP `
+            "$env:LOTUS_SETUP.sha256" `
             --verify-tag `
             --title "lotus $env:GITHUB_REF_NAME" `
             --generate-notes

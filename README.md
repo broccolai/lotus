@@ -14,8 +14,11 @@ task bar / windows search / alt tab replacement
 
 ## install
 
-download the latest windows zip from releases, extract it, and run `lotus.exe`.
+download the latest lotus Setup from releases and run it. lotus installs for your Windows
+account, appears in the Start menu and Installed apps, and opens first setup on its first run.
+
+the windows zip remains available as a portable build.
 
 ## uninstall
 
-turn off run on startup in settings, close lotus, and delete its folder.
+open Installed apps in Windows Settings and uninstall lotus.

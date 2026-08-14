@@ -77,6 +77,10 @@ pub(crate) fn claim_keyboard_focus(hwnd: HWND) -> FocusClaim {
 }
 
 pub(crate) fn activate_window(hwnd: HWND) -> FocusClaim {
+    if owns_foreground_application(hwnd) {
+        return FocusClaim::Owned;
+    }
+
     // SAFETY: The queried HWND and thread identifiers are borrowed only for this activation.
     let foreground = unsafe { GetForegroundWindow() };
     let foreground_thread = window_thread(foreground);
@@ -87,7 +91,7 @@ pub(crate) fn activate_window(hwnd: HWND) -> FocusClaim {
         InputQueueAttachment::new(current_thread, foreground_thread);
     let _target_attachment = InputQueueAttachment::new(current_thread, target_thread);
 
-    if focus_once(hwnd) {
+    if request_activation(hwnd) || owns_foreground_application(hwnd) {
         FocusClaim::Owned
     } else {
         FocusClaim::Denied
@@ -111,6 +115,37 @@ fn focus_once(hwnd: HWND) -> bool {
         let _ = SetFocus(Some(hwnd));
     }
     owns_keyboard_focus(hwnd)
+}
+
+fn request_activation(hwnd: HWND) -> bool {
+    // SAFETY: Each operation targets the same live top-level HWND on its owning UI thread.
+    unsafe {
+        let _ = BringWindowToTop(hwnd);
+        let requested = SetForegroundWindow(hwnd).as_bool();
+        let _ = SetActiveWindow(hwnd);
+        let _ = SetFocus(Some(hwnd));
+        requested
+    }
+}
+
+fn owns_foreground_application(hwnd: HWND) -> bool {
+    // SAFETY: Reading the current foreground HWND has no preconditions or ownership transfer.
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground == hwnd {
+        return true;
+    }
+    let target_process = window_process(hwnd);
+    target_process != 0 && target_process == window_process(foreground)
+}
+
+fn window_process(hwnd: HWND) -> u32 {
+    if hwnd.is_invalid() {
+        return 0;
+    }
+    let mut process_id = 0;
+    // SAFETY: The borrowed HWND is used only for this immediate process-id query.
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut process_id)) };
+    process_id
 }
 
 fn owns_keyboard_focus(hwnd: HWND) -> bool {

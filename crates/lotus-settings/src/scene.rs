@@ -1,7 +1,8 @@
 use std::num::NonZeroU32;
 
 use lotus_core::settings::{
-    DockSettings, DockZone, NotificationBadgeStyle, WindowPickerStyle,
+    CURRENT_ONBOARDING_VERSION, DockSettings, DockZone, NotificationBadgeStyle,
+    WindowPickerStyle,
 };
 use lotus_ui::theme::Theme;
 
@@ -51,18 +52,19 @@ impl SettingsPage {
 
     pub const fn title(self) -> &'static str {
         match self {
-            Self::Appearance => "Appearance",
-            Self::General => "General",
-            Self::Taskbar => "Taskbar",
-            Self::Status => "Status",
-            Self::Search => "Search",
-            Self::About => "About",
+            Self::Appearance => "appearance",
+            Self::General => "general",
+            Self::Taskbar => "taskbar",
+            Self::Status => "status",
+            Self::Search => "search",
+            Self::About => "about",
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettingsToggle {
+    ShowAppDock,
     ShowUnpinnedRunningApps,
     ShowRunningIndicators,
     ShowOnAllMonitors,
@@ -77,10 +79,62 @@ pub enum SettingsToggle {
     ShowMediaMetadata,
     StartWithWindows,
     ReplaceWindowsTaskbar,
-    ExclusiveTaskbarReplacement,
     HideWhenFullscreen,
+    SearchEnabled,
     SearchOpenWithWindowsKey,
     AltTabEnabled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OnboardingStep {
+    Welcome,
+    Modules,
+    Layout,
+    Integration,
+    Ready,
+}
+
+impl OnboardingStep {
+    pub const fn number(self) -> u32 {
+        match self {
+            Self::Welcome => 0,
+            Self::Modules => 1,
+            Self::Layout => 2,
+            Self::Integration => 3,
+            Self::Ready => 4,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OnboardingModule {
+    AppDock,
+    Search,
+    SystemStatus,
+    Media,
+    AltTab,
+}
+
+impl OnboardingModule {
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::AppDock => "application dock",
+            Self::Search => "search",
+            Self::SystemStatus => "system status",
+            Self::Media => "media controls",
+            Self::AltTab => "alt-tab",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::AppDock => "Applications, windows and the lotus menu",
+            Self::Search => "Applications, commands and calculations",
+            Self::SystemStatus => "Volume, network, background apps and time",
+            Self::Media => "Artwork, track information and playback",
+            Self::AltTab => "Replace the Windows window switcher",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,6 +179,12 @@ pub enum SettingsControl {
     ChooseMascotImage,
     ResetMascotImage,
     CheckForUpdates,
+    ReplaySetup,
+    OnboardingModule(OnboardingModule),
+    OnboardingZone(OnboardingModule),
+    OnboardingBack,
+    OnboardingNext,
+    OnboardingFinish,
     Revert,
     Apply,
     Close,
@@ -138,6 +198,8 @@ pub enum SettingsAction {
     ChooseAccentColor,
     ChooseMascotImage,
     CheckForUpdates,
+    ReplaySetup,
+    CompleteOnboarding(Box<DockSettings>),
     Apply(Box<DockSettings>),
     Close,
 }
@@ -253,6 +315,8 @@ pub struct SettingsScene {
     focus_visible: bool,
     installed: bool,
     update_activity: SettingsUpdateActivity,
+    onboarding: Option<OnboardingStep>,
+    onboarding_required: bool,
 }
 
 impl SettingsScene {
@@ -269,6 +333,8 @@ impl SettingsScene {
             focus_visible: false,
             installed,
             update_activity: SettingsUpdateActivity::Idle,
+            onboarding: None,
+            onboarding_required: false,
         })
     }
 
@@ -314,6 +380,33 @@ impl SettingsScene {
     pub const fn is_installed(&self) -> bool {
         self.installed
     }
+
+    pub const fn onboarding_step(&self) -> Option<OnboardingStep> {
+        self.onboarding
+    }
+
+    pub const fn onboarding_required(&self) -> bool {
+        self.onboarding_required
+    }
+
+    pub fn begin_onboarding(&mut self, applied: DockSettings, required: bool) {
+        let applied = applied.normalized();
+        self.baseline = applied.clone();
+        self.draft = applied;
+        self.page = SettingsPage::General;
+        self.onboarding = Some(OnboardingStep::Welcome);
+        self.onboarding_required = required;
+        self.hovered = None;
+        self.focused = Some(SettingsControl::OnboardingNext);
+        self.focus_visible = false;
+    }
+
+    pub fn end_onboarding(&mut self) {
+        self.onboarding = None;
+        self.onboarding_required = false;
+        self.hovered = None;
+        self.focused = Some(SettingsControl::Navigate(SettingsPage::General));
+    }
     pub fn set_update_activity(&mut self, activity: SettingsUpdateActivity) -> bool {
         if self.update_activity == activity {
             return false;
@@ -330,6 +423,9 @@ impl SettingsScene {
     }
 
     pub fn layout(&self) -> SettingsLayout {
+        if let Some(step) = self.onboarding {
+            return self.onboarding_layout(step);
+        }
         let size = self.desired_size();
         let mut controls = Vec::new();
         for (index, page) in SettingsPage::ALL
@@ -367,12 +463,12 @@ impl SettingsScene {
         });
         let content_width = WIDTH_DIP - CONTENT_LEFT_DIP - CONTENT_RIGHT_DIP;
         for (index, control) in self.page_controls().into_iter().enumerate() {
-            let bounds = self.rect(
-                CONTENT_LEFT_DIP,
-                CONTENT_TOP_DIP + u32_index(index) * (ROW_HEIGHT_DIP + ROW_GAP_DIP),
-                content_width,
-                ROW_HEIGHT_DIP,
-            );
+            let top = if control == SettingsControl::ReplaySetup {
+                HEIGHT_DIP - FOOTER_HEIGHT_DIP - ROW_HEIGHT_DIP - 22
+            } else {
+                CONTENT_TOP_DIP + u32_index(index) * (ROW_HEIGHT_DIP + ROW_GAP_DIP)
+            };
+            let bounds = self.rect(CONTENT_LEFT_DIP, top, content_width, ROW_HEIGHT_DIP);
             controls.push(SettingsControlLayout { control, bounds });
         }
         controls.push(SettingsControlLayout {
@@ -453,6 +549,13 @@ impl SettingsScene {
                 SettingsAction::None
             };
         }
+        if let SettingsControl::OnboardingZone(module) = control {
+            let bounds = self
+                .layout()
+                .bounds(control)
+                .expect("active control has layout bounds");
+            return self.set_onboarding_zone_from_pointer(module, bounds, x);
+        }
         self.activate(control)
     }
 
@@ -485,6 +588,12 @@ impl SettingsScene {
             | SettingsControl::ChooseMascotImage
             | SettingsControl::ResetMascotImage
             | SettingsControl::CheckForUpdates
+            | SettingsControl::ReplaySetup
+            | SettingsControl::OnboardingModule(_)
+            | SettingsControl::OnboardingZone(_)
+            | SettingsControl::OnboardingBack
+            | SettingsControl::OnboardingNext
+            | SettingsControl::OnboardingFinish
             | SettingsControl::Revert
             | SettingsControl::Apply
             | SettingsControl::Close => SettingsPointerStyle::Action,
@@ -523,6 +632,9 @@ impl SettingsScene {
     pub fn key(&mut self, key: SettingsKey) -> SettingsAction {
         self.focus_visible = true;
         if key == SettingsKey::Escape {
+            if self.onboarding_required {
+                return SettingsAction::None;
+            }
             return SettingsAction::Close;
         }
         if matches!(
@@ -582,6 +694,12 @@ impl SettingsScene {
                 SettingsKey::Left | SettingsKey::Right,
                 SettingsControl::WindowPickerStyle,
             ) => self.cycle_window_picker_style(),
+            (SettingsKey::Left, SettingsControl::OnboardingZone(module)) => {
+                self.cycle_onboarding_zone(module, true)
+            }
+            (SettingsKey::Right, SettingsControl::OnboardingZone(module)) => {
+                self.cycle_onboarding_zone(module, false)
+            }
             _ => SettingsAction::None,
         }
     }
@@ -614,8 +732,8 @@ impl SettingsScene {
                 controls
             }
             SettingsPage::Taskbar => vec![
+                SettingsControl::Toggle(SettingsToggle::ShowAppDock),
                 SettingsControl::Toggle(SettingsToggle::ReplaceWindowsTaskbar),
-                SettingsControl::Toggle(SettingsToggle::ExclusiveTaskbarReplacement),
                 SettingsControl::Toggle(SettingsToggle::HideWhenFullscreen),
                 SettingsControl::Toggle(SettingsToggle::ShowOnAllMonitors),
                 SettingsControl::Toggle(SettingsToggle::ShowDesktopButton),
@@ -641,11 +759,105 @@ impl SettingsScene {
                 SettingsControl::Toggle(SettingsToggle::ShowDateInStatus),
             ],
             SettingsPage::Search => vec![
+                SettingsControl::Toggle(SettingsToggle::SearchEnabled),
                 SettingsControl::Toggle(SettingsToggle::SearchOpenWithWindowsKey),
                 SettingsControl::Slider(SettingsSlider::SearchResultLimit),
             ],
-            SettingsPage::About => Vec::new(),
+            SettingsPage::About => vec![SettingsControl::ReplaySetup],
         }
+    }
+
+    fn onboarding_layout(&self, step: OnboardingStep) -> SettingsLayout {
+        let size = self.desired_size();
+        let mut controls = Vec::new();
+        match step {
+            OnboardingStep::Welcome | OnboardingStep::Ready => {}
+            OnboardingStep::Modules => {
+                for (index, module) in [
+                    OnboardingModule::AppDock,
+                    OnboardingModule::Search,
+                    OnboardingModule::SystemStatus,
+                    OnboardingModule::Media,
+                    OnboardingModule::AltTab,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let index = u32_index(index);
+                    let left = if index == 4 {
+                        282
+                    } else {
+                        104 + index % 2 * 352
+                    };
+                    controls.push(SettingsControlLayout {
+                        control: SettingsControl::OnboardingModule(module),
+                        bounds: self.rect(left, 200 + index / 2 * 88, 336, 72),
+                    });
+                }
+            }
+            OnboardingStep::Layout => {
+                for (index, module) in [
+                    OnboardingModule::AppDock,
+                    OnboardingModule::Media,
+                    OnboardingModule::SystemStatus,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    controls.push(SettingsControlLayout {
+                        control: SettingsControl::OnboardingZone(module),
+                        bounds: self.rect(420, 240 + u32_index(index) * 78, 320, 46),
+                    });
+                }
+            }
+            OnboardingStep::Integration => {
+                for (index, toggle) in [
+                    SettingsToggle::StartWithWindows,
+                    SettingsToggle::HideWhenFullscreen,
+                    SettingsToggle::SearchOpenWithWindowsKey,
+                    SettingsToggle::ReplaceWindowsTaskbar,
+                    SettingsToggle::ShowOnAllMonitors,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    controls.push(SettingsControlLayout {
+                        control: SettingsControl::Toggle(toggle),
+                        bounds: self.rect(160, 184 + u32_index(index) * 62, 580, 52),
+                    });
+                }
+            }
+        }
+        if !matches!(step, OnboardingStep::Welcome | OnboardingStep::Ready) {
+            controls.push(SettingsControlLayout {
+                control: SettingsControl::OnboardingBack,
+                bounds: self.rect(316, HEIGHT_DIP - 104, 116, 46),
+            });
+        }
+        controls.push(SettingsControlLayout {
+            control: if step == OnboardingStep::Ready {
+                SettingsControl::OnboardingFinish
+            } else {
+                SettingsControl::OnboardingNext
+            },
+            bounds: match step {
+                OnboardingStep::Welcome => self.rect(376, 500, 148, 48),
+                OnboardingStep::Ready => self.rect(366, 346, 168, 48),
+                _ => self.rect(448, HEIGHT_DIP - 104, 136, 46),
+            },
+        });
+        if !self.onboarding_required {
+            controls.push(SettingsControlLayout {
+                control: SettingsControl::Close,
+                bounds: self.rect(
+                    WIDTH_DIP - CONTENT_RIGHT_DIP - CLOSE_SIZE_DIP,
+                    12,
+                    CLOSE_SIZE_DIP,
+                    CLOSE_SIZE_DIP,
+                ),
+            });
+        }
+        SettingsLayout { size, controls }
     }
 
     fn activate(&mut self, control: SettingsControl) -> SettingsAction {
@@ -669,6 +881,29 @@ impl SettingsScene {
             {
                 SettingsAction::CheckForUpdates
             }
+            SettingsControl::ReplaySetup => SettingsAction::ReplaySetup,
+            SettingsControl::OnboardingModule(module) => {
+                let enabled = !self.onboarding_module_enabled(module);
+                self.set_onboarding_module(module, enabled);
+                SettingsAction::Changed
+            }
+            SettingsControl::OnboardingZone(module) => {
+                self.cycle_onboarding_zone(module, false)
+            }
+            SettingsControl::OnboardingBack => {
+                self.move_onboarding(false);
+                SettingsAction::Changed
+            }
+            SettingsControl::OnboardingNext => {
+                self.move_onboarding(true);
+                SettingsAction::Changed
+            }
+            SettingsControl::OnboardingFinish => {
+                self.draft.onboarding_version = CURRENT_ONBOARDING_VERSION;
+                SettingsAction::CompleteOnboarding(Box::new(
+                    self.draft.clone().normalized(),
+                ))
+            }
             SettingsControl::ResetMascotImage => {
                 self.draft.mascot_image_path = None;
                 SettingsAction::Changed
@@ -690,6 +925,101 @@ impl SettingsScene {
             | SettingsControl::Apply => SettingsAction::None,
             SettingsControl::Close => SettingsAction::Close,
         }
+    }
+
+    pub fn onboarding_module_enabled(&self, module: OnboardingModule) -> bool {
+        match module {
+            OnboardingModule::AppDock => self.draft.show_app_dock,
+            OnboardingModule::Search => self.draft.search_enabled,
+            OnboardingModule::SystemStatus => self.draft.show_system_status,
+            OnboardingModule::Media => self.draft.show_media_controls,
+            OnboardingModule::AltTab => self.draft.alt_tab_enabled,
+        }
+    }
+
+    pub const fn onboarding_zone(&self, module: OnboardingModule) -> DockZone {
+        match module {
+            OnboardingModule::AppDock => self.draft.dock_zone,
+            OnboardingModule::SystemStatus => self.draft.system_status_zone,
+            OnboardingModule::Media => self.draft.media_zone,
+            OnboardingModule::Search | OnboardingModule::AltTab => DockZone::Center,
+        }
+    }
+
+    fn set_onboarding_module(&mut self, module: OnboardingModule, enabled: bool) {
+        match module {
+            OnboardingModule::AppDock => self.draft.show_app_dock = enabled,
+            OnboardingModule::Search => self.draft.search_enabled = enabled,
+            OnboardingModule::SystemStatus => self.draft.show_system_status = enabled,
+            OnboardingModule::Media => self.draft.show_media_controls = enabled,
+            OnboardingModule::AltTab => self.draft.alt_tab_enabled = enabled,
+        }
+    }
+
+    fn cycle_onboarding_zone(
+        &mut self,
+        module: OnboardingModule,
+        reverse: bool,
+    ) -> SettingsAction {
+        let current = self.onboarding_zone(module);
+        let index = DockZone::ALL
+            .iter()
+            .position(|zone| *zone == current)
+            .unwrap_or_default();
+        let next = if reverse {
+            DockZone::ALL[(index + DockZone::ALL.len() - 1) % DockZone::ALL.len()]
+        } else {
+            DockZone::ALL[(index + 1) % DockZone::ALL.len()]
+        };
+        self.set_onboarding_zone(module, next);
+        SettingsAction::Changed
+    }
+
+    fn set_onboarding_zone_from_pointer(
+        &mut self,
+        module: OnboardingModule,
+        bounds: SettingsRect,
+        x: u32,
+    ) -> SettingsAction {
+        let relative = x
+            .saturating_sub(bounds.left)
+            .min(bounds.width.saturating_sub(1));
+        let index = relative.saturating_mul(3) / bounds.width.max(1);
+        let zone = DockZone::ALL[usize::try_from(index).unwrap_or_default().min(2)];
+        self.set_onboarding_zone(module, zone);
+        SettingsAction::Changed
+    }
+
+    fn set_onboarding_zone(&mut self, module: OnboardingModule, zone: DockZone) {
+        match module {
+            OnboardingModule::AppDock => self.draft.dock_zone = zone,
+            OnboardingModule::SystemStatus => self.draft.system_status_zone = zone,
+            OnboardingModule::Media => self.draft.media_zone = zone,
+            OnboardingModule::Search | OnboardingModule::AltTab => {}
+        }
+    }
+
+    fn move_onboarding(&mut self, forward: bool) {
+        let Some(step) = self.onboarding else {
+            return;
+        };
+        let number = if forward {
+            step.number().saturating_add(1).min(4)
+        } else {
+            step.number().saturating_sub(1)
+        };
+        self.onboarding = Some(match number {
+            0 => OnboardingStep::Welcome,
+            1 => OnboardingStep::Modules,
+            2 => OnboardingStep::Layout,
+            3 => OnboardingStep::Integration,
+            _ => OnboardingStep::Ready,
+        });
+        self.focused = Some(if self.onboarding == Some(OnboardingStep::Ready) {
+            SettingsControl::OnboardingFinish
+        } else {
+            SettingsControl::OnboardingNext
+        });
     }
 
     fn move_focus(&mut self, reverse: bool) {
@@ -886,6 +1216,7 @@ impl SettingsScene {
 
     pub fn toggle(&self, toggle: SettingsToggle) -> bool {
         match toggle {
+            SettingsToggle::ShowAppDock => self.draft.show_app_dock,
             SettingsToggle::ShowUnpinnedRunningApps => {
                 self.draft.show_unpinned_running_apps
             }
@@ -904,10 +1235,8 @@ impl SettingsScene {
             SettingsToggle::ShowMediaMetadata => self.draft.show_media_metadata,
             SettingsToggle::StartWithWindows => self.draft.start_with_windows,
             SettingsToggle::ReplaceWindowsTaskbar => self.draft.replace_windows_taskbar,
-            SettingsToggle::ExclusiveTaskbarReplacement => {
-                self.draft.exclusive_taskbar_replacement
-            }
             SettingsToggle::HideWhenFullscreen => self.draft.hide_when_fullscreen,
+            SettingsToggle::SearchEnabled => self.draft.search_enabled,
             SettingsToggle::SearchOpenWithWindowsKey => {
                 self.draft.search_open_with_windows_key
             }
@@ -917,6 +1246,7 @@ impl SettingsScene {
 
     fn set_toggle(&mut self, toggle: SettingsToggle, value: bool) {
         match toggle {
+            SettingsToggle::ShowAppDock => self.draft.show_app_dock = value,
             SettingsToggle::ShowUnpinnedRunningApps => {
                 self.draft.show_unpinned_running_apps = value;
             }
@@ -942,11 +1272,10 @@ impl SettingsScene {
             SettingsToggle::StartWithWindows => self.draft.start_with_windows = value,
             SettingsToggle::ReplaceWindowsTaskbar => {
                 self.draft.replace_windows_taskbar = value;
-            }
-            SettingsToggle::ExclusiveTaskbarReplacement => {
                 self.draft.exclusive_taskbar_replacement = value;
             }
             SettingsToggle::HideWhenFullscreen => self.draft.hide_when_fullscreen = value,
+            SettingsToggle::SearchEnabled => self.draft.search_enabled = value,
             SettingsToggle::SearchOpenWithWindowsKey => {
                 self.draft.search_open_with_windows_key = value;
             }

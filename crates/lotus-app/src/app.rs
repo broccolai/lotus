@@ -20,8 +20,9 @@ use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit, Selec
 use lotus_core::notification::NotificationSource;
 use lotus_core::search::SearchUsage;
 use lotus_core::settings::{
-    DockSettings, DockZone, NotificationBadgeStyle, SettingsDecodeError, SettingsStore,
-    SettingsStoreError, WindowPickerStyle, decode_settings,
+    CURRENT_ONBOARDING_VERSION, DockSettings, DockZone, NotificationBadgeStyle,
+    SettingsDecodeError, SettingsStore, SettingsStoreError, WindowPickerStyle,
+    decode_settings,
 };
 use lotus_core::window::{WindowId, WindowInfo};
 use lotus_dock::popup::order_picker_windows;
@@ -60,8 +61,7 @@ use lotus_windows::startup::{
 };
 use lotus_windows::taskbar_badges::{TaskbarBadgeController, is_taskbar_badge_wake};
 use lotus_windows::update::{
-    UpdateResult, UpdateStatus, is_installed, is_update_wake, launch_current_installer,
-    launch_installer,
+    UpdateResult, UpdateStatus, is_installed, is_update_wake, launch_installer,
 };
 use lotus_windows::window_tracker::{WindowTracker, WindowTrackerEvent};
 use lotus_windows::windows_key::{
@@ -158,6 +158,7 @@ struct RuntimePolicy<'a> {
     windows_key: Option<&'a WindowsKeyController>,
     alt_tab: Option<&'a AltTabController>,
     taskbar_badges: Option<&'a TaskbarBadgeController>,
+    onboarding_required: bool,
 }
 
 pub fn run() -> Result<(), AppError> {
@@ -172,7 +173,10 @@ pub fn run() -> Result<(), AppError> {
     };
 
     let (settings, settings_store) = load_settings()?;
-    sync_startup_preference(settings.start_with_windows);
+    let onboarding_required = settings.onboarding_version < CURRENT_ONBOARDING_VERSION;
+    if !onboarding_required {
+        sync_startup_preference(settings.start_with_windows);
+    }
     let usage_store = SearchUsageStore::new(settings_store.directory());
     let usage = usage_store.load().unwrap_or_default();
     let mut graphics = DeviceState::create()?;
@@ -192,34 +196,45 @@ pub fn run() -> Result<(), AppError> {
         dock.dpi(),
         dock.drag_threshold(),
     )?;
-    let taskbar_badges = enable_notification_badges(&mut dock_model);
+    let taskbar_badges = (!onboarding_required)
+        .then(|| enable_notification_badges(&mut dock_model))
+        .flatten();
     dock.set_status_refresh_active(
         dock_model.settings().show_system_status
             && dock_model.settings().show_date_time_status,
     )?;
     let mut auxiliary = create_auxiliary_windows(&dock, &dock_model, usage, usage_store)?;
     let windows_key = enable_optional_windows_key(
-        dock_model.settings().search_open_with_windows_key,
+        !onboarding_required
+            && dock_model.settings().search_enabled
+            && dock_model.settings().search_open_with_windows_key,
         || {
             let mut controller = WindowsKeyController::new();
             let _enabled = controller.enable()?;
             Ok::<WindowsKeyController, WindowsKeyError>(controller)
         },
     );
-    let alt_tab = enable_optional_alt_tab(dock_model.settings().alt_tab_enabled);
+    let alt_tab = enable_optional_alt_tab(
+        !onboarding_required && dock_model.settings().alt_tab_enabled,
+    );
     resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
-    let _shell_integration =
-        ShellIntegration::setup(dock_model.settings(), &dock).unwrap_or(None);
+    let _shell_integration = if onboarding_required {
+        None
+    } else {
+        ShellIntegration::setup(dock_model.settings(), &dock).unwrap_or(None)
+    };
     window_tracker.refresh_fullscreen();
-    auxiliary.status.sync(
-        &dock,
-        dock_model.settings(),
-        dock_model.media(),
-        &mut graphics,
-    )?;
-    auxiliary
-        .monitors
-        .sync(&dock, &mut dock_model, &mut graphics, &window_tracker)?;
+    if !onboarding_required {
+        auxiliary.status.sync(
+            &dock,
+            dock_model.settings(),
+            dock_model.media(),
+            &mut graphics,
+        )?;
+        auxiliary
+            .monitors
+            .sync(&dock, &mut dock_model, &mut graphics, &window_tracker)?;
+    }
     render_and_schedule(
         &dock,
         &mut graphics,
@@ -227,14 +242,22 @@ pub fn run() -> Result<(), AppError> {
         dock_model.scene(),
         false,
     )?;
-    apply_fullscreen_visibility(
-        &dock,
-        &window_tracker,
-        &dock_model,
-        &mut auxiliary.launcher,
-        &auxiliary.status,
-    )?;
-    if startup.open_settings {
+    if onboarding_required {
+        let _changed = dock.set_visible(false);
+        auxiliary.status.set_visible(false);
+        auxiliary
+            .settings
+            .open_onboarding(dock_model.settings(), true, &mut graphics)?;
+    } else {
+        apply_fullscreen_visibility(
+            &dock,
+            &window_tracker,
+            &dock_model,
+            &mut auxiliary.launcher,
+            &auxiliary.status,
+        )?;
+    }
+    if startup.open_settings && !onboarding_required {
         auxiliary
             .settings
             .open(dock_model.settings(), &mut graphics)?;
@@ -243,6 +266,7 @@ pub fn run() -> Result<(), AppError> {
         windows_key: windows_key.as_ref(),
         alt_tab: alt_tab.as_ref(),
         taskbar_badges: taskbar_badges.as_ref(),
+        onboarding_required,
     };
     run_message_loop(
         &runtime,
@@ -331,12 +355,26 @@ fn load_settings() -> Result<(DockSettings, SettingsStore), AppError> {
     let _ = fs::remove_file(settings_directory.join("lotus.log"));
     let store = SettingsStore::new(settings_directory);
 
-    if !store.settings_path().exists() {
+    let settings_existed = store.settings_path().exists();
+    let legacy_without_onboarding = settings_existed
+        && fs::read_to_string(store.settings_path()).is_ok_and(|contents| {
+            !contents
+                .to_ascii_lowercase()
+                .contains("\"onboardingversion\"")
+        });
+
+    if !settings_existed {
         let shipped_defaults = decode_settings(include_str!(
             "../../lotus-core/assets/settings.default.json"
         ))?;
         store.save(&shipped_defaults)?;
     }
 
-    Ok((store.load()?.settings, store))
+    let mut settings = store.load()?.settings;
+    if legacy_without_onboarding {
+        settings.onboarding_version = CURRENT_ONBOARDING_VERSION;
+        store.save(&settings)?;
+    }
+
+    Ok((settings, store))
 }
