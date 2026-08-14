@@ -73,12 +73,30 @@ fn normalized_expression(query: &str) -> Option<String> {
     let has_math_shape = explicit.is_some()
         || expression
             .chars()
-            .any(|character| "+-*/%^()×÷".contains(character));
+            .any(|character| "+-*/%^()×÷".contains(character))
+        || expression
+            .split_whitespace()
+            .any(|part| matches!(part, "x" | "X"));
     if !has_math_shape || !expression.bytes().any(|byte| byte.is_ascii_digit()) {
         return None;
     }
 
-    Some(expression.replace('×', "*").replace('÷', "/"))
+    let expression = expression.replace('×', "*").replace('÷', "/");
+    Some(normalize_word_multiply(&expression))
+}
+
+fn normalize_word_multiply(expression: &str) -> String {
+    expression
+        .split_whitespace()
+        .map(|part| {
+            if matches!(part, "x" | "X") {
+                "*"
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn format_value(value: f64) -> String {
@@ -115,6 +133,8 @@ mod tests {
             ("sqrt(81)", Some("9")),
             ("= 1 / 8", Some("0.125")),
             ("2 × 6", Some("12")),
+            ("12 x 5", Some("60")),
+            ("Xbox", None),
         ];
 
         for (query, expected) in cases {

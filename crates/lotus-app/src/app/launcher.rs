@@ -213,7 +213,7 @@ impl LauncherRuntime {
     }
 
     fn results_with_icons(&mut self, icon_size: u32) -> Vec<LauncherResult> {
-        if self.controller.is_command_mode() {
+        if self.controller.is_command_mode() || self.controller.is_calculator_mode() {
             return self.iconless_results();
         }
 
