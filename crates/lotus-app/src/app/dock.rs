@@ -15,7 +15,7 @@ use super::{
     NotificationSource, Path, PopupAlignment, SettingsStore, SignedPoint, SvgAsset,
     SystemStatusItem, SystemStatusKind, WindowHandle, WindowId, WindowInfo,
     adapt_dock_items_with_native, decode_artwork, execute_activation, foreground_window,
-    local_date, local_time_24h, order_picker_windows, resolve_executable, show_error,
+    local_date, local_time, order_picker_windows, resolve_executable, show_error,
 };
 use crate::graphics::scene::DockItem as SceneDockItem;
 
@@ -775,7 +775,10 @@ pub(super) fn status_items(settings: &DockSettings) -> Vec<SystemStatusItem> {
         } else {
             String::new()
         };
-        items.push(SystemStatusItem::date_time(local_time_24h(), date));
+        items.push(SystemStatusItem::date_time(
+            local_time(settings.use_24_hour_time),
+            date,
+        ));
     }
     items
 }

@@ -209,6 +209,12 @@ fn drain_window_events(
         )?;
     }
     for (zone, event) in auxiliary.status.drain_events() {
+        if matches!(
+            event,
+            WindowEvent::Pointer(PointerEvent::LeftButtonPressed { .. })
+        ) {
+            auxiliary.launcher.hide();
+        }
         if let Some((action, owner, anchor)) =
             auxiliary.status.handle_event(zone, event, graphics)?
         {
@@ -1331,6 +1337,9 @@ fn handle_dock_pointer(
         )?;
     }
     let Some(target) = activation else {
+        if matches!(event, PointerEvent::LeftButtonReleased { .. }) {
+            auxiliary.launcher.hide();
+        }
         return Ok(());
     };
     let activation_anchor = release_request

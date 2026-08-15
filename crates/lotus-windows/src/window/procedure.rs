@@ -19,11 +19,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetClientRect, GetWindowLongPtrW, HTCAPTION, HTCLIENT, IDC_ARROW, LoadCursorW,
     MA_NOACTIVATE, MINMAXINFO, RegisterClassExW, SPI_SETWORKAREA, SWP_NOACTIVATE,
     SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, UnregisterClassW, WA_INACTIVE,
-    WM_ACTIVATE, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_CONTEXTMENU,
-    WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WM_SETTINGCHANGE,
-    WM_SIZE, WM_TIMER, WNDCLASSEXW,
+    WM_ACTIVATE, WM_APP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE,
+    WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_GETMINMAXINFO,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR,
+    WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WNDCLASSEXW,
 };
 use windows::core::w;
 
@@ -35,6 +35,8 @@ pub(crate) use super::events::{
 use crate::NativeError;
 
 type Result<T> = std::result::Result<T, NativeError>;
+
+pub(super) const SEARCH_OUTSIDE_CLICK_MESSAGE: u32 = WM_APP + 0x4CC;
 
 use crate::platform::windows::interaction::{
     PointerCursor, WindowTimer, capture_pointer, claim_keyboard_focus, key_is_pressed,
@@ -243,6 +245,9 @@ fn dispatch(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT
         WM_ACTIVATE if is_search_window(hwnd) => {
             dispatch_search_activation(hwnd, wparam, lparam)
         }
+        SEARCH_OUTSIDE_CLICK_MESSAGE if is_search_window(hwnd) => {
+            dispatch_search_dismiss(hwnd)
+        }
         WM_ACTIVATE if is_context_menu_window(hwnd) => {
             dispatch_context_menu_activation(hwnd, wparam, lparam)
         }
@@ -356,6 +361,11 @@ fn dispatch_close_message(hwnd: HWND) -> LRESULT {
         // SAFETY: The close message belongs to this live dock HWND on its owning thread.
         let _ = unsafe { DestroyWindow(hwnd) };
     }
+    LRESULT(0)
+}
+
+fn dispatch_search_dismiss(hwnd: HWND) -> LRESULT {
+    push_window_event(hwnd, WindowEvent::Search(SearchEvent::DismissRequested));
     LRESULT(0)
 }
 

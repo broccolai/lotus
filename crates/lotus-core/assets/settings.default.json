@@ -18,6 +18,7 @@
   "showDesktopButton": false,
   "showMediaControls": true,
   "showMediaMetadata": true,
+  "use24HourTime": true,
   "mediaZone": "center",
   "startWithWindows": true,
   "hideWhenFullscreen": true,

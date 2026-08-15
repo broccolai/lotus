@@ -13,18 +13,20 @@ type Result<T> = std::result::Result<T, NativeError>;
 
 use crate::platform::windows::backdrop;
 use crate::platform::windows::display::{ScreenArea, nearest_display};
-use crate::platform::windows::interaction::claim_keyboard_focus;
+use crate::platform::windows::interaction::{OutsideClickObserver, claim_keyboard_focus};
 use crate::platform::windows::native_window::{
     Activation, NativeWindow, WindowCreation, WindowHandle,
 };
 use crate::window::procedure::{
-    PointerEvent, SearchEvent, WindowClass, WindowEvent, WindowState,
+    PointerEvent, SEARCH_OUTSIDE_CLICK_MESSAGE, SearchEvent, WindowClass, WindowEvent,
+    WindowState,
 };
 
 const NORMAL_TOP_MINIMUM_DIPS: u32 = 52;
 
 pub struct SearchWindow {
     window: NativeWindow<WindowState>,
+    outside_click: Option<OutsideClickObserver>,
     _class: Rc<WindowClass>,
 }
 
@@ -51,6 +53,7 @@ impl SearchWindow {
         backdrop::apply_search_popup(window.hwnd());
         Ok(Self {
             window,
+            outside_click: None,
             _class: class,
         })
     }
@@ -79,6 +82,10 @@ impl SearchWindow {
         super::procedure::apply_rounded_region(self.hwnd(), 0);
         super::procedure::start_search_clock_timer(self.hwnd())?;
         super::procedure::start_search_focus_timer(self.hwnd())?;
+        if self.outside_click.is_none() {
+            self.outside_click =
+                OutsideClickObserver::start(self.hwnd(), SEARCH_OUTSIDE_CLICK_MESSAGE).ok();
+        }
 
         let _ = self.focus();
         Ok(())
@@ -95,6 +102,7 @@ impl SearchWindow {
     pub fn hide(&mut self) {
         super::procedure::stop_search_clock_timer(self.hwnd());
         super::procedure::stop_search_focus_timer(self.hwnd());
+        self.outside_click = None;
         self.window.hide();
         self.window.state_mut().clear_events();
     }

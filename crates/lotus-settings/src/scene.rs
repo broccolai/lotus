@@ -94,6 +94,7 @@ pub enum SettingsToggle {
     ShowBackgroundAppsStatus,
     ShowDateTimeStatus,
     ShowDateInStatus,
+    Use24HourTime,
     ShowMediaControls,
     ShowMediaMetadata,
     StartWithWindows,
@@ -857,6 +858,7 @@ impl SettingsScene {
                         SettingsControl::Toggle(SettingsToggle::ShowBackgroundAppsStatus),
                         SettingsControl::Toggle(SettingsToggle::ShowDateTimeStatus),
                         SettingsControl::Toggle(SettingsToggle::ShowDateInStatus),
+                        SettingsControl::Toggle(SettingsToggle::Use24HourTime),
                     ],
                 ),
             ],
@@ -1474,6 +1476,7 @@ impl SettingsScene {
             }
             SettingsToggle::ShowDateTimeStatus => self.draft.show_date_time_status,
             SettingsToggle::ShowDateInStatus => self.draft.show_date_in_status,
+            SettingsToggle::Use24HourTime => self.draft.use_24_hour_time,
             SettingsToggle::ShowMediaControls => self.draft.show_media_controls,
             SettingsToggle::ShowMediaMetadata => self.draft.show_media_metadata,
             SettingsToggle::StartWithWindows => self.draft.start_with_windows,
@@ -1510,6 +1513,7 @@ impl SettingsScene {
                 self.draft.show_date_time_status = value;
             }
             SettingsToggle::ShowDateInStatus => self.draft.show_date_in_status = value,
+            SettingsToggle::Use24HourTime => self.draft.use_24_hour_time = value,
             SettingsToggle::ShowMediaControls => self.draft.show_media_controls = value,
             SettingsToggle::ShowMediaMetadata => self.draft.show_media_metadata = value,
             SettingsToggle::StartWithWindows => self.draft.start_with_windows = value,

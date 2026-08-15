@@ -1,7 +1,9 @@
 use std::fmt;
 use std::mem::size_of;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -9,13 +11,112 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, DispatchMessageW, GetForegroundWindow, GetMessageW,
-    GetWindowThreadProcessId, IDC_ARROW, IDC_HAND, IDC_SIZEWE, KillTimer, LoadCursorW, MSG,
-    PostQuitMessage, SM_CXDRAG, SM_CYDRAG, SetCursor, SetForegroundWindow, SetTimer,
-    TranslateMessage,
+    BringWindowToTop, CallNextHookEx, DispatchMessageW, GA_ROOT, GetAncestor,
+    GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, HHOOK, IDC_ARROW, IDC_HAND,
+    IDC_SIZEWE, KillTimer, LoadCursorW, MSG, MSLLHOOKSTRUCT, PostMessageW, PostQuitMessage,
+    SM_CXDRAG, SM_CYDRAG, SetCursor, SetForegroundWindow, SetTimer, SetWindowsHookExW,
+    TranslateMessage, UnhookWindowsHookEx, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
+    WM_RBUTTONDOWN, WM_XBUTTONDOWN, WindowFromPoint,
 };
 
 use crate::NativeError;
+
+static OUTSIDE_CLICK_TARGET: AtomicIsize = AtomicIsize::new(0);
+static OUTSIDE_CLICK_MESSAGE: AtomicIsize = AtomicIsize::new(0);
+
+pub(crate) struct OutsideClickObserver {
+    hook: HHOOK,
+    target: HWND,
+}
+
+impl OutsideClickObserver {
+    pub(crate) fn start(target: HWND, message: u32) -> Result<Self, NativeError> {
+        // SAFETY: A null module name requests this process module, which remains loaded while the
+        // callback and its hook are active.
+        let module = unsafe { GetModuleHandleW(None) }?;
+        OUTSIDE_CLICK_TARGET.store(target.0.addr().cast_signed(), Ordering::Release);
+        OUTSIDE_CLICK_MESSAGE.store(
+            isize::try_from(message).unwrap_or_default(),
+            Ordering::Release,
+        );
+
+        // SAFETY: The callback has the required ABI and static lifetime. A zero thread ID installs
+        // the documented low-level mouse observer without intercepting input.
+        let hook = unsafe {
+            SetWindowsHookExW(
+                WH_MOUSE_LL,
+                Some(outside_click_hook),
+                Some(HINSTANCE(module.0)),
+                0,
+            )
+        }
+        .inspect_err(|_| clear_outside_click_target(target))?;
+        Ok(Self { hook, target })
+    }
+}
+
+impl Drop for OutsideClickObserver {
+    fn drop(&mut self) {
+        clear_outside_click_target(self.target);
+        // SAFETY: This guard owns the successful hook installation and releases it once.
+        let _ = unsafe { UnhookWindowsHookEx(self.hook) };
+    }
+}
+
+fn clear_outside_click_target(target: HWND) {
+    let target = target.0.addr().cast_signed();
+    let _ = OUTSIDE_CLICK_TARGET.compare_exchange(
+        target,
+        0,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+    OUTSIDE_CLICK_MESSAGE.store(0, Ordering::Release);
+}
+
+unsafe extern "system" fn outside_click_hook(
+    code: i32,
+    message: WPARAM,
+    data: LPARAM,
+) -> LRESULT {
+    if code >= 0 && is_pointer_press(message) && data.0 != 0 {
+        let raw_target = OUTSIDE_CLICK_TARGET.load(Ordering::Acquire);
+        let raw_message = OUTSIDE_CLICK_MESSAGE.load(Ordering::Acquire);
+        if raw_target != 0 && raw_message > 0 {
+            let target = HWND(raw_target.cast_unsigned() as *mut _);
+            // SAFETY: Windows supplies a valid MSLLHOOKSTRUCT pointer for a nonnegative
+            // WH_MOUSE_LL callback.
+            let pointer = unsafe { &*(data.0 as *const MSLLHOOKSTRUCT) };
+            // SAFETY: Both calls only inspect the window directly beneath the supplied screen
+            // coordinate and its root owner; neither transfers ownership.
+            let clicked_root = unsafe { GetAncestor(WindowFromPoint(pointer.pt), GA_ROOT) };
+            let inside = clicked_root == target;
+            if !inside {
+                // SAFETY: Posting an application-owned message does not retain borrowed data.
+                let _ = unsafe {
+                    PostMessageW(
+                        Some(target),
+                        u32::try_from(raw_message).unwrap_or_default(),
+                        WPARAM(0),
+                        LPARAM(0),
+                    )
+                };
+            }
+        }
+    }
+
+    // SAFETY: Lotus observes but never consumes mouse input, so every event is forwarded intact.
+    unsafe { CallNextHookEx(None, code, message, data) }
+}
+
+fn is_pointer_press(message: WPARAM) -> bool {
+    u32::try_from(message.0).is_ok_and(|message| {
+        matches!(
+            message,
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+        )
+    })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FocusClaim {

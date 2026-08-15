@@ -6,7 +6,7 @@ use super::{
     Duration, LauncherCompositionSurfaceState, LauncherResult, LauncherScene,
     NativeIconCache, Path, SearchCatalogCache, SearchController, SearchEvent,
     SearchPresentation, SearchUsageStore, SearchWindow, SelectionDirection, SelectionMove,
-    SurfaceError, SurfaceSize, SvgAsset, WindowHandle, launch_target, local_time_24h,
+    SurfaceError, SurfaceSize, SvgAsset, WindowHandle, launch_target, local_time,
     resize_launcher_surface, show_error,
 };
 
@@ -20,6 +20,7 @@ pub(super) struct LauncherRuntime {
     pub(super) presentation: SearchPresentation,
     pub(super) visible: bool,
     theme: Theme,
+    use_24_hour_time: bool,
 }
 
 pub(super) enum LauncherSubmission {
@@ -31,6 +32,7 @@ impl LauncherRuntime {
     pub(super) fn new(
         window: SearchWindow,
         result_limit: u32,
+        use_24_hour_time: bool,
         theme: &Theme,
         usage: lotus_core::search::SearchUsage,
         usage_store: SearchUsageStore,
@@ -49,6 +51,7 @@ impl LauncherRuntime {
             presentation: SearchPresentation::default(),
             visible: false,
             theme: *theme,
+            use_24_hour_time,
         }
     }
 
@@ -183,7 +186,7 @@ impl LauncherRuntime {
             self.controller.total_results(),
         );
         scene.set_query_cursor(self.controller.query_cursor());
-        let _ = scene.set_footer_time(local_time_24h());
+        let _ = scene.set_footer_time(local_time(self.use_24_hour_time));
         let _ = scene.set_presentation_progress(self.presentation.progress());
         self.scene = Some(scene);
         Ok(())
@@ -358,8 +361,12 @@ impl LauncherRuntime {
         let next_theme = theme_for(settings);
         let theme_changed = self.theme != next_theme;
         self.theme = next_theme;
+        let time_format_changed = self.use_24_hour_time != settings.use_24_hour_time;
+        self.use_24_hour_time = settings.use_24_hour_time;
         let limit = usize::try_from(settings.search_result_limit).unwrap_or(8);
-        if (self.controller.set_result_limit(limit) || theme_changed) && self.visible {
+        if (self.controller.set_result_limit(limit) || theme_changed || time_format_changed)
+            && self.visible
+        {
             self.rebuild_scene(self.window.dpi())?;
             self.sync_size(dock, graphics)?;
             let _ = self.render(graphics)?;

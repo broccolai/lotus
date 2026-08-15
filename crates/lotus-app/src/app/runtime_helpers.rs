@@ -4,7 +4,7 @@ use super::{
     LauncherRuntime, LauncherSubmission, ModelCursorMove, PointerEvent, QueryEdit,
     RestartError, SearchEdit, SearchEvent, StatusRuntime, SurfaceError, SurfaceSize,
     SwitcherRuntime, WindowCursorMove, WindowTracker, WindowsKeyController,
-    WindowsKeyEvent, launch_target, local_time_24h, read_text,
+    WindowsKeyEvent, launch_target, local_time, read_text,
 };
 
 pub(super) fn restart_current_process() -> Result<(), RestartError> {
@@ -229,10 +229,9 @@ pub(super) fn handle_search_event(
             scene_changed = true;
         }
         SearchEvent::ClockRefreshRequested => {
-            scene_changed = launcher
-                .scene
-                .as_mut()
-                .is_some_and(|scene| scene.set_footer_time(local_time_24h()));
+            scene_changed = launcher.scene.as_mut().is_some_and(|scene| {
+                scene.set_footer_time(local_time(dock_model.settings().use_24_hour_time))
+            });
         }
         SearchEvent::FocusRefreshRequested => {
             let _ = launcher.window.focus();

@@ -41,7 +41,7 @@ use lotus_windows::activation::{
 use lotus_windows::alt_tab::{AltTabController, AltTabEvent, is_alt_tab_wake};
 use lotus_windows::appbar::{ShellIntegration, fullscreen_notification};
 use lotus_windows::clipboard::{read_text, write_text};
-use lotus_windows::clock::{local_date, local_time_24h};
+use lotus_windows::clock::{local_date, local_time};
 use lotus_windows::dialog::{
     confirm_install_update, confirm_restart, confirm_shutdown, show_error, show_information,
 };
@@ -294,6 +294,7 @@ fn create_auxiliary_windows(
     let launcher = LauncherRuntime::new(
         search_window,
         dock_model.settings().search_result_limit,
+        dock_model.settings().use_24_hour_time,
         &theme_for(dock_model.settings()),
         usage,
         usage_store,

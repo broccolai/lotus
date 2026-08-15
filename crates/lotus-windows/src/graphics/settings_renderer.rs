@@ -1558,6 +1558,7 @@ fn toggle_label(value: SettingsToggle) -> &'static str {
         SettingsToggle::ShowBackgroundAppsStatus => "Show background applications",
         SettingsToggle::ShowDateTimeStatus => "Show time",
         SettingsToggle::ShowDateInStatus => "Show date below the time",
+        SettingsToggle::Use24HourTime => "Use 24-hour time",
         SettingsToggle::ShowMediaControls => "Show media controls",
         SettingsToggle::ShowMediaMetadata => "Show track information",
         SettingsToggle::StartWithWindows => "Start lotus when you sign in",
