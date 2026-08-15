@@ -208,7 +208,7 @@ impl MonitorDock {
                     target.map(|target| MonitorDockAction::Activate {
                         target,
                         owner: self.window.handle(),
-                        anchor: self.activation_anchor(x, y),
+                        anchor: self.activation_anchor(target, x, y),
                     })
                 } else {
                     None
@@ -223,8 +223,27 @@ impl MonitorDock {
         Ok(action)
     }
 
-    fn activation_anchor(&self, x: i32, y: i32) -> Option<SignedPoint> {
-        self.window.client_to_screen(SignedPoint { x, y }).ok()
+    fn activation_anchor(
+        &self,
+        target: DockHitTarget,
+        pointer_x: i32,
+        pointer_y: i32,
+    ) -> Option<SignedPoint> {
+        let x = if let DockHitTarget::SystemStatus(kind) = target {
+            let size = self.scene.desired_size();
+            let layout = self.scene.layout(size.width(), size.height());
+            let bounds = layout
+                .status_items
+                .iter()
+                .find(|item| item.kind == kind)?
+                .hit_bounds;
+            i32::try_from(bounds.left.saturating_add(bounds.width / 2)).ok()?
+        } else {
+            pointer_x
+        };
+        self.window
+            .client_to_screen(SignedPoint { x, y: pointer_y })
+            .ok()
     }
 
     fn popup_target_anchor(

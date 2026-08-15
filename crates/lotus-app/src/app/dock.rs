@@ -286,9 +286,12 @@ impl DockRuntime {
                 .find(|item| item.source_index == source_index)
                 .map(|item| item.bounds)?,
             DockHitTarget::Jirachi => layout.jirachi,
-            DockHitTarget::Media(_)
-            | DockHitTarget::SystemStatus(_)
-            | DockHitTarget::ShowDesktop => return None,
+            DockHitTarget::SystemStatus(kind) => layout
+                .status_items
+                .iter()
+                .find(|item| item.kind == kind)
+                .map(|item| item.hit_bounds)?,
+            DockHitTarget::Media(_) | DockHitTarget::ShowDesktop => return None,
         };
         let (anchor_x, alignment) = match (target, self.scene.anchor()) {
             (DockHitTarget::Jirachi, DockAnchor::Left) => (0, PopupAlignment::Start),

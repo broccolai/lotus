@@ -36,6 +36,17 @@ pub enum TrayError {
 }
 
 pub fn open_overflow(owner: WindowHandle) -> Result<(), TrayError> {
+    open_overflow_with_anchor(owner, None)
+}
+
+pub fn open_overflow_at(owner: WindowHandle, screen_x: i32) -> Result<(), TrayError> {
+    open_overflow_with_anchor(owner, Some(screen_x))
+}
+
+fn open_overflow_with_anchor(
+    owner: WindowHandle,
+    screen_x: Option<i32>,
+) -> Result<(), TrayError> {
     send(&[
         key(VK_LWIN, KEYEVENTF_EXTENDEDKEY),
         key(VK_B, KEYBD_EVENT_FLAGS::default()),
@@ -47,7 +58,7 @@ pub fn open_overflow(owner: WindowHandle) -> Result<(), TrayError> {
         key(VK_RETURN, KEYBD_EVENT_FLAGS::default()),
         key(VK_RETURN, KEYEVENTF_KEYUP),
     ])?;
-    place_from_owner(owner, find_overflow);
+    place_from_owner(owner, screen_x, find_overflow);
     Ok(())
 }
 
@@ -73,18 +84,23 @@ fn open_windows_11_panel(
         key(key_code, KEYEVENTF_KEYUP),
         key(VK_LWIN, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
     ])?;
-    place_from_owner(owner, find_shell_panel);
+    place_from_owner(owner, None, find_shell_panel);
     Ok(true)
 }
 
-fn place_from_owner(owner: WindowHandle, find_window: impl FnMut() -> Option<HWND>) {
+fn place_from_owner(
+    owner: WindowHandle,
+    screen_x: Option<i32>,
+    find_window: impl FnMut() -> Option<HWND>,
+) {
     let Some(anchor) = window_anchor(owner.raw()) else {
         return;
     };
-    place_flyout(anchor.0, anchor.1, find_window);
+    place_flyout(screen_x, anchor.0, anchor.1, find_window);
 }
 
 fn place_flyout(
+    screen_x: Option<i32>,
     anchor_x: i32,
     anchor_y: i32,
     mut find_window: impl FnMut() -> Option<HWND>,
@@ -111,7 +127,7 @@ fn place_flyout(
             continue;
         }
 
-        position_window(window, anchor_x, anchor_y, size.0, size.1);
+        position_window(window, screen_x, anchor_x, anchor_y, size.0, size.1);
         if previous_size == Some(size) {
             stable_samples += 1;
             if stable_samples >= REQUIRED_STABLE_SAMPLES {
@@ -125,26 +141,40 @@ fn place_flyout(
     }
 }
 
-fn position_window(window: HWND, anchor_x: i32, anchor_y: i32, width: i32, height: i32) {
-    let Ok(display) = nearest_display_to_point(anchor_x, anchor_y) else {
+fn position_window(
+    window: HWND,
+    screen_x: Option<i32>,
+    anchor_x: i32,
+    anchor_y: i32,
+    width: i32,
+    height: i32,
+) {
+    let display_x = screen_x.unwrap_or(anchor_x);
+    let Ok(display) = nearest_display_to_point(display_x, anchor_y) else {
         return;
     };
     let dpi = display.dpi().map_or(96, lotus_ui::geometry::DpiScale::dpi);
     let inset = EDGE_INSET_DIP.saturating_mul(i32::try_from(dpi).unwrap_or(96)) / 96;
     let maximum_x = display.work_area.right.saturating_sub(width);
     let maximum_y = display.work_area.bottom.saturating_sub(height);
-    let x = display
-        .work_area
-        .right
-        .saturating_sub(width)
-        .saturating_sub(inset)
-        .clamp(
-            display.work_area.left,
-            maximum_x.max(display.work_area.left),
-        );
+    let x = screen_x.map_or_else(
+        || {
+            display
+                .work_area
+                .right
+                .saturating_sub(width)
+                .saturating_sub(inset)
+        },
+        |screen_x| screen_x.saturating_sub(width / 2),
+    );
+    let x = x.clamp(
+        display.work_area.left.saturating_add(inset),
+        maximum_x
+            .saturating_sub(inset)
+            .max(display.work_area.left.saturating_add(inset)),
+    );
     let y = anchor_y
         .saturating_sub(height)
-        .saturating_sub(inset)
         .clamp(display.work_area.top, maximum_y.max(display.work_area.top));
 
     // SAFETY: The live shell HWND is only repositioned; size, activation, and z-order remain

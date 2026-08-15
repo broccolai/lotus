@@ -210,14 +210,16 @@ fn drain_window_events(
         )?;
     }
     for (zone, event) in auxiliary.status.drain_events() {
-        if let Some((action, owner)) =
+        if let Some((action, owner, anchor)) =
             auxiliary.status.handle_event(zone, event, graphics)?
         {
             match action {
                 AuxiliaryZoneAction::Media(target) => {
                     auxiliary.media.activate(target, dock_model, owner);
                 }
-                AuxiliaryZoneAction::Status(kind) => activate_system_status(kind, owner),
+                AuxiliaryZoneAction::Status(kind) => {
+                    activate_system_status(kind, owner, anchor);
+                }
             }
         }
     }
@@ -1332,6 +1334,9 @@ fn handle_dock_pointer(
     let Some(target) = activation else {
         return Ok(());
     };
+    let activation_anchor = release_request
+        .and_then(|request| dock_model.popup_target_anchor(request))
+        .map(|(_, anchor, _)| anchor);
     match target {
         DockHitTarget::Item(source_index) => {
             let anchor = release_request
@@ -1360,7 +1365,7 @@ fn handle_dock_pointer(
         }
         DockHitTarget::SystemStatus(kind) => {
             auxiliary.launcher.hide();
-            activate_system_status(kind, dock.handle());
+            activate_system_status(kind, dock.handle(), activation_anchor);
         }
         DockHitTarget::ShowDesktop => {
             auxiliary.launcher.hide();
@@ -1415,7 +1420,11 @@ fn activate_dock_item(
     )
 }
 
-fn activate_system_status(kind: SystemStatusKind, owner: WindowHandle) {
+fn activate_system_status(
+    kind: SystemStatusKind,
+    owner: WindowHandle,
+    anchor: Option<super::SignedPoint>,
+) {
     let result = match kind {
         SystemStatusKind::Volume => native_panel_or_fallback(
             lotus_windows::tray::open_quick_settings(owner),
@@ -1425,9 +1434,12 @@ fn activate_system_status(kind: SystemStatusKind, owner: WindowHandle) {
             lotus_windows::tray::open_quick_settings(owner),
             "ms-settings:network",
         ),
-        SystemStatusKind::BackgroundApps => {
-            lotus_windows::tray::open_overflow(owner).map_err(|error| error.to_string())
-        }
+        SystemStatusKind::BackgroundApps => anchor
+            .map_or_else(
+                || lotus_windows::tray::open_overflow(owner),
+                |point| lotus_windows::tray::open_overflow_at(owner, point.x),
+            )
+            .map_err(|error| error.to_string()),
         SystemStatusKind::DateTime => native_panel_or_fallback(
             lotus_windows::tray::open_calendar(owner),
             "ms-settings:dateandtime",
@@ -1538,7 +1550,7 @@ fn handle_monitor_dock_action(
             }
             DockHitTarget::SystemStatus(kind) => {
                 auxiliary.launcher.hide();
-                activate_system_status(kind, owner);
+                activate_system_status(kind, owner, anchor);
             }
             DockHitTarget::ShowDesktop => {
                 auxiliary.launcher.hide();

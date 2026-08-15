@@ -6,8 +6,8 @@ use lotus_ui::geometry::NonZeroPhysicalSize;
 use super::dock::{dock_anchor, metrics, status_items};
 use super::{
     AppError, CompositionSurfaceState, DeviceState, DockHitTarget, DockIcon, DockScene,
-    DockWindow, MediaItem, StatusWindow, SurfaceSize, SvgAsset, SystemStatusKind,
-    WindowEvent, render_surface, resize_surface,
+    DockWindow, MediaItem, SignedPoint, StatusWindow, SurfaceSize, SvgAsset,
+    SystemStatusKind, WindowEvent, render_surface, resize_surface,
 };
 
 pub(super) enum AuxiliaryZoneAction {
@@ -137,7 +137,14 @@ impl StatusRuntime {
         zone_index: usize,
         event: WindowEvent,
         graphics: &mut DeviceState,
-    ) -> Result<Option<(AuxiliaryZoneAction, lotus_windows::WindowHandle)>, AppError> {
+    ) -> Result<
+        Option<(
+            AuxiliaryZoneAction,
+            lotus_windows::WindowHandle,
+            Option<SignedPoint>,
+        )>,
+        AppError,
+    > {
         let Some(zone) = self.zones.get_mut(zone_index) else {
             return Ok(None);
         };
@@ -190,10 +197,11 @@ impl StatusRuntime {
             | WindowEvent::Switcher(_)
             | WindowEvent::StatusRefreshRequested => None,
         };
+        let anchor = action.and_then(|target| zone.target_anchor(target));
         zone.render(graphics)?;
         Ok(action
             .and_then(auxiliary_action)
-            .map(|action| (action, zone.window.handle())))
+            .map(|action| (action, zone.window.handle(), anchor)))
     }
 }
 
@@ -205,6 +213,22 @@ impl ZoneSurface {
         self.scene
             .layout(size.width(), size.height())
             .hit_test(x, y)
+    }
+
+    fn target_anchor(&self, target: DockHitTarget) -> Option<SignedPoint> {
+        let DockHitTarget::SystemStatus(kind) = target else {
+            return None;
+        };
+        let size = self.scene.desired_size();
+        let layout = self.scene.layout(size.width(), size.height());
+        let bounds = layout
+            .status_items
+            .iter()
+            .find(|item| item.kind == kind)?
+            .hit_bounds;
+        let x = i32::try_from(bounds.left.saturating_add(bounds.width / 2)).ok()?;
+        let y = i32::try_from(bounds.top).ok()?;
+        self.window.client_to_screen(SignedPoint { x, y }).ok()
     }
 
     fn render(&mut self, graphics: &mut DeviceState) -> Result<(), AppError> {
