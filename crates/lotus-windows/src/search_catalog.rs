@@ -2,7 +2,7 @@ use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use std::{fs, io, thread};
+use std::{env, fs, io, thread};
 
 use lotus_core::dock::DockItem;
 use lotus_core::search::{ApplicationEntry, ApplicationSource, SearchCatalog};
@@ -252,13 +252,8 @@ fn discover_start_menu_entries() -> Vec<ApplicationEntry> {
 }
 
 fn discover_desktop_web_apps() -> Vec<ApplicationEntry> {
-    let roots = [
-        known_folder(&FOLDERID_Desktop),
-        known_folder(&FOLDERID_PublicDesktop),
-    ];
-    let mut candidates = roots
+    let mut candidates = desktop_roots()
         .into_iter()
-        .flatten()
         .enumerate()
         .flat_map(|(root_index, root)| {
             supported_files(&root)
@@ -291,6 +286,27 @@ fn discover_desktop_web_apps() -> Vec<ApplicationEntry> {
         .collect()
 }
 
+fn desktop_roots() -> Vec<PathBuf> {
+    let mut candidates = [
+        known_folder(&FOLDERID_Desktop),
+        known_folder(&FOLDERID_PublicDesktop),
+        env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join("Desktop")),
+        env::var_os("PUBLIC").map(|public| PathBuf::from(public).join("Desktop")),
+        env::var_os("OneDrive").map(|onedrive| PathBuf::from(onedrive).join("Desktop")),
+        env::var_os("OneDriveConsumer")
+            .map(|onedrive| PathBuf::from(onedrive).join("Desktop")),
+        env::var_os("OneDriveCommercial")
+            .map(|onedrive| PathBuf::from(onedrive).join("Desktop")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|path| path.is_dir())
+    .collect::<Vec<_>>();
+    candidates.sort_by_key(|path| path_sort_key(path));
+    candidates.dedup_by(|left, right| path_sort_key(left) == path_sort_key(right));
+    candidates
+}
+
 fn is_chromium_web_app_shortcut(path: &Path) -> bool {
     if !path
         .extension()
@@ -300,7 +316,17 @@ fn is_chromium_web_app_shortcut(path: &Path) -> bool {
         return false;
     }
 
-    shortcut_arguments(path).is_some_and(|arguments| chromium_web_app_arguments(&arguments))
+    let arguments = shortcut_arguments(path);
+    let target = resolve_executable(&path.to_string_lossy());
+    chromium_web_app_identity(arguments.as_deref(), target.as_deref())
+}
+
+fn chromium_web_app_identity(arguments: Option<&str>, target: Option<&Path>) -> bool {
+    arguments.is_some_and(chromium_web_app_arguments)
+        || target
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.to_ascii_lowercase().ends_with("_proxy.exe"))
 }
 
 fn chromium_web_app_arguments(arguments: &str) -> bool {
@@ -585,23 +611,35 @@ fn path_sort_key(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::chromium_web_app_arguments;
+    use std::path::Path;
+
+    use super::chromium_web_app_identity;
 
     #[test]
-    fn chromium_web_app_shortcuts_require_an_app_launch_switch() {
+    fn chromium_web_app_shortcuts_accept_launch_switches_and_browser_proxies() {
         let cases = [
-            ("--profile-directory=Default --app-id=abcdefghijkl", true),
-            ("--app=https://mail.proton.me/", true),
             (
-                "\"--app-id=abcdefghijkl\" --profile-directory=Profile 1",
+                Some("--profile-directory=Default --app-id=abcdefghijkl"),
+                Some(Path::new("chrome.exe")),
                 true,
             ),
-            ("--profile-directory=Default", false),
-            ("https://mail.proton.me/", false),
+            (
+                Some("--app=https://mail.proton.me/"),
+                Some(Path::new("chrome.exe")),
+                true,
+            ),
+            (None, Some(Path::new("chrome_proxy.exe")), true),
+            (None, Some(Path::new("msedge_proxy.exe")), true),
+            (
+                Some("--profile-directory=Default"),
+                Some(Path::new("chrome.exe")),
+                false,
+            ),
+            (None, Some(Path::new("ordinary.exe")), false),
         ];
 
-        for (arguments, expected) in cases {
-            assert_eq!(chromium_web_app_arguments(arguments), expected);
+        for (arguments, target, expected) in cases {
+            assert_eq!(chromium_web_app_identity(arguments, target), expected);
         }
     }
 }
