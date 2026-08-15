@@ -57,7 +57,7 @@ struct CacheKey {
 
 #[derive(Default)]
 pub struct NativeIconCache {
-    icons: HashMap<CacheKey, Option<RasterIcon>>,
+    icons: HashMap<CacheKey, RasterIcon>,
 }
 
 impl NativeIconCache {
@@ -77,16 +77,20 @@ impl NativeIconCache {
             size,
         };
 
-        if !self.icons.contains_key(&key) {
-            let image = match extraction {
-                Some((extraction_path, icon_index)) => {
-                    extract_icon(&extraction_path, icon_index, &key)?
-                }
-                None => None,
-            };
-            self.icons.insert(key.clone(), image);
+        if let Some(icon) = self.icons.get(&key) {
+            return Ok(Some(icon.clone()));
         }
-        Ok(self.icons.get(&key).cloned().flatten())
+
+        let image = match extraction {
+            Some((extraction_path, icon_index)) => {
+                extract_icon(&extraction_path, icon_index, &key)?
+            }
+            None => None,
+        };
+        if let Some(icon) = &image {
+            self.icons.insert(key, icon.clone());
+        }
+        Ok(image)
     }
 }
 

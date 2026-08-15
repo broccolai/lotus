@@ -933,10 +933,12 @@ fn apply_settings_action(
 }
 
 fn apply_changed_settings(
-    next: lotus_core::settings::DockSettings,
+    mut next: lotus_core::settings::DockSettings,
     context: &mut SettingsEventContext<'_>,
     restart_after_apply: bool,
 ) -> Result<(), AppError> {
+    preserve_externally_managed_settings(&mut next, context.dock_model.settings());
+
     let start_with_windows = next.start_with_windows;
     let impact = context
         .dock_model
@@ -1038,6 +1040,20 @@ fn apply_changed_settings(
         }
     }
     Ok(())
+}
+
+fn preserve_externally_managed_settings(
+    next: &mut lotus_core::settings::DockSettings,
+    current: &lotus_core::settings::DockSettings,
+) {
+    next.notification_disabled_apps
+        .clone_from(&current.notification_disabled_apps);
+    next.application_name_overrides
+        .clone_from(&current.application_name_overrides);
+    next.hidden_executables
+        .clone_from(&current.hidden_executables);
+    next.item_order.clone_from(&current.item_order);
+    next.pinned_apps.clone_from(&current.pinned_apps);
 }
 
 fn choose_settings_color(
