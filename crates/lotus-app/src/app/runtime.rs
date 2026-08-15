@@ -335,7 +335,7 @@ fn execute_search_command(
             }
         }
         CommandId::OpenNotificationArea => {
-            if let Err(error) = lotus_windows::tray::open_overflow() {
+            if let Err(error) = lotus_windows::tray::open_overflow(dock.handle()) {
                 show_error(
                     dock.handle(),
                     "Lotus",
@@ -638,7 +638,7 @@ fn execute_context_menu_action(
             }
         }
         ContextMenuAction::OpenTrayOverflow => {
-            if let Err(error) = lotus_windows::tray::open_overflow() {
+            if let Err(error) = lotus_windows::tray::open_overflow(dock.handle()) {
                 show_error(
                     dock.handle(),
                     "Lotus",
@@ -1414,19 +1414,21 @@ fn activate_dock_item(
 
 fn activate_system_status(kind: SystemStatusKind, owner: WindowHandle) {
     let result = match kind {
-        SystemStatusKind::Volume => launch_target("sndvol.exe", None),
-        SystemStatusKind::Network => launch_target("ms-settings:network", None),
+        SystemStatusKind::Volume => native_panel_or_fallback(
+            lotus_windows::tray::open_quick_settings(owner),
+            "sndvol.exe",
+        ),
+        SystemStatusKind::Network => native_panel_or_fallback(
+            lotus_windows::tray::open_quick_settings(owner),
+            "ms-settings:network",
+        ),
         SystemStatusKind::BackgroundApps => {
-            if let Err(error) = lotus_windows::tray::open_overflow() {
-                show_error(
-                    owner,
-                    "Lotus",
-                    &format!("Lotus could not open background applications.\n\n{error}"),
-                );
-            }
-            return;
+            lotus_windows::tray::open_overflow(owner).map_err(|error| error.to_string())
         }
-        SystemStatusKind::DateTime => launch_target("ms-settings:dateandtime", None),
+        SystemStatusKind::DateTime => native_panel_or_fallback(
+            lotus_windows::tray::open_calendar(owner),
+            "ms-settings:dateandtime",
+        ),
     };
 
     if let Err(error) = result {
@@ -1435,6 +1437,17 @@ fn activate_system_status(kind: SystemStatusKind, owner: WindowHandle) {
             "Lotus",
             &format!("Lotus could not open that system control.\n\n{error}"),
         );
+    }
+}
+
+fn native_panel_or_fallback(
+    native: Result<bool, lotus_windows::tray::TrayError>,
+    fallback: &str,
+) -> Result<(), String> {
+    match native {
+        Ok(true) => Ok(()),
+        Ok(false) => launch_target(fallback, None).map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
     }
 }
 
