@@ -37,6 +37,13 @@ pub struct DockModel {
     items: Vec<DockItem>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PinLaunch {
+    pub target: String,
+    pub arguments: Option<String>,
+    pub icon_source: Option<String>,
+}
+
 impl DockModel {
     pub const fn new(
         settings: DockSettings,
@@ -166,6 +173,7 @@ impl DockModel {
         &mut self,
         source_index: usize,
         pinned: bool,
+        launch: Option<PinLaunch>,
     ) -> Result<bool, SettingsStoreError> {
         let Some(item) = self.items.get(source_index) else {
             return Ok(false);
@@ -189,12 +197,17 @@ impl DockModel {
                 .map(str::to_owned)
                 .into_iter()
                 .collect();
+            let launch = launch.unwrap_or_else(|| PinLaunch {
+                target: item.launch_target.clone(),
+                arguments: item.arguments.clone(),
+                icon_source: Some(item.icon_source.clone()),
+            });
             settings.pinned_apps.push(PinnedApp {
                 id: item.id.clone(),
                 name: item.display_name.clone(),
-                launch_target: item.launch_target.clone(),
-                arguments: item.arguments.clone(),
-                icon_source: Some(item.icon_source.clone()),
+                launch_target: launch.target,
+                arguments: launch.arguments,
+                icon_source: launch.icon_source,
                 match_executables: executable,
             });
             insert_item_order(&mut settings.item_order, &self.items, source_index);

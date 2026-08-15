@@ -10,14 +10,15 @@ use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{
-    BHID_EnumItems, FOLDERID_AppsFolder, FOLDERID_CommonPrograms, FOLDERID_Programs,
-    IEnumShellItems, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem,
-    SHGetKnownFolderPath, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
+    BHID_EnumItems, FOLDERID_AppsFolder, FOLDERID_CommonPrograms, FOLDERID_Desktop,
+    FOLDERID_Programs, FOLDERID_PublicDesktop, IEnumShellItems, IShellItem,
+    KF_FLAG_DEFAULT, SHGetKnownFolderItem, SHGetKnownFolderPath, SIGDN_NORMALDISPLAY,
+    SIGDN_PARENTRELATIVEPARSING,
 };
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 use windows::core::{GUID, PWSTR};
 
-use super::launch::{ComApartment, resolve_executable};
+use super::launch::{ComApartment, resolve_executable, shortcut_arguments};
 
 const WINDOWS_SETTINGS_NAME: &str = "Windows Settings";
 const WINDOWS_SETTINGS_TARGET: &str = "ms-settings:";
@@ -246,7 +247,67 @@ fn discover_start_menu_entries() -> Vec<ApplicationEntry> {
     ];
     let mut entries = discover_entries(roots.into_iter().flatten());
     entries.extend(discover_apps_folder_entries());
+    entries.extend(discover_desktop_web_apps());
     entries
+}
+
+fn discover_desktop_web_apps() -> Vec<ApplicationEntry> {
+    let roots = [
+        known_folder(&FOLDERID_Desktop),
+        known_folder(&FOLDERID_PublicDesktop),
+    ];
+    let mut candidates = roots
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .flat_map(|(root_index, root)| {
+            supported_files(&root)
+                .into_iter()
+                .filter(|path| is_chromium_web_app_shortcut(path))
+                .filter_map(move |path| {
+                    let name = display_name(&path)?;
+                    (!should_exclude(&name)).then_some((
+                        name.to_lowercase(),
+                        root_index,
+                        name,
+                        path,
+                    ))
+                })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        (&left.0, left.1, path_sort_key(&left.3)).cmp(&(
+            &right.0,
+            right.1,
+            path_sort_key(&right.3),
+        ))
+    });
+    candidates
+        .into_iter()
+        .map(|(_, _, name, path)| {
+            let target = path.to_string_lossy().into_owned();
+            ApplicationEntry::new(name, target.clone(), Some(target))
+        })
+        .collect()
+}
+
+fn is_chromium_web_app_shortcut(path: &Path) -> bool {
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
+    {
+        return false;
+    }
+
+    shortcut_arguments(path).is_some_and(|arguments| chromium_web_app_arguments(&arguments))
+}
+
+fn chromium_web_app_arguments(arguments: &str) -> bool {
+    arguments.split_ascii_whitespace().any(|argument| {
+        let argument = argument.trim_matches('"').to_ascii_lowercase();
+        argument.starts_with("--app-id=") || argument.starts_with("--app=")
+    })
 }
 
 fn discover_apps_folder_entries() -> Vec<ApplicationEntry> {
@@ -520,4 +581,27 @@ fn catalog_priority(path: &Path, name: &str) -> u8 {
 
 fn path_sort_key(path: &Path) -> String {
     path.to_string_lossy().replace('/', "\\").to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chromium_web_app_arguments;
+
+    #[test]
+    fn chromium_web_app_shortcuts_require_an_app_launch_switch() {
+        let cases = [
+            ("--profile-directory=Default --app-id=abcdefghijkl", true),
+            ("--app=https://mail.proton.me/", true),
+            (
+                "\"--app-id=abcdefghijkl\" --profile-directory=Profile 1",
+                true,
+            ),
+            ("--profile-directory=Default", false),
+            ("https://mail.proton.me/", false),
+        ];
+
+        for (arguments, expected) in cases {
+            assert_eq!(chromium_web_app_arguments(arguments), expected);
+        }
+    }
 }

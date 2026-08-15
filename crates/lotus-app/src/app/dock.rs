@@ -4,8 +4,9 @@ use std::time::{Duration, Instant};
 use lotus_core::dock::DockItem;
 use lotus_core::notification::count_for_item;
 use lotus_dock::interaction::{DockInteraction, map_visual_insertion_slot};
-use lotus_dock::model::{DockModel, SettingsImpact, project_snapshot};
+use lotus_dock::model::{DockModel, PinLaunch, SettingsImpact, project_snapshot};
 use lotus_settings::appearance::theme_for;
+use lotus_windows::launch::durable_launch_for_executable;
 
 use super::{
     ActivationError, AppError, DockAnchor, DockBadge, DockContextRequest, DockHitTarget,
@@ -362,7 +363,21 @@ impl DockRuntime {
             .get(source_index)
             .cloned()
             .map(|item| (source_index, item));
-        if !self.model.set_pinned(source_index, pinned)? {
+        let launch = if pinned {
+            previous.as_ref().and_then(|(_, item)| {
+                let launch = durable_launch_for_executable(&item.executable_path)?;
+                Some(PinLaunch {
+                    target: launch.target,
+                    arguments: launch.arguments,
+                    icon_source: launch
+                        .icon_source
+                        .or_else(|| Some(item.icon_source.clone())),
+                })
+            })
+        } else {
+            None
+        };
+        if !self.model.set_pinned(source_index, pinned, launch)? {
             return Ok(false);
         }
         if let Some((index, item)) = previous {

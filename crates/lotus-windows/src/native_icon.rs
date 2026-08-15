@@ -20,7 +20,8 @@ use windows::Win32::UI::WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx
 use windows::core::{Error, PCWSTR};
 
 use super::launch::{
-    resolve_executable, resolve_internet_shortcut_icon, resolve_shortcut_icon,
+    durable_launch_for_executable, resolve_executable, resolve_internet_shortcut_icon,
+    resolve_shortcut_icon,
 };
 use crate::NativeError;
 
@@ -98,7 +99,11 @@ fn icon_extraction_source(source: &Path) -> Option<(PathBuf, i32)> {
     if has_extension(source, "url") {
         return resolve_internet_shortcut_icon(source);
     }
-    let resolved = resolve_executable(&source.to_string_lossy());
+    let source_text = source.to_string_lossy();
+    let resolved = durable_launch_for_executable(&source_text)
+        .and_then(|launch| launch.icon_source)
+        .map(PathBuf::from)
+        .or_else(|| resolve_executable(&source_text));
     select_extraction_path(source.to_owned(), resolved).map(|path| (path, 0))
 }
 

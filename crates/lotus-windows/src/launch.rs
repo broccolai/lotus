@@ -15,6 +15,42 @@ use windows::core::{Interface, PCWSTR};
 
 const WINDOWS_PATH_CAPACITY: usize = 32_768;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurableLaunch {
+    pub target: String,
+    pub arguments: Option<String>,
+    pub icon_source: Option<String>,
+}
+
+pub fn durable_launch_for_executable(executable: &str) -> Option<DurableLaunch> {
+    let executable = Path::new(executable);
+    let version_directory = executable.parent()?;
+    let version_name = version_directory.file_name()?.to_str()?;
+    if !version_name
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("app-"))
+    {
+        return None;
+    }
+
+    let install_directory = version_directory.parent()?;
+    let updater = install_directory.join("Update.exe");
+    if !updater.is_file() {
+        return None;
+    }
+
+    let executable_name = executable.file_name()?.to_str()?;
+    let icon = install_directory.join("app.ico");
+    Some(DurableLaunch {
+        target: updater.to_string_lossy().into_owned(),
+        arguments: Some(format!(
+            "--processStart {}",
+            quoted_argument(executable_name)
+        )),
+        icon_source: icon.is_file().then(|| icon.to_string_lossy().into_owned()),
+    })
+}
+
 pub fn resolve_executable(target: &str) -> Option<PathBuf> {
     let target = prepare_target(target)?;
     let expanded = expand_environment_variables(target)?;
@@ -63,6 +99,28 @@ pub(crate) fn resolve_shortcut_icon(shortcut_path: &Path) -> Option<(PathBuf, i3
         return None;
     }
     Some((std::path::absolute(candidate).ok()?, icon_index))
+}
+
+pub(crate) fn shortcut_arguments(shortcut_path: &Path) -> Option<String> {
+    if !has_extension(shortcut_path, "lnk") {
+        return None;
+    }
+
+    let _apartment = ComApartment::enter()?;
+    // SAFETY: COM is initialized for this thread and ShellLink is an in-process COM class.
+    let shell_link: IShellLinkW =
+        unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.ok()?;
+    let persist: IPersistFile = shell_link.cast().ok()?;
+    let shortcut = wide_path_null(shortcut_path);
+    // SAFETY: `shortcut` is a live null-terminated path for this synchronous COM call.
+    unsafe { persist.Load(PCWSTR(shortcut.as_ptr()), STGM_READ) }.ok()?;
+
+    let mut arguments = vec![0_u16; WINDOWS_PATH_CAPACITY];
+    // SAFETY: `arguments` is valid writable UTF-16 storage for this synchronous COM call.
+    unsafe { shell_link.GetArguments(&mut arguments) }.ok()?;
+    let arguments = String::from_utf16_lossy(utf16_without_nul(&arguments));
+    let arguments = arguments.trim();
+    (!arguments.is_empty()).then(|| arguments.to_owned())
 }
 
 pub(crate) fn resolve_internet_shortcut_icon(
@@ -154,6 +212,14 @@ fn has_extension(path: &Path, expected: &str) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
+}
+
+fn quoted_argument(value: &str) -> String {
+    if value.contains(char::is_whitespace) {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    } else {
+        value.to_owned()
+    }
 }
 
 pub(super) fn expand_environment_variables(source: &str) -> Option<String> {
