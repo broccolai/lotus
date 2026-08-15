@@ -56,14 +56,13 @@ fn process_message(
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
 ) -> Result<(), AppError> {
-    let shell_fullscreen_wake = fullscreen_notification(
+    let shell_fullscreen = fullscreen_notification(
         message.is_thread_message(),
         message.id(),
         message.parameter(),
-    )
-    .is_some();
-    if shell_fullscreen_wake {
-        window_tracker.refresh_fullscreen();
+    );
+    if let Some(fullscreen) = shell_fullscreen {
+        window_tracker.set_shell_fullscreen(fullscreen);
     }
     handle_tracker_message(
         message,
@@ -75,7 +74,7 @@ fn process_message(
         dock_model,
         auxiliary,
     )?;
-    if shell_fullscreen_wake && !runtime.onboarding_required {
+    if shell_fullscreen.is_some() && !runtime.onboarding_required {
         apply_fullscreen_visibility(
             dock,
             window_tracker,

@@ -100,6 +100,15 @@ impl StatusRuntime {
         }
     }
 
+    pub(super) fn set_fullscreen_occluded(&self, occluded: bool) -> Result<(), AppError> {
+        for zone in &self.zones {
+            if zone.zone.is_some() {
+                zone.window.set_fullscreen_occluded(occluded)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn refresh(
         &mut self,
         settings: &DockSettings,

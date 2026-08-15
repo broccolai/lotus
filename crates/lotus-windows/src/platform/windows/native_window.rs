@@ -3,10 +3,10 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, RECT};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, GetClientRect, HWND_TOPMOST, IsWindow, IsWindowVisible,
-    SET_WINDOW_POS_FLAGS, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetWindowPos, ShowWindow, WINDOW_EX_STYLE,
-    WINDOW_STYLE,
+    CreateWindowExW, DestroyWindow, GetClientRect, HWND_BOTTOM, HWND_TOPMOST, IsWindow,
+    IsWindowVisible, SET_WINDOW_POS_FLAGS, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetWindowPos,
+    ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE,
 };
 use windows::core::PCWSTR;
 
@@ -51,6 +51,22 @@ pub struct WindowCreation {
 pub enum Activation {
     Activate,
     KeepInactive,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WindowLayer {
+    Bottom,
+    Topmost,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct WindowPlacement {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub activation: Activation,
+    pub show: bool,
 }
 
 pub struct NativeWindow<State> {
@@ -129,16 +145,48 @@ impl<State> NativeWindow<State> {
         activation: Activation,
         show: bool,
     ) -> Result<()> {
-        let mut flags = if activation == Activation::KeepInactive {
+        self.place_at_layer(
+            WindowLayer::Topmost,
+            WindowPlacement {
+                x,
+                y,
+                width,
+                height,
+                activation,
+                show,
+            },
+        )
+    }
+
+    pub(crate) fn place_at_layer(
+        &self,
+        layer: WindowLayer,
+        placement: WindowPlacement,
+    ) -> Result<()> {
+        let mut flags = if placement.activation == Activation::KeepInactive {
             SWP_NOACTIVATE
         } else {
             SET_WINDOW_POS_FLAGS::default()
         };
-        if show {
+        if placement.show {
             flags |= SWP_SHOWWINDOW;
         }
+        let insert_after = match layer {
+            WindowLayer::Bottom => HWND_BOTTOM,
+            WindowLayer::Topmost => HWND_TOPMOST,
+        };
         // SAFETY: This guard owns the HWND; geometry is already validated physical-pixel input.
-        unsafe { SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, width, height, flags)? };
+        unsafe {
+            SetWindowPos(
+                self.hwnd,
+                Some(insert_after),
+                placement.x,
+                placement.y,
+                placement.width,
+                placement.height,
+                flags,
+            )?;
+        }
         Ok(())
     }
 
@@ -163,6 +211,27 @@ impl<State> NativeWindow<State> {
                 0,
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn present_at_layer(&self, layer: WindowLayer) -> Result<()> {
+        let insert_after = match layer {
+            WindowLayer::Bottom => HWND_BOTTOM,
+            WindowLayer::Topmost => HWND_TOPMOST,
+        };
+        // SAFETY: This changes only the z-order and visibility of the owned HWND without
+        // activating, moving, or resizing it.
+        unsafe {
+            SetWindowPos(
+                self.hwnd,
+                Some(insert_after),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             )?;
         }
         Ok(())

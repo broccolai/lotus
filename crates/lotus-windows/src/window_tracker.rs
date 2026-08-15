@@ -46,6 +46,7 @@ pub struct WindowTracker {
     timer_id: Option<usize>,
     reconcile_timer_id: usize,
     fullscreen_window: Option<WindowId>,
+    shell_fullscreen_window: Option<WindowId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +76,7 @@ impl WindowTracker {
             timer_id: None,
             reconcile_timer_id: 0,
             fullscreen_window: None,
+            shell_fullscreen_window: None,
         };
         for event in TRACKED_EVENTS {
             tracker.hooks.push(OwnedWinEventHook::install(event)?);
@@ -89,13 +91,35 @@ impl WindowTracker {
     }
 
     pub const fn fullscreen_window(&self) -> Option<WindowId> {
-        self.fullscreen_window
+        match self.shell_fullscreen_window {
+            Some(window) => Some(window),
+            None => self.fullscreen_window,
+        }
     }
 
     pub fn fullscreen_on_same_monitor(&self, window: WindowHandle) -> bool {
-        self.fullscreen_window
+        self.shell_fullscreen_window
+            .or(self.fullscreen_window)
             .and_then(hwnd_from_window_id)
             .is_some_and(|fullscreen| same_monitor(window.raw(), fullscreen))
+    }
+
+    pub fn set_shell_fullscreen(&mut self, fullscreen: bool) {
+        if fullscreen {
+            self.shell_fullscreen_window = observe_foreground_window(self.own_process_id);
+            if self.shell_fullscreen_window.is_none() {
+                self.fullscreen_window = observe_fullscreen_window(self.own_process_id);
+            }
+            return;
+        }
+
+        let ended_window = self.shell_fullscreen_window.take();
+        let foreground = observe_foreground_window(self.own_process_id);
+        self.fullscreen_window = if foreground == ended_window {
+            None
+        } else {
+            observe_fullscreen_window(self.own_process_id)
+        };
     }
 
     pub fn handle_message(
@@ -154,6 +178,12 @@ impl WindowTracker {
     }
 
     pub fn refresh_fullscreen(&mut self) {
+        let foreground = observe_foreground_window(self.own_process_id);
+        if self.shell_fullscreen_window.is_some()
+            && self.shell_fullscreen_window != foreground
+        {
+            self.shell_fullscreen_window = None;
+        }
         self.fullscreen_window = observe_fullscreen_window(self.own_process_id);
     }
 
@@ -336,23 +366,28 @@ fn window_icon_identity(title: &str, executable_path: PathBuf) -> PathBuf {
 }
 
 fn observe_fullscreen_window(own_process_id: u32) -> Option<WindowId> {
+    let id = observe_foreground_window(own_process_id)?;
+    let hwnd = hwnd_from_window_id(id)?;
+    let window = window_bounds(hwnd)?;
+    let monitor = monitor_bounds(hwnd)?;
+    is_fullscreen_foreground(
+        true,
+        screen_rect(window),
+        screen_rect(monitor),
+        FULLSCREEN_EDGE_TOLERANCE,
+    )
+    .then_some(id)
+}
+
+fn observe_foreground_window(own_process_id: u32) -> Option<WindowId> {
     // SAFETY: Foreground lookup is read-only and may validly return null.
     let hwnd = unsafe { GetForegroundWindow() };
     let id = window_id(hwnd)?;
     let mut process_id = 0;
     // SAFETY: `process_id` is valid writable storage and querying does not mutate the window.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut process_id)) };
-    let eligible =
-        process_id != 0 && process_id != own_process_id && should_include_window(hwnd);
-    let window = window_bounds(hwnd)?;
-    let monitor = monitor_bounds(hwnd)?;
-    is_fullscreen_foreground(
-        eligible,
-        screen_rect(window),
-        screen_rect(monitor),
-        FULLSCREEN_EDGE_TOLERANCE,
-    )
-    .then_some(id)
+    (process_id != 0 && process_id != own_process_id && should_include_window(hwnd))
+        .then_some(id)
 }
 
 fn window_bounds(hwnd: HWND) -> Option<RECT> {

@@ -21,6 +21,7 @@ use windows::core::w;
 
 use crate::NativeError;
 use crate::exclusive_taskbar::{ExclusiveTaskbarError, ExclusiveTaskbarGuard};
+use crate::explorer_bridge::ExplorerBridgeLease;
 use crate::taskbar_state::{TaskbarStateError, TaskbarStateGuard};
 use crate::window::{AppBarLayout, DockWindow};
 
@@ -74,6 +75,7 @@ impl ShellIntegration {
 
         let taskbar = if settings.exclusive_taskbar_replacement {
             TaskbarOwnership::Exclusive {
+                _bridge: ExplorerBridgeLease::attach(dock.hwnd()),
                 _guard: ExclusiveTaskbarGuard::start()?,
             }
         } else {
@@ -97,8 +99,13 @@ impl Drop for ShellIntegration {
 }
 
 enum TaskbarOwnership {
-    Autohide { _guard: TaskbarStateGuard },
-    Exclusive { _guard: ExclusiveTaskbarGuard },
+    Autohide {
+        _guard: TaskbarStateGuard,
+    },
+    Exclusive {
+        _bridge: Option<ExplorerBridgeLease>,
+        _guard: ExclusiveTaskbarGuard,
+    },
 }
 
 struct AppBarController {

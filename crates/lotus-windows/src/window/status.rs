@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::rc::Rc;
 
 use lotus_core::settings::{DockSettings, DockZone};
@@ -15,7 +16,7 @@ use crate::NativeError;
 use crate::platform::windows::backdrop;
 use crate::platform::windows::display::{Display, primary_display, secondary_displays};
 use crate::platform::windows::native_window::{
-    Activation, NativeWindow, WindowCreation, WindowHandle,
+    Activation, NativeWindow, WindowCreation, WindowHandle, WindowLayer, WindowPlacement,
 };
 
 type Result<T> = std::result::Result<T, NativeError>;
@@ -24,6 +25,7 @@ pub struct StatusWindow {
     window: NativeWindow<WindowState>,
     _class: Rc<WindowClass>,
     display: Option<Display>,
+    fullscreen_occluded: Cell<bool>,
 }
 
 impl StatusWindow {
@@ -72,6 +74,7 @@ impl StatusWindow {
             window,
             _class: class,
             display,
+            fullscreen_occluded: Cell::new(false),
         })
     }
 
@@ -142,8 +145,17 @@ impl StatusWindow {
         self.window
             .state()
             .set_corner_radius(settings.corner_radius);
-        self.window
-            .place_topmost(x, y, width, height, Activation::KeepInactive, false)?;
+        self.window.place_at_layer(
+            self.presentation_layer(),
+            WindowPlacement {
+                x,
+                y,
+                width,
+                height,
+                activation: Activation::KeepInactive,
+                show: false,
+            },
+        )?;
         apply_rounded_region(self.window.hwnd(), settings.corner_radius);
         Ok(())
     }
@@ -194,8 +206,17 @@ impl StatusWindow {
         self.window
             .state()
             .set_corner_radius(settings.corner_radius);
-        self.window
-            .place_topmost(x, y, width, height, Activation::KeepInactive, false)?;
+        self.window.place_at_layer(
+            self.presentation_layer(),
+            WindowPlacement {
+                x,
+                y,
+                width,
+                height,
+                activation: Activation::KeepInactive,
+                show: false,
+            },
+        )?;
         apply_rounded_region(self.window.hwnd(), settings.corner_radius);
         Ok(())
     }
@@ -208,6 +229,14 @@ impl StatusWindow {
         }
     }
 
+    pub fn set_fullscreen_occluded(&self, occluded: bool) -> Result<()> {
+        let changed = self.fullscreen_occluded.replace(occluded) != occluded;
+        if changed || !self.window.is_visible() {
+            self.window.present_at_layer(self.presentation_layer())?;
+        }
+        Ok(())
+    }
+
     pub fn set_animation_active(&self, active: bool) -> Result<()> {
         self.window
             .state()
@@ -216,6 +245,14 @@ impl StatusWindow {
 
     pub fn drain_events(&mut self) -> impl Iterator<Item = WindowEvent> + '_ {
         self.window.state_mut().drain()
+    }
+
+    fn presentation_layer(&self) -> WindowLayer {
+        if self.fullscreen_occluded.get() {
+            WindowLayer::Bottom
+        } else {
+            WindowLayer::Topmost
+        }
     }
 }
 

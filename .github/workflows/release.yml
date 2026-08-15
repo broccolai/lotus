@@ -34,14 +34,14 @@ jobs:
           "LOTUS_VERSION=$version" >> $env:GITHUB_ENV
       - name: build
         shell: cmd
-        run: scripts\cargo.cmd build --release --locked -p lotus-app -p lotus-shell-bridge
+        run: scripts\cargo.cmd build --release --locked -p lotus-app -p lotus-shell-bridge -p lotus-explorer-bridge
       - name: package portable build
         shell: powershell
         run: |
           $archive = "lotus-v$env:LOTUS_VERSION-windows-x86_64.zip"
           $stage = Join-Path $env:RUNNER_TEMP "lotus"
           New-Item -ItemType Directory -Path $stage | Out-Null
-          Copy-Item target\release\lotus.exe, target\release\lotus_shell_bridge.dll, LICENSE, THIRD_PARTY_NOTICES.md, README.md -Destination $stage
+          Copy-Item target\release\lotus.exe, target\release\lotus_shell_bridge.dll, target\release\lotus_explorer_bridge.dll, LICENSE, THIRD_PARTY_NOTICES.md, README.md -Destination $stage
           Compress-Archive -Path "$stage\*" -DestinationPath $archive
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $archive" | Set-Content "$archive.sha256" -Encoding ascii

@@ -6,5 +6,5 @@ call "%~dp0cargo.cmd" fmt --all -- --check
 if errorlevel 1 exit /b %ERRORLEVEL%
 call "%~dp0cargo.cmd" clippy --workspace --all-targets --all-features -- -D warnings
 if errorlevel 1 exit /b %ERRORLEVEL%
-call "%~dp0cargo.cmd" build -p lotus-app -p lotus-shell-bridge
+call "%~dp0cargo.cmd" build -p lotus-app -p lotus-shell-bridge -p lotus-explorer-bridge
 exit /b %ERRORLEVEL%

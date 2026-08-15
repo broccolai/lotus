@@ -62,7 +62,7 @@ impl MonitorDocks {
             self.refresh_content(dock, model, graphics)?;
         }
         self.rendered_revision = model.revision();
-        self.sync_visibility(model, tracker);
+        self.sync_visibility(model, tracker)?;
         Ok(())
     }
 
@@ -70,12 +70,17 @@ impl MonitorDocks {
         self.topology_dirty = true;
     }
 
-    pub(super) fn sync_visibility(&self, model: &DockRuntime, tracker: &WindowTracker) {
+    pub(super) fn sync_visibility(
+        &self,
+        model: &DockRuntime,
+        tracker: &WindowTracker,
+    ) -> Result<(), AppError> {
         for replica in &self.docks {
             let fullscreen = tracker.fullscreen_on_same_monitor(replica.window.handle());
-            let visible = !model.settings().hide_when_fullscreen || !fullscreen;
-            replica.window.set_visible(visible);
+            let occluded = model.settings().hide_when_fullscreen && fullscreen;
+            replica.window.set_fullscreen_occluded(occluded)?;
         }
+        Ok(())
     }
 
     pub(super) fn drain_events(

@@ -2,6 +2,7 @@
 members = [
     "crates/lotus-core",
     "crates/lotus-dock",
+    "crates/lotus-explorer-bridge",
     "crates/lotus-media",
     "crates/lotus-search",
     "crates/lotus-settings",
@@ -15,7 +16,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.14.2"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
@@ -27,6 +28,7 @@ euclid = "0.22.14"
 image = { version = "0.25.8", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "webp"] }
 lotus-core = { path = "crates/lotus-core" }
 lotus-dock = { path = "crates/lotus-dock" }
+lotus-explorer-bridge = { path = "crates/lotus-explorer-bridge" }
 lotus-media = { path = "crates/lotus-media" }
 lotus-search = { path = "crates/lotus-search" }
 lotus-settings = { path = "crates/lotus-settings" }

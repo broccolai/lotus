@@ -21,7 +21,8 @@ use crate::platform::windows::backdrop;
 use crate::platform::windows::display::{ScreenArea, primary_display};
 use crate::platform::windows::interaction::drag_threshold;
 use crate::platform::windows::native_window::{
-    Activation, NativeWindow, WindowCreation, WindowHandle, current_instance,
+    Activation, NativeWindow, WindowCreation, WindowHandle, WindowLayer, WindowPlacement,
+    current_instance,
 };
 use crate::window::events::SignedPoint;
 use crate::window::procedure::{WindowClass, WindowEvent, WindowState};
@@ -36,6 +37,7 @@ pub struct DockWindow {
     window: NativeWindow<WindowState>,
     class: Rc<WindowClass>,
     appbar_active: Cell<bool>,
+    fullscreen_occluded: Cell<bool>,
 }
 
 impl DockWindow {
@@ -69,6 +71,7 @@ impl DockWindow {
             window,
             class,
             appbar_active: Cell::new(false),
+            fullscreen_occluded: Cell::new(false),
         })
     }
 
@@ -86,6 +89,14 @@ impl DockWindow {
 
     pub fn set_visible(&self, visible: bool) -> bool {
         self.apply_visibility(visible)
+    }
+
+    pub fn set_fullscreen_occluded(&self, occluded: bool) -> Result<bool> {
+        let changed = self.fullscreen_occluded.replace(occluded) != occluded;
+        if changed || !self.window.is_visible() {
+            self.window.present_at_layer(self.presentation_layer())?;
+        }
+        Ok(changed)
     }
 
     pub fn is_visible(&self) -> bool {
@@ -116,13 +127,16 @@ impl DockWindow {
         self.window
             .state()
             .set_corner_radius(settings.corner_radius);
-        self.window.place_topmost(
-            x,
-            rect.top,
-            width,
-            height,
-            Activation::KeepInactive,
-            false,
+        self.window.place_at_layer(
+            self.presentation_layer(),
+            WindowPlacement {
+                x,
+                y: rect.top,
+                width,
+                height,
+                activation: Activation::KeepInactive,
+                show: false,
+            },
         )?;
         self.appbar_active.set(true);
         super::procedure::apply_rounded_region(self.hwnd(), settings.corner_radius);
@@ -170,13 +184,16 @@ impl DockWindow {
             dpi.physical_i32(EDGE_INSET_DIP),
         );
 
-        self.window.place_topmost(
-            x,
-            y,
-            size.width,
-            size.height,
-            Activation::KeepInactive,
-            false,
+        self.window.place_at_layer(
+            self.presentation_layer(),
+            WindowPlacement {
+                x,
+                y,
+                width: size.width,
+                height: size.height,
+                activation: Activation::KeepInactive,
+                show: false,
+            },
         )?;
 
         super::procedure::apply_rounded_region(hwnd, settings.corner_radius);
@@ -253,6 +270,14 @@ impl DockWindow {
 
     pub fn create_secondary_dock_windows(&self) -> Result<Vec<StatusWindow>> {
         StatusWindow::create_secondary_displays(&self.class, self.hwnd())
+    }
+
+    fn presentation_layer(&self) -> WindowLayer {
+        if self.fullscreen_occluded.get() {
+            WindowLayer::Bottom
+        } else {
+            WindowLayer::Topmost
+        }
     }
 
     pub fn place_secondary_dock_window(
