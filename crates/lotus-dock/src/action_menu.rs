@@ -3,19 +3,17 @@ use lotus_ui::geometry::{
 };
 use lotus_ui::theme::Theme;
 
-const BUTTON_DIPS: u32 = 36;
+const WIDTH_DIPS: u32 = 196;
+const ROW_DIPS: u32 = 42;
 const GAP_DIPS: u32 = 4;
 const OUTER_PADDING_DIPS: u32 = 4;
-const ITEM_COUNT: u32 = 5;
-const WIDTH_DIPS: u32 =
-    OUTER_PADDING_DIPS * 2 + BUTTON_DIPS * ITEM_COUNT + GAP_DIPS * (ITEM_COUNT - 1);
-const HEIGHT_DIPS: u32 = OUTER_PADDING_DIPS * 2 + BUTTON_DIPS;
+const ITEM_COUNT: u32 = 3;
+const HEIGHT_DIPS: u32 =
+    OUTER_PADDING_DIPS * 2 + ROW_DIPS * ITEM_COUNT + GAP_DIPS * (ITEM_COUNT - 1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
     OpenSettings,
-    OpenVolumeMixer,
-    OpenTrayOverflow,
     RequestShutdown,
     QuitLotus,
 }
@@ -75,57 +73,11 @@ impl ActionMenu {
             .expect("context menu dimensions are nonzero")
     }
 
-    pub fn items(&self) -> [(Action, PhysicalRect); 5] {
-        let padding = self.scale(OUTER_PADDING_DIPS);
-        let button = self.scale(BUTTON_DIPS);
-        let gap = self.scale(GAP_DIPS);
+    pub fn items(&self) -> [(Action, PhysicalRect); 3] {
         [
-            (
-                Action::RequestShutdown,
-                physical_rect(padding, padding, button, button),
-            ),
-            (
-                Action::OpenVolumeMixer,
-                physical_rect(
-                    padding.saturating_add(button).saturating_add(gap),
-                    padding,
-                    button,
-                    button,
-                ),
-            ),
-            (
-                Action::OpenSettings,
-                physical_rect(
-                    padding
-                        .saturating_add(button.saturating_mul(2))
-                        .saturating_add(gap.saturating_mul(2)),
-                    padding,
-                    button,
-                    button,
-                ),
-            ),
-            (
-                Action::OpenTrayOverflow,
-                physical_rect(
-                    padding
-                        .saturating_add(button.saturating_mul(3))
-                        .saturating_add(gap.saturating_mul(3)),
-                    padding,
-                    button,
-                    button,
-                ),
-            ),
-            (
-                Action::QuitLotus,
-                physical_rect(
-                    padding
-                        .saturating_add(button.saturating_mul(4))
-                        .saturating_add(gap.saturating_mul(4)),
-                    padding,
-                    button,
-                    button,
-                ),
-            ),
+            (Action::RequestShutdown, self.row_bounds(0)),
+            (Action::OpenSettings, self.row_bounds(1)),
+            (Action::QuitLotus, self.row_bounds(2)),
         ]
     }
 
@@ -159,10 +111,8 @@ impl ActionMenu {
     pub fn move_selection(&mut self, _direction: Direction) -> bool {
         let selected = match self.keyboard_selected {
             None | Some(Action::QuitLotus) => Action::RequestShutdown,
-            Some(Action::RequestShutdown) => Action::OpenVolumeMixer,
-            Some(Action::OpenVolumeMixer) => Action::OpenSettings,
-            Some(Action::OpenSettings) => Action::OpenTrayOverflow,
-            Some(Action::OpenTrayOverflow) => Action::QuitLotus,
+            Some(Action::RequestShutdown) => Action::OpenSettings,
+            Some(Action::OpenSettings) => Action::QuitLotus,
         };
         let changed = self.keyboard_selected != Some(selected) || self.hovered.is_some();
         self.keyboard_selected = Some(selected);
@@ -176,6 +126,20 @@ impl ActionMenu {
         self.items()
             .into_iter()
             .find_map(|(action, bounds)| bounds.contains(point).then_some(action))
+    }
+
+    fn row_bounds(&self, index: u32) -> PhysicalRect {
+        let padding = self.scale(OUTER_PADDING_DIPS);
+        let row = self.scale(ROW_DIPS);
+        let gap = self.scale(GAP_DIPS);
+        let top = padding.saturating_add(index.saturating_mul(row.saturating_add(gap)));
+
+        physical_rect(
+            padding,
+            top,
+            self.scale(WIDTH_DIPS).saturating_sub(padding * 2),
+            row,
+        )
     }
 
     fn scale(&self, dips: u32) -> u32 {

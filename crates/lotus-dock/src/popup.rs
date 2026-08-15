@@ -12,6 +12,8 @@ const PADDING_DIP: u32 = 4;
 const GAP_DIP: u32 = 4;
 const APP_WIDTH_DIP: u32 = 196;
 const APP_ROW_DIP: u32 = 42;
+const POWER_WIDTH_DIP: u32 = 220;
+const POWER_ROW_DIP: u32 = 44;
 const COMPACT_WIDTH_DIP: u32 = 320;
 const COMPACT_ROW_DIP: u32 = 46;
 const THUMBNAIL_CARD_WIDTH_DIP: u32 = 224;
@@ -50,8 +52,17 @@ pub enum AppMenuAction {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PowerAction {
+    Lock,
+    Restart,
+    ShutDown,
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PopupAction {
     System(SystemAction),
+    Power(PowerAction),
     App(AppMenuAction),
     Activate(WindowId),
     CloseWindow(WindowId),
@@ -60,9 +71,9 @@ pub enum PopupAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PopupSymbol {
     Power,
-    Volume,
+    Lock,
+    Restart,
     Settings,
-    Tray,
     Quit,
     Open,
     Pin,
@@ -108,6 +119,7 @@ pub struct DockPopup<Asset> {
 
 enum PopupKind<Asset> {
     System(Box<ActionMenu>),
+    Power,
     App {
         source_index: usize,
         entries: Vec<AppEntry>,
@@ -186,6 +198,17 @@ impl<Asset: Clone> DockPopup<Asset> {
         })
     }
 
+    pub fn power(dpi: u32) -> Option<Self> {
+        Some(Self {
+            scale: DpiScale::new(dpi)?,
+            kind: PopupKind::Power,
+            hovered: None,
+            selected: None,
+            offset: 0,
+            theme: Theme::default(),
+        })
+    }
+
     pub fn picker(
         dpi: u32,
         source_index: usize,
@@ -241,7 +264,7 @@ impl<Asset: Clone> DockPopup<Asset> {
 
     pub const fn source_index(&self) -> Option<usize> {
         match &self.kind {
-            PopupKind::System(_) => None,
+            PopupKind::System(_) | PopupKind::Power => None,
             PopupKind::App { source_index, .. }
             | PopupKind::Picker { source_index, .. } => Some(*source_index),
         }
@@ -250,13 +273,14 @@ impl<Asset: Clone> DockPopup<Asset> {
     pub const fn picker_style(&self) -> Option<WindowPickerStyle> {
         match self.kind {
             PopupKind::Picker { style, .. } => Some(style),
-            PopupKind::System(_) | PopupKind::App { .. } => None,
+            PopupKind::System(_) | PopupKind::Power | PopupKind::App { .. } => None,
         }
     }
 
     pub fn desired_size(&self) -> NonZeroPhysicalSize {
         match &self.kind {
             PopupKind::System(menu) => menu.desired_size(),
+            PopupKind::Power => self.vertical_size(POWER_WIDTH_DIP, POWER_ROW_DIP, 4),
             PopupKind::App { entries, .. } => NonZeroPhysicalSize::new(
                 self.scale.physical(APP_WIDTH_DIP),
                 self.scale.physical(
@@ -282,9 +306,24 @@ impl<Asset: Clone> DockPopup<Asset> {
                 .enumerate()
                 .map(|(index, (action, bounds))| PopupEntry {
                     action: PopupAction::System(action),
-                    label: String::new(),
+                    label: system_label(action).to_owned(),
                     icon: PopupIcon::Symbol(system_symbol(action)),
                     bounds,
+                    preview: None,
+                    close: None,
+                    active: false,
+                    highlighted: self.highlighted(index),
+                    close_highlighted: false,
+                })
+                .collect(),
+            PopupKind::Power => power_entries()
+                .into_iter()
+                .enumerate()
+                .map(|(index, (action, label, symbol))| PopupEntry {
+                    action: PopupAction::Power(action),
+                    label: label.to_owned(),
+                    icon: PopupIcon::Symbol(symbol),
+                    bounds: self.vertical_row(index, POWER_WIDTH_DIP, POWER_ROW_DIP),
                     preview: None,
                     close: None,
                     active: false,
@@ -339,9 +378,11 @@ impl<Asset: Clone> DockPopup<Asset> {
     }
 
     pub fn selected_action(&self) -> Option<PopupAction> {
-        self.entries()
-            .get(self.selected.unwrap_or(0))
-            .map(|entry| entry.action)
+        let selected = match self.kind {
+            PopupKind::Power => self.selected?,
+            _ => self.selected.unwrap_or(0),
+        };
+        self.entries().get(selected).map(|entry| entry.action)
     }
 
     pub fn move_selection(&mut self, next: bool) -> bool {
@@ -523,6 +564,21 @@ impl<Asset: Clone> DockPopup<Asset> {
         )
     }
 
+    fn vertical_size(
+        &self,
+        width_dips: u32,
+        row_dips: u32,
+        count: u32,
+    ) -> NonZeroPhysicalSize {
+        NonZeroPhysicalSize::new(
+            self.scale.physical(width_dips),
+            self.scale.physical(
+                PADDING_DIP * 2 + row_dips * count + GAP_DIP * count.saturating_sub(1),
+            ),
+        )
+        .expect("popup dimensions are nonzero")
+    }
+
     fn highlighted(&self, index: usize) -> bool {
         self.hovered.is_some_and(|hovered| hovered.0 == index)
             || self.selected == Some(index)
@@ -573,12 +629,27 @@ impl<Asset: Clone> DockPopup<Asset> {
     }
 }
 
+const fn power_entries() -> [(PowerAction, &'static str, PopupSymbol); 4] {
+    [
+        (PowerAction::Lock, "Lock", PopupSymbol::Lock),
+        (PowerAction::Restart, "Restart", PopupSymbol::Restart),
+        (PowerAction::ShutDown, "Shut down", PopupSymbol::Power),
+        (PowerAction::Cancel, "Cancel", PopupSymbol::Close),
+    ]
+}
+
 const fn system_symbol(action: SystemAction) -> PopupSymbol {
     match action {
         SystemAction::RequestShutdown => PopupSymbol::Power,
-        SystemAction::OpenVolumeMixer => PopupSymbol::Volume,
         SystemAction::OpenSettings => PopupSymbol::Settings,
-        SystemAction::OpenTrayOverflow => PopupSymbol::Tray,
         SystemAction::QuitLotus => PopupSymbol::Quit,
+    }
+}
+
+const fn system_label(action: SystemAction) -> &'static str {
+    match action {
+        SystemAction::RequestShutdown => "Power",
+        SystemAction::OpenSettings => "Settings",
+        SystemAction::QuitLotus => "Quit Lotus",
     }
 }

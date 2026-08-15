@@ -578,9 +578,9 @@ const fn rounded(rect: D2D_RECT_F, radius: f32) -> D2D1_ROUNDED_RECT {
 const fn symbol_asset(symbol: PopupSymbol) -> SvgAsset {
     match symbol {
         PopupSymbol::Power => SvgAsset::FluentPower,
-        PopupSymbol::Volume => SvgAsset::FluentVolume,
+        PopupSymbol::Lock => SvgAsset::FluentLock,
+        PopupSymbol::Restart => SvgAsset::FluentRestart,
         PopupSymbol::Settings => SvgAsset::FluentSettings,
-        PopupSymbol::Tray => SvgAsset::FluentTray,
         PopupSymbol::Quit | PopupSymbol::Close => SvgAsset::FluentDismiss,
         PopupSymbol::Open => SvgAsset::FluentOpen,
         PopupSymbol::Pin => SvgAsset::FluentPin,

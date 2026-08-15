@@ -77,6 +77,19 @@ impl ContextMenuRuntime {
         self.open_current(anchor, graphics)
     }
 
+    pub(super) fn open_power(
+        &mut self,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        let anchor = self.anchor.ok_or(AppError::InvalidContextMenuScene)?;
+        let mut scene = ContextMenuScene::power(self.window.dpi())
+            .ok_or(AppError::InvalidContextMenuScene)?;
+        let _ = scene.set_theme(self.theme);
+        self.scene = scene;
+        self.picker_identity = None;
+        self.open_current(anchor, graphics)
+    }
+
     pub(super) fn open_picker(
         &mut self,
         anchor: SignedPoint,

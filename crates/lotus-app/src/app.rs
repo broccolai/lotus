@@ -84,6 +84,7 @@ use thiserror::Error;
 use crate::graphics::assets::SvgAsset;
 use crate::graphics::context_menu_scene::{
     AppMenuAction, ContextMenuAction, ContextMenuScene, NativePickerWindow, PopupAction,
+    PowerAction,
 };
 use crate::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
 use crate::graphics::launcher_scene::{LauncherResult, LauncherScene};

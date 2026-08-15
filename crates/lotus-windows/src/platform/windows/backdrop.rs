@@ -130,9 +130,12 @@ pub(crate) fn apply_settings_window(hwnd: HWND) {
     }
 }
 
-pub(crate) fn apply_settings_material(hwnd: HWND) {
+pub(crate) fn apply_settings_material(hwnd: HWND, settings: &DockSettings) {
     match settings_material() {
-        SettingsMaterial::Acrylic => apply_system_backdrop(hwnd, DWMWCP_ROUND),
+        SettingsMaterial::Acrylic => {
+            apply_system_backdrop(hwnd, DWMWCP_ROUND);
+            let _ = apply_explicit_acrylic(hwnd, acrylic_tint(settings));
+        }
         SettingsMaterial::Opaque => apply_settings_window(hwnd),
     }
 }

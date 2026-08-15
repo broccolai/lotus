@@ -5,8 +5,8 @@ use super::{
     AppError, AppMenuAction, AuxiliaryWindows, AuxiliaryZoneAction, CommandId,
     CompositionSurfaceState, ContextMenuAction, ContextMenuEvent, DeviceState,
     DockContextRequest, DockHitTarget, DockRuntime, DockWindow, LauncherSubmission,
-    MonitorDockAction, PointerEvent, PopupAction, RuntimePolicy, SceneSettingsKey,
-    SelectionDirection, SettingsAction, SettingsEvent, SettingsRuntime,
+    MonitorDockAction, PointerEvent, PopupAction, PowerAction, RuntimePolicy,
+    SceneSettingsKey, SelectionDirection, SettingsAction, SettingsEvent, SettingsRuntime,
     SettingsUpdateActivity, SurfaceSize, SystemStatusKind, UpdateResult, UpdateStatus,
     WindowEvent, WindowHandle, WindowSettingsKey, WindowTracker, WindowTrackerEvent,
     apply_fullscreen_visibility, confirm_install_update, confirm_restart, confirm_shutdown,
@@ -430,7 +430,9 @@ fn handle_context_menu_event(
         ContextMenuEvent::PointerReleased { x, y } => {
             let action = auxiliary.context_menu.scene.pointer_action(x, y);
             let source_index = auxiliary.context_menu.scene.source_index();
-            auxiliary.context_menu.hide();
+            if !action.is_some_and(opens_power_menu) {
+                auxiliary.context_menu.hide();
+            }
             if let Some(action) = action {
                 execute_popup_action(
                     action,
@@ -447,7 +449,9 @@ fn handle_context_menu_event(
         ContextMenuEvent::SelectionRequested => {
             let action = auxiliary.context_menu.scene.selected_action();
             let source_index = auxiliary.context_menu.scene.source_index();
-            auxiliary.context_menu.hide();
+            if !action.is_some_and(opens_power_menu) {
+                auxiliary.context_menu.hide();
+            }
             if let Some(action) = action {
                 execute_popup_action(
                     action,
@@ -505,8 +509,9 @@ fn execute_popup_action(
 ) -> Result<(), AppError> {
     match action {
         PopupAction::System(action) => {
-            execute_context_menu_action(action, dock, graphics, dock_model, auxiliary)?;
+            execute_context_menu_action(action, graphics, dock_model, auxiliary)?;
         }
+        PopupAction::Power(action) => execute_power_action(action, dock.handle()),
         PopupAction::App(action) => {
             let Some(source_index) = source_index else {
                 return Ok(());
@@ -545,6 +550,33 @@ fn execute_popup_action(
         }
     }
     Ok(())
+}
+
+const fn opens_power_menu(action: PopupAction) -> bool {
+    matches!(
+        action,
+        PopupAction::System(ContextMenuAction::RequestShutdown)
+    )
+}
+
+fn execute_power_action(action: PowerAction, owner: WindowHandle) {
+    let result = match action {
+        PowerAction::Lock => {
+            lotus_windows::desktop::lock().map_err(|error| error.to_string())
+        }
+        PowerAction::Restart => launch_target("shutdown.exe", Some("/r /t 0"))
+            .map_err(|error| error.to_string()),
+        PowerAction::ShutDown => launch_target("shutdown.exe", Some("/s /t 0"))
+            .map_err(|error| error.to_string()),
+        PowerAction::Cancel => return,
+    };
+    if let Err(error) = result {
+        show_error(
+            owner,
+            "Lotus",
+            &format!("Lotus could not complete that power action.\n\n{error}"),
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -619,7 +651,6 @@ fn execute_app_menu_action(
 
 fn execute_context_menu_action(
     action: ContextMenuAction,
-    dock: &DockWindow,
     graphics: &mut DeviceState,
     dock_model: &DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
@@ -628,36 +659,8 @@ fn execute_context_menu_action(
         ContextMenuAction::OpenSettings => {
             auxiliary.settings.open(dock_model.settings(), graphics)?;
         }
-        ContextMenuAction::OpenVolumeMixer => {
-            if let Err(error) = launch_target("sndvol.exe", None) {
-                show_error(
-                    dock.handle(),
-                    "Lotus",
-                    &format!("Lotus could not open the Windows volume mixer.\n\n{error}"),
-                );
-            }
-        }
-        ContextMenuAction::OpenTrayOverflow => {
-            if let Err(error) = lotus_windows::tray::open_overflow(dock.handle()) {
-                show_error(
-                    dock.handle(),
-                    "Lotus",
-                    &format!(
-                        "Lotus could not open the Windows notification area.\n\n{error}"
-                    ),
-                );
-            }
-        }
         ContextMenuAction::RequestShutdown => {
-            if confirm_shutdown(dock.handle())
-                && let Err(error) = launch_target("shutdown.exe", Some("/s /t 0"))
-            {
-                show_error(
-                    dock.handle(),
-                    "Lotus",
-                    &format!("Lotus could not shut down Windows.\n\n{error}"),
-                );
-            }
+            auxiliary.context_menu.open_power(graphics)?;
         }
         ContextMenuAction::QuitLotus => request_exit(0),
     }
