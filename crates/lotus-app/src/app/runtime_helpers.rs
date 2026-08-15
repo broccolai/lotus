@@ -91,9 +91,11 @@ pub(super) fn apply_fullscreen_visibility(
     launcher: &mut LauncherRuntime,
     status: &StatusRuntime,
 ) -> Result<(), AppError> {
+    let fullscreen_present = tracker.fullscreen_on_same_monitor(dock.handle());
+    let temporarily_revealed = launcher.is_visible();
     let occluded = !dock_visible(
         model.settings().hide_when_fullscreen,
-        tracker.fullscreen_on_same_monitor(dock.handle()),
+        fullscreen_present && !temporarily_revealed,
     );
     if occluded {
         launcher.hide();

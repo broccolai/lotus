@@ -163,19 +163,59 @@ fn process_message(
             &mut auxiliary.switcher,
         )?;
     }
-    if search_catalog_wake
-        && auxiliary
-            .launcher
-            .refresh_catalog_if_ready(dock, dock_model, graphics)?
-    {
-        let dock_animation = render_surface(graphics, surface, dock_model.scene())?;
-        let launcher_animation = auxiliary.launcher.render(graphics)?;
-        dock.set_animation_active(dock_animation || launcher_animation)?;
+    if search_catalog_wake {
+        refresh_search_catalog(dock, graphics, surface, dock_model, auxiliary)?;
     }
+    sync_monitor_presentation(
+        runtime,
+        dock,
+        graphics,
+        window_tracker,
+        dock_model,
+        auxiliary,
+    )
+}
+
+fn refresh_search_catalog(
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    surface: &mut CompositionSurfaceState,
+    dock_model: &DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
+    if !auxiliary
+        .launcher
+        .refresh_catalog_if_ready(dock, dock_model, graphics)?
+    {
+        return Ok(());
+    }
+    let dock_animation = render_surface(graphics, surface, dock_model.scene())?;
+    let launcher_animation = auxiliary.launcher.render(graphics)?;
+    dock.set_animation_active(dock_animation || launcher_animation)?;
+    Ok(())
+}
+
+fn sync_monitor_presentation(
+    runtime: &RuntimePolicy<'_>,
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    window_tracker: &WindowTracker,
+    dock_model: &mut DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+) -> Result<(), AppError> {
     auxiliary
         .monitors
         .sync(dock, dock_model, graphics, window_tracker)?;
-    Ok(())
+    if runtime.onboarding_required {
+        return Ok(());
+    }
+    apply_fullscreen_visibility(
+        dock,
+        window_tracker,
+        dock_model,
+        &mut auxiliary.launcher,
+        &auxiliary.status,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

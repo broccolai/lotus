@@ -21,9 +21,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, EnumWindows,
     GA_ROOT, GW_OWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetForegroundWindow,
     GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, IsWindowVisible, KillTimer, OBJID_WINDOW, PostThreadMessageW,
-    SetTimer, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_TIMER,
-    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, KillTimer, OBJID_WINDOW,
+    PostThreadMessageW, SetTimer, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
+    WM_TIMER, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, Error, Result as WindowsResult};
 
@@ -98,10 +98,11 @@ impl WindowTracker {
     }
 
     pub fn fullscreen_on_same_monitor(&self, window: WindowHandle) -> bool {
-        self.shell_fullscreen_window
-            .or(self.fullscreen_window)
-            .and_then(hwnd_from_window_id)
-            .is_some_and(|fullscreen| same_monitor(window.raw(), fullscreen))
+        [self.shell_fullscreen_window, self.fullscreen_window]
+            .into_iter()
+            .flatten()
+            .filter_map(hwnd_from_window_id)
+            .any(|fullscreen| same_monitor(window.raw(), fullscreen))
     }
 
     pub fn set_shell_fullscreen(&mut self, fullscreen: bool) {
@@ -178,24 +179,33 @@ impl WindowTracker {
     }
 
     pub fn refresh_fullscreen(&mut self) {
-        let foreground = observe_foreground_window(self.own_process_id);
-        if self.shell_fullscreen_window.is_some()
-            && self.shell_fullscreen_window != foreground
-        {
-            self.shell_fullscreen_window = None;
-        }
+        self.validate_shell_fullscreen();
         self.fullscreen_window = observe_fullscreen_window(self.own_process_id);
     }
 
     fn refresh_if_changed(&mut self) -> Result<bool, NativeError> {
         let windows = enumerate_windows(self.own_process_id)?;
         let fullscreen_window = observe_fullscreen_window(self.own_process_id);
-        if self.windows == windows && self.fullscreen_window == fullscreen_window {
+        let previous_shell_fullscreen = self.shell_fullscreen_window;
+        self.validate_shell_fullscreen();
+        if self.windows == windows
+            && self.fullscreen_window == fullscreen_window
+            && self.shell_fullscreen_window == previous_shell_fullscreen
+        {
             return Ok(false);
         }
         self.windows = windows;
         self.fullscreen_window = fullscreen_window;
         Ok(true)
+    }
+
+    fn validate_shell_fullscreen(&mut self) {
+        if self
+            .shell_fullscreen_window
+            .is_some_and(|window| !is_fullscreen_window(window))
+        {
+            self.shell_fullscreen_window = None;
+        }
     }
 }
 
@@ -367,16 +377,29 @@ fn window_icon_identity(title: &str, executable_path: PathBuf) -> PathBuf {
 
 fn observe_fullscreen_window(own_process_id: u32) -> Option<WindowId> {
     let id = observe_foreground_window(own_process_id)?;
-    let hwnd = hwnd_from_window_id(id)?;
-    let window = window_bounds(hwnd)?;
-    let monitor = monitor_bounds(hwnd)?;
+    is_fullscreen_window(id).then_some(id)
+}
+
+fn is_fullscreen_window(id: WindowId) -> bool {
+    let Some(hwnd) = hwnd_from_window_id(id) else {
+        return false;
+    };
+    // SAFETY: This read-only query uses a currently observed top-level HWND.
+    if unsafe { IsIconic(hwnd) }.as_bool() || !should_include_window(hwnd) {
+        return false;
+    }
+    let Some(window) = window_bounds(hwnd) else {
+        return false;
+    };
+    let Some(monitor) = monitor_bounds(hwnd) else {
+        return false;
+    };
     is_fullscreen_foreground(
         true,
         screen_rect(window),
         screen_rect(monitor),
         FULLSCREEN_EDGE_TOLERANCE,
     )
-    .then_some(id)
 }
 
 fn observe_foreground_window(own_process_id: u32) -> Option<WindowId> {
