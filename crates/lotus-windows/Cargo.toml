@@ -14,6 +14,7 @@ lotus-dock.workspace = true
 lotus-media.workspace = true
 lotus-search.workspace = true
 lotus-settings.workspace = true
+lotus-shell-bridge.workspace = true
 lotus-switcher.workspace = true
 lotus-ui.workspace = true
 lotus-update.workspace = true

@@ -19,6 +19,7 @@ use windows::core::{BOOL, PCWSTR, w};
 
 use crate::WindowHandle;
 use crate::platform::windows::display::nearest_display_to_point;
+use crate::shell_bridge::ShellBridgeLease;
 
 const INPUT_MARKER: usize = 0x4C4F_5455;
 const VK_B: VIRTUAL_KEY = VIRTUAL_KEY(b'B' as u16);
@@ -58,24 +59,47 @@ fn open_overflow_with_anchor(
         key(VK_RETURN, KEYBD_EVENT_FLAGS::default()),
         key(VK_RETURN, KEYEVENTF_KEYUP),
     ])?;
-    place_from_owner(owner, screen_x, find_overflow);
+    place_from_owner(owner, screen_x, None, find_overflow);
     Ok(())
 }
 
 pub fn open_quick_settings(owner: WindowHandle) -> Result<bool, TrayError> {
-    open_windows_11_panel(owner, VK_A)
+    open_windows_11_panel(owner, None, VK_A)
+}
+
+pub fn open_quick_settings_at(
+    owner: WindowHandle,
+    screen_x: i32,
+) -> Result<bool, TrayError> {
+    open_windows_11_panel(owner, Some(screen_x), VK_A)
 }
 
 pub fn open_calendar(owner: WindowHandle) -> Result<bool, TrayError> {
-    open_windows_11_panel(owner, VK_N)
+    open_windows_11_panel(owner, None, VK_N)
+}
+
+pub fn open_calendar_at(owner: WindowHandle, screen_x: i32) -> Result<bool, TrayError> {
+    open_windows_11_panel(owner, Some(screen_x), VK_N)
 }
 
 fn open_windows_11_panel(
     owner: WindowHandle,
+    screen_x: Option<i32>,
     key_code: VIRTUAL_KEY,
 ) -> Result<bool, TrayError> {
     if !supports_windows_11_panels() {
         return Ok(false);
+    }
+
+    let owner_window = owner.raw();
+    let Some(anchor) = window_anchor(owner_window) else {
+        return Ok(true);
+    };
+    let bridge_window = find_shell_bridge_window();
+    let bridge =
+        bridge_window.and_then(|window| ShellBridgeLease::attach(window, owner_window));
+    if let Some(bridge) = bridge.as_ref() {
+        let _ = bridge.configure(screen_x.unwrap_or(anchor.0), anchor.1);
     }
 
     send(&[
@@ -84,25 +108,34 @@ fn open_windows_11_panel(
         key(key_code, KEYEVENTF_KEYUP),
         key(VK_LWIN, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
     ])?;
-    place_from_owner(owner, None, find_shell_panel);
+    place_flyout(
+        screen_x,
+        anchor.0,
+        anchor.1,
+        bridge.as_ref(),
+        find_shell_panel,
+    );
     Ok(true)
 }
 
 fn place_from_owner(
     owner: WindowHandle,
     screen_x: Option<i32>,
+    bridge: Option<&ShellBridgeLease>,
     find_window: impl FnMut() -> Option<HWND>,
 ) {
-    let Some(anchor) = window_anchor(owner.raw()) else {
+    let owner = owner.raw();
+    let Some(anchor) = window_anchor(owner) else {
         return;
     };
-    place_flyout(screen_x, anchor.0, anchor.1, find_window);
+    place_flyout(screen_x, anchor.0, anchor.1, bridge, find_window);
 }
 
 fn place_flyout(
     screen_x: Option<i32>,
     anchor_x: i32,
     anchor_y: i32,
+    bridge: Option<&ShellBridgeLease>,
     mut find_window: impl FnMut() -> Option<HWND>,
 ) {
     let deadline = Instant::now() + WINDOW_SETTLE_TIMEOUT;
@@ -127,10 +160,14 @@ fn place_flyout(
             continue;
         }
 
+        if let Some(bridge) = bridge {
+            let _ = bridge.configure(screen_x.unwrap_or(anchor_x), anchor_y);
+        }
+
         position_window(window, screen_x, anchor_x, anchor_y, size.0, size.1);
         if previous_size == Some(size) {
             stable_samples += 1;
-            if stable_samples >= REQUIRED_STABLE_SAMPLES {
+            if stable_samples >= REQUIRED_STABLE_SAMPLES && bridge.is_none() {
                 return;
             }
         } else {
@@ -236,7 +273,53 @@ fn find_shell_panel() -> Option<HWND> {
     result
 }
 
+fn find_shell_bridge_window() -> Option<HWND> {
+    let mut result = None;
+    // SAFETY: EnumWindows invokes the callback synchronously while `result` remains live.
+    let _ = unsafe {
+        EnumWindows(
+            Some(find_shell_bridge_window_callback),
+            LPARAM((&raw mut result).addr().cast_signed()),
+        )
+    };
+    result
+}
+
+unsafe extern "system" fn find_shell_bridge_window_callback(
+    window: HWND,
+    state: LPARAM,
+) -> BOOL {
+    let Some(class_name) = window_class_name(window) else {
+        return BOOL(1);
+    };
+    if !shell_panel_class_name(&class_name) {
+        return BOOL(1);
+    }
+
+    let mut process_id = 0;
+    // SAFETY: EnumWindows supplied a valid HWND and the process ID output remains writable.
+    unsafe { GetWindowThreadProcessId(window, Some(&raw mut process_id)) };
+    if !process_is_shell_host(process_id) {
+        return BOOL(1);
+    }
+
+    // SAFETY: `state` points to the live result supplied to synchronous EnumWindows.
+    unsafe { *(state.0 as *mut Option<HWND>) = Some(window) };
+    BOOL(0)
+}
+
 unsafe extern "system" fn find_shell_panel_window(window: HWND, state: LPARAM) -> BOOL {
+    // SAFETY: EnumWindows supplied a valid HWND and visibility is queried synchronously.
+    if !unsafe { IsWindowVisible(window) }.as_bool() {
+        return BOOL(1);
+    }
+    let Some(rect) = window_rect(window) else {
+        return BOOL(1);
+    };
+    if rect.right <= rect.left || rect.bottom <= rect.top {
+        return BOOL(1);
+    }
+
     let mut process_id = 0;
     // SAFETY: EnumWindows supplied a valid HWND and the process ID output remains writable.
     unsafe { GetWindowThreadProcessId(window, Some(&raw mut process_id)) };
@@ -259,12 +342,28 @@ unsafe extern "system" fn find_shell_panel_window(window: HWND, state: LPARAM) -
 }
 
 fn shell_panel_class(window: HWND) -> bool {
+    window_class_name(window).is_some_and(|class_name| shell_panel_class_name(&class_name))
+}
+
+fn window_class_name(window: HWND) -> Option<String> {
     let mut buffer = [0_u16; 128];
     // SAFETY: The HWND is used only for this query and the UTF-16 buffer is writable.
     let length = unsafe { GetClassNameW(window, &mut buffer) };
-    let class_name =
-        String::from_utf16_lossy(&buffer[..usize::try_from(length).unwrap_or(0)]);
+    let length = usize::try_from(length).ok()?;
+    (length != 0).then(|| String::from_utf16_lossy(&buffer[..length]))
+}
+
+fn shell_panel_class_name(class_name: &str) -> bool {
     class_name == "ControlCenterWindow" || class_name == "Windows.UI.Core.CoreWindow"
+}
+
+fn process_is_shell_host(process_id: u32) -> bool {
+    crate::window_tracker::process_image_path(process_id)
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .is_some_and(|name| name.eq_ignore_ascii_case("ShellHost.exe"))
 }
 
 fn supports_windows_11_panels() -> bool {

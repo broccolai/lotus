@@ -1427,11 +1427,17 @@ fn activate_system_status(
 ) {
     let result = match kind {
         SystemStatusKind::Volume => native_panel_or_fallback(
-            lotus_windows::tray::open_quick_settings(owner),
+            anchor.map_or_else(
+                || lotus_windows::tray::open_quick_settings(owner),
+                |point| lotus_windows::tray::open_quick_settings_at(owner, point.x),
+            ),
             "sndvol.exe",
         ),
         SystemStatusKind::Network => native_panel_or_fallback(
-            lotus_windows::tray::open_quick_settings(owner),
+            anchor.map_or_else(
+                || lotus_windows::tray::open_quick_settings(owner),
+                |point| lotus_windows::tray::open_quick_settings_at(owner, point.x),
+            ),
             "ms-settings:network",
         ),
         SystemStatusKind::BackgroundApps => anchor
@@ -1441,7 +1447,10 @@ fn activate_system_status(
             )
             .map_err(|error| error.to_string()),
         SystemStatusKind::DateTime => native_panel_or_fallback(
-            lotus_windows::tray::open_calendar(owner),
+            anchor.map_or_else(
+                || lotus_windows::tray::open_calendar(owner),
+                |point| lotus_windows::tray::open_calendar_at(owner, point.x),
+            ),
             "ms-settings:dateandtime",
         ),
     };

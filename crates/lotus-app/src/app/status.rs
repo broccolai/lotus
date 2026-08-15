@@ -3,7 +3,7 @@ use lotus_media::MediaHitTarget;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::geometry::NonZeroPhysicalSize;
 
-use super::dock::{dock_anchor, metrics, status_items};
+use super::dock::{dock_anchor, metrics, popup_overlap, status_items, status_popup_center};
 use super::{
     AppError, CompositionSurfaceState, DeviceState, DockHitTarget, DockIcon, DockScene,
     DockWindow, MediaItem, SignedPoint, StatusWindow, SurfaceSize, SvgAsset,
@@ -226,8 +226,10 @@ impl ZoneSurface {
             .iter()
             .find(|item| item.kind == kind)?
             .hit_bounds;
-        let x = i32::try_from(bounds.left.saturating_add(bounds.width / 2)).ok()?;
-        let y = i32::try_from(bounds.top).ok()?;
+        let x = i32::try_from(status_popup_center(&layout.status_items)?).ok()?;
+        let y = i32::try_from(bounds.top)
+            .ok()?
+            .saturating_add(popup_overlap(self.scene.dpi()));
         self.window.client_to_screen(SignedPoint { x, y }).ok()
     }
 

@@ -18,6 +18,7 @@ pub mod launch;
 pub mod media;
 pub mod native_icon;
 pub mod search_catalog;
+mod shell_bridge;
 pub mod single_instance;
 pub mod startup;
 pub mod taskbar_badges;

@@ -146,6 +146,7 @@ const WNDPROC_PANIC_EXIT_CODE: i32 = 1;
 const SETTINGS_MIN_WIDTH_DIPS: u32 = 780;
 const SETTINGS_MIN_HEIGHT_DIPS: u32 = 540;
 const SETTINGS_DRAG_REGION_LEFT_DIPS: u32 = 220;
+const SETTINGS_DRAG_REGION_HEIGHT_DIPS: u32 = 18;
 
 pub struct WindowClass {
     instance: HINSTANCE,
@@ -608,7 +609,7 @@ fn settings_header_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 
     // SAFETY: Reading per-window DPI has no side effects on this live HWND.
     let dpi = DpiScale::from_system(unsafe { GetDpiForWindow(hwnd) });
-    let header_bottom = dpi.physical_i32(64);
+    let header_bottom = dpi.physical_i32(SETTINGS_DRAG_REGION_HEIGHT_DIPS);
     let header_left = dpi.physical_i32(SETTINGS_DRAG_REGION_LEFT_DIPS);
     let draggable = client.x >= header_left
         && client.x < bounds.right

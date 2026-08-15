@@ -30,6 +30,7 @@ VersionInfoProductVersion={#MyAppVersion}
 
 [Files]
 Source: "..\target\release\lotus.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\lotus_shell_bridge.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion

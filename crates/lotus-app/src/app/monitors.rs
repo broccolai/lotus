@@ -1,5 +1,6 @@
 use lotus_ui::geometry::NonZeroPhysicalSize;
 
+use super::dock::{popup_overlap, status_popup_center};
 use super::{
     AppError, CompositionSurfaceState, DeviceState, DockAnchor, DockContextRequest,
     DockHitTarget, DockRuntime, DockScene, DockWindow, PointerEvent, PopupAlignment,
@@ -229,7 +230,7 @@ impl MonitorDock {
         pointer_x: i32,
         pointer_y: i32,
     ) -> Option<SignedPoint> {
-        let x = if let DockHitTarget::SystemStatus(kind) = target {
+        let (x, y) = if let DockHitTarget::SystemStatus(kind) = target {
             let size = self.scene.desired_size();
             let layout = self.scene.layout(size.width(), size.height());
             let bounds = layout
@@ -237,13 +238,16 @@ impl MonitorDock {
                 .iter()
                 .find(|item| item.kind == kind)?
                 .hit_bounds;
-            i32::try_from(bounds.left.saturating_add(bounds.width / 2)).ok()?
+            (
+                i32::try_from(status_popup_center(&layout.status_items)?).ok()?,
+                i32::try_from(bounds.top)
+                    .ok()?
+                    .saturating_add(popup_overlap(self.scene.dpi())),
+            )
         } else {
-            pointer_x
+            (pointer_x, pointer_y)
         };
-        self.window
-            .client_to_screen(SignedPoint { x, y: pointer_y })
-            .ok()
+        self.window.client_to_screen(SignedPoint { x, y }).ok()
     }
 
     fn popup_target_anchor(

@@ -1,0 +1,18 @@
+[package]
+name = "lotus-shell-bridge"
+version.workspace = true
+description = "Narrow injected Windows flyout placement bridge for Lotus"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+minhook = "0.9"
+windows.workspace = true
+
+[lints]
+workspace = true

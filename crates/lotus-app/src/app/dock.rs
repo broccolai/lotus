@@ -298,13 +298,17 @@ impl DockRuntime {
             (DockHitTarget::Jirachi, DockAnchor::Right) => {
                 (size.width(), PopupAlignment::End)
             }
+            (DockHitTarget::SystemStatus(_), _) => (
+                status_popup_center(&layout.status_items)?,
+                PopupAlignment::Center,
+            ),
             _ => (
                 bounds.left.saturating_add(bounds.width / 2),
                 PopupAlignment::Center,
             ),
         };
         let anchor_x = i32::try_from(anchor_x).ok()?;
-        let overlap = i32::try_from((u64::from(self.scene.dpi()) * 6 + 48) / 96).ok()?;
+        let overlap = popup_overlap(self.scene.dpi());
         let top = i32::try_from(bounds.top).ok()?;
         Some((
             target,
@@ -656,6 +660,32 @@ impl DockRuntime {
             ),
         }
     }
+}
+
+pub(super) fn popup_overlap(dpi: u32) -> i32 {
+    i32::try_from((u64::from(dpi) * 6 + 48) / 96).unwrap_or(6)
+}
+
+pub(super) fn status_popup_center<Asset>(
+    items: &[lotus_dock::scene::LaidOutStatusItem<Asset>],
+) -> Option<u32> {
+    if let Some(item) = items
+        .iter()
+        .find(|item| item.kind == SystemStatusKind::BackgroundApps)
+    {
+        return Some(
+            item.hit_bounds
+                .left
+                .saturating_add(item.hit_bounds.width / 2),
+        );
+    }
+
+    let left = items.iter().map(|item| item.hit_bounds.left).min()?;
+    let right = items
+        .iter()
+        .map(|item| item.hit_bounds.left.saturating_add(item.hit_bounds.width))
+        .max()?;
+    Some(left.saturating_add(right.saturating_sub(left) / 2))
 }
 
 fn departure_transition(
