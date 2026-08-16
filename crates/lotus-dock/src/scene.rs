@@ -89,6 +89,15 @@ impl<Asset> SystemStatusItem<Asset> {
         }
     }
 
+    pub fn symbol(kind: SystemStatusKind, symbol: char) -> Self {
+        Self {
+            kind,
+            icon: None,
+            primary_text: symbol.into(),
+            secondary_text: String::new(),
+        }
+    }
+
     pub fn date_time(primary_text: String, secondary_text: String) -> Self {
         Self {
             kind: SystemStatusKind::DateTime,

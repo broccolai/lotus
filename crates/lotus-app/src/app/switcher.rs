@@ -1,11 +1,13 @@
 use lotus_settings::appearance::theme_for;
 use lotus_ui::theme::Theme;
+use lotus_windows::interaction::PointerCursor;
 
 use super::{
     AppError, ContextMenuRuntime, DeviceState, DockSettings, LauncherRuntime,
     NativeIconCache, NonZeroPhysicalSize, RecentOrder, SettingsRuntime, SurfaceError,
-    SwitcherCompositionSurfaceState, SwitcherEvent, SwitcherItem, SwitcherScene,
-    SwitcherSession, SwitcherWindow, WindowInfo, resolve_icon_with_native, switch_window,
+    SwitcherCompositionSurfaceState, SwitcherEvent, SwitcherHitTarget, SwitcherItem,
+    SwitcherScene, SwitcherSession, SwitcherWindow, WindowInfo, request_window_close,
+    resolve_icon_with_native, show_error, switch_window,
 };
 
 const SWITCHER_ICON_DIP: u32 = 38;
@@ -137,6 +139,41 @@ impl SwitcherRuntime {
     ) -> Result<(), AppError> {
         match event {
             SwitcherEvent::CloseRequested => self.hide(),
+            SwitcherEvent::PointerMoved { x, y } => {
+                let Some(scene) = &mut self.scene else {
+                    return Ok(());
+                };
+                let target = scene.hit_test(x, y);
+                self.window.set_pointer_cursor(
+                    if matches!(target, Some(SwitcherHitTarget::Close(_))) {
+                        PointerCursor::Hand
+                    } else {
+                        PointerCursor::Arrow
+                    },
+                );
+                if scene.pointer_move(x, y) {
+                    self.render(graphics)?;
+                }
+            }
+            SwitcherEvent::PointerLeft => {
+                self.window.set_pointer_cursor(PointerCursor::Arrow);
+                if self.scene.as_mut().is_some_and(SwitcherScene::pointer_left) {
+                    self.render(graphics)?;
+                }
+            }
+            SwitcherEvent::PointerReleased { x, y } => {
+                let target = self.scene.as_ref().and_then(|scene| scene.hit_test(x, y));
+                if let Some(SwitcherHitTarget::Close(window)) = target {
+                    self.hide();
+                    if let Err(error) = request_window_close(window) {
+                        show_error(
+                            self.window.handle(),
+                            "Lotus",
+                            &format!("Lotus could not close that window.\n\n{error}"),
+                        );
+                    }
+                }
+            }
             SwitcherEvent::Resized { width, height } => {
                 if let Some(size) = NonZeroPhysicalSize::new(width, height)
                     && let Some(surface) = &mut self.surface

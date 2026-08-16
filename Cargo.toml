@@ -16,7 +16,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.15.6"
+version = "0.16.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
@@ -49,6 +49,7 @@ ureq = { version = "3.3", default-features = false, features = ["json", "rustls"
 windows = { version = "0.62.2", features = [
     "Foundation",
     "Media_Control",
+    "Networking_Connectivity",
     "Storage_Streams",
     "Wdk_System_SystemServices",
     "Win32_Foundation",

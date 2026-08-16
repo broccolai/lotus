@@ -101,7 +101,7 @@ use crate::graphics::settings_scene::{
     SettingsSlider, SettingsUpdateActivity,
 };
 use crate::graphics::settings_surface::SettingsCompositionSurfaceState;
-use crate::graphics::switcher_scene::{SwitcherItem, SwitcherScene};
+use crate::graphics::switcher_scene::{SwitcherHitTarget, SwitcherItem, SwitcherScene};
 use crate::graphics::switcher_surface::SwitcherCompositionSurfaceState;
 use crate::graphics::{CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize};
 use crate::window::{

@@ -791,10 +791,16 @@ pub(super) fn status_items(settings: &DockSettings) -> Vec<SystemStatusItem> {
         ));
     }
     if settings.show_network_status {
-        items.push(SystemStatusItem::icon(
-            SystemStatusKind::Network,
-            SvgAsset::FluentNetwork,
-        ));
+        let item = match lotus_windows::network::connection_kind() {
+            lotus_windows::network::NetworkConnectionKind::Ethernet => {
+                SystemStatusItem::symbol(SystemStatusKind::Network, '\u{E839}')
+            }
+            lotus_windows::network::NetworkConnectionKind::Wifi
+            | lotus_windows::network::NetworkConnectionKind::Other => {
+                SystemStatusItem::icon(SystemStatusKind::Network, SvgAsset::FluentNetwork)
+            }
+        };
+        items.push(item);
     }
     if settings.show_background_apps_status {
         items.push(SystemStatusItem::icon(

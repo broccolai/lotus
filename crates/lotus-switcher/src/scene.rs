@@ -1,5 +1,7 @@
 use lotus_core::window::WindowId;
-use lotus_ui::geometry::{DpiScale, NonZeroPhysicalSize, PhysicalRect, physical_rect};
+use lotus_ui::geometry::{
+    DpiScale, NonZeroPhysicalSize, PhysicalRect, PhysicalUnsignedPoint, physical_rect,
+};
 use lotus_ui::theme::Theme;
 
 const MAX_VISIBLE_ITEMS: usize = 7;
@@ -7,6 +9,14 @@ const PADDING_DIP: u32 = 12;
 const ITEM_WIDTH_DIP: u32 = 112;
 const ITEM_HEIGHT_DIP: u32 = 100;
 const ITEM_GAP_DIP: u32 = 8;
+const CLOSE_SIZE_DIP: u32 = 24;
+const CLOSE_INSET_DIP: u32 = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SwitcherHitTarget {
+    Item(WindowId),
+    Close(WindowId),
+}
 
 #[derive(Clone)]
 pub struct SwitcherItem<Asset> {
@@ -19,6 +29,7 @@ pub struct SwitcherScene<Asset> {
     dpi: DpiScale,
     items: Vec<SwitcherItem<Asset>>,
     selected: usize,
+    hovered: Option<SwitcherHitTarget>,
     theme: Theme,
 }
 
@@ -29,6 +40,7 @@ impl<Asset> SwitcherScene<Asset> {
             dpi,
             items,
             selected,
+            hovered: None,
             theme: Theme::default(),
         })
     }
@@ -43,6 +55,10 @@ impl<Asset> SwitcherScene<Asset> {
 
     pub const fn theme(&self) -> Theme {
         self.theme
+    }
+
+    pub const fn hovered(&self) -> Option<SwitcherHitTarget> {
+        self.hovered
     }
 
     pub fn set_theme(&mut self, theme: Theme) -> bool {
@@ -72,6 +88,36 @@ impl<Asset> SwitcherScene<Asset> {
         true
     }
 
+    pub fn pointer_move(&mut self, x: i32, y: i32) -> bool {
+        let hovered = self.hit_test(x, y);
+        if self.hovered == hovered {
+            return false;
+        }
+        self.hovered = hovered;
+        true
+    }
+
+    pub fn pointer_left(&mut self) -> bool {
+        if self.hovered.take().is_none() {
+            return false;
+        }
+        true
+    }
+
+    pub fn hit_test(&self, x: i32, y: i32) -> Option<SwitcherHitTarget> {
+        let point =
+            PhysicalUnsignedPoint::new(u32::try_from(x).ok()?, u32::try_from(y).ok()?);
+        self.layout().items.into_iter().find_map(|item| {
+            if item.close.contains(point) {
+                Some(SwitcherHitTarget::Close(item.item.window))
+            } else {
+                item.bounds
+                    .contains(point)
+                    .then_some(SwitcherHitTarget::Item(item.item.window))
+            }
+        })
+    }
+
     pub fn desired_size(&self) -> NonZeroPhysicalSize {
         let count = u32::try_from(self.visible_range().len()).unwrap_or(u32::MAX);
         let width_dips = PADDING_DIP
@@ -95,22 +141,33 @@ impl<Asset> SwitcherScene<Asset> {
         let width = self.dpi.physical(ITEM_WIDTH_DIP);
         let height = self.dpi.physical(ITEM_HEIGHT_DIP);
         let gap = self.dpi.physical(ITEM_GAP_DIP);
+        let close_size = self.dpi.physical(CLOSE_SIZE_DIP);
+        let close_inset = self.dpi.physical(CLOSE_INSET_DIP);
         let items = self.items[range.clone()]
             .iter()
             .enumerate()
             .map(|(offset, item)| {
                 let offset = u32::try_from(offset).unwrap_or(u32::MAX);
+                let bounds = physical_rect(
+                    padding
+                        .saturating_add(offset.saturating_mul(width.saturating_add(gap))),
+                    padding,
+                    width,
+                    height,
+                );
                 LaidOutItem {
                     source_index: range.start
                         + usize::try_from(offset).unwrap_or(usize::MAX),
                     item,
-                    bounds: physical_rect(
-                        padding.saturating_add(
-                            offset.saturating_mul(width.saturating_add(gap)),
-                        ),
-                        padding,
-                        width,
-                        height,
+                    bounds,
+                    close: physical_rect(
+                        bounds
+                            .max_x()
+                            .saturating_sub(close_inset)
+                            .saturating_sub(close_size),
+                        bounds.min_y().saturating_add(close_inset),
+                        close_size,
+                        close_size,
                     ),
                 }
             })
@@ -136,4 +193,5 @@ pub struct LaidOutItem<'a, Asset> {
     pub source_index: usize,
     pub item: &'a SwitcherItem<Asset>,
     pub bounds: PhysicalRect,
+    pub close: PhysicalRect,
 }

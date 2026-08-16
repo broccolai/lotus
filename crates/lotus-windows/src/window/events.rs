@@ -100,6 +100,9 @@ pub enum ContextMenuEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SwitcherEvent {
     CloseRequested,
+    PointerMoved { x: i32, y: i32 },
+    PointerLeft,
+    PointerReleased { x: i32, y: i32 },
     Resized { width: u32, height: u32 },
     DpiChanged { dpi: u32 },
     RenderRequested,

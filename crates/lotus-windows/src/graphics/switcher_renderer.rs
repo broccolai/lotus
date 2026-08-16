@@ -33,7 +33,7 @@ use super::assets::{
 use super::device::GraphicsDevice;
 use super::scene::{DockIcon, RasterIcon, RasterIconId};
 use super::surface::SurfaceSize;
-use super::switcher_scene::SwitcherScene;
+use super::switcher_scene::{LaidOutItem, SwitcherHitTarget, SwitcherScene};
 use super::theme;
 
 const TARGET_DPI: f32 = 96.0;
@@ -51,6 +51,7 @@ pub(super) struct SwitcherRenderer {
     target: Option<ID2D1Bitmap1>,
     panel: ID2D1SolidColorBrush,
     selected: ID2D1SolidColorBrush,
+    close_hover: ID2D1SolidColorBrush,
     icon: ID2D1SolidColorBrush,
     text: ID2D1SolidColorBrush,
     icon_format: IDWriteTextFormat,
@@ -88,6 +89,7 @@ impl SwitcherRenderer {
             target: None,
             panel: brush(&context, &theme::d2d(theme.chrome_overlay))?,
             selected: brush(&context, &theme::d2d(theme.control_selected))?,
+            close_hover: brush(&context, &theme::d2d(theme.control_hover))?,
             icon: brush(&context, &theme::d2d(theme.accent))?,
             text: brush(&context, &theme::d2d(theme.text))?,
             icon_format,
@@ -139,6 +141,7 @@ impl SwitcherRenderer {
         }
         theme::set(&self.panel, theme.chrome_overlay);
         theme::set(&self.selected, theme.control_selected);
+        theme::set(&self.close_hover, theme.control_hover);
         theme::set(&self.icon, theme.accent);
         theme::set(&self.text, theme.text);
         let panel = rounded(
@@ -153,11 +156,18 @@ impl SwitcherRenderer {
         let layout = scene.layout();
         let icon_size = NonZeroU32::new(DpiScale::from_system(scene.dpi()).physical(38))
             .expect("switcher icon size is nonzero");
+        let close_icon_size =
+            NonZeroU32::new(DpiScale::from_system(scene.dpi()).physical(14))
+                .expect("switcher close icon size is nonzero");
         for item in &layout.items {
             if let Some(icon) = &item.item.icon {
                 self.ensure_icon(icon, icon_size)?;
             }
         }
+        self.ensure_icon(
+            &DockIcon::Embedded(SvgAsset::FluentDismiss),
+            close_icon_size,
+        )?;
         let bitmaps = layout
             .items
             .iter()
@@ -169,87 +179,179 @@ impl SwitcherRenderer {
                     .transpose()
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let close_bitmap = self
+            .bitmap(
+                &DockIcon::Embedded(SvgAsset::FluentDismiss),
+                close_icon_size,
+            )?
+            .clone();
         let transparent = TRANSPARENT;
-        // SAFETY: All targets, brushes, formats, strings, and geometry remain live through EndDraw.
-        let result = unsafe {
+        // SAFETY: The target, panel geometry, and retained brushes remain live for this transaction.
+        unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&raw const transparent));
             self.context
                 .FillRoundedRectangle(&raw const panel, &self.panel);
-            for (item, bitmap) in layout.items.into_iter().zip(&bitmaps) {
-                let bounds = rect(item.bounds);
-                if item.source_index == scene.selected() {
-                    let selected_bounds =
-                        rounded(bounds, scaled(scene, theme.radii.control));
-                    self.context
-                        .FillRoundedRectangle(&raw const selected_bounds, &self.selected);
-                }
-                let icon_bounds = D2D_RECT_F {
-                    bottom: bounds.top + (bounds.bottom - bounds.top) * 0.62,
-                    ..bounds
-                };
-                if let (Some(icon), Some(bitmap)) = (&item.item.icon, bitmap) {
-                    let icon_width = as_f32(icon_size.get());
-                    let center_x = bounds.left.midpoint(bounds.right);
-                    let icon_left = match icon {
-                        DockIcon::Raster(_) => (center_x - icon_width / 2.0).round(),
-                        DockIcon::Embedded(_) => center_x - icon_width / 2.0,
-                    };
-                    let icon_rectangle = D2D_RECT_F {
-                        left: icon_left,
-                        top: bounds.top + scaled(scene, 12.0),
-                        right: icon_left + icon_width,
-                        bottom: bounds.top + scaled(scene, 12.0) + icon_width,
-                    };
-                    self.context.DrawBitmap(
-                        bitmap,
-                        Some(&raw const icon_rectangle),
-                        1.0,
-                        icon_interpolation(icon, icon_size),
-                        None,
-                        None,
-                    );
-                } else {
-                    let initial = item
-                        .item
-                        .title
-                        .chars()
-                        .next()
-                        .unwrap_or('?')
-                        .to_uppercase()
-                        .to_string();
-                    let initial = initial.encode_utf16().collect::<Vec<_>>();
-                    self.context.DrawText(
-                        &initial,
-                        &self.icon_format,
-                        &raw const icon_bounds,
-                        &self.icon,
-                        D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                        DWRITE_MEASURING_MODE_NATURAL,
-                    );
-                }
-                let title = item.item.title.encode_utf16().collect::<Vec<_>>();
-                let title_bounds = D2D_RECT_F {
-                    top: icon_bounds.bottom - scaled(scene, 4.0),
-                    ..bounds
-                };
-                self.context.DrawText(
-                    &title,
-                    &self.text_format,
-                    &raw const title_bounds,
-                    &self.text,
-                    D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                    DWRITE_MEASURING_MODE_NATURAL,
-                );
-            }
-            self.context.EndDraw(None, None)
-        };
+        }
+        for (item, bitmap) in layout.items.into_iter().zip(&bitmaps) {
+            self.draw_item(
+                scene,
+                &item,
+                bitmap.as_ref(),
+                icon_size,
+                &close_bitmap,
+                close_icon_size,
+            );
+        }
+        // SAFETY: This closes the active transaction begun above.
+        let result = unsafe { self.context.EndDraw(None, None) };
         match result {
             Ok(()) => Ok(DrawResult::Complete),
             Err(error) if error.code() == D2DERR_RECREATE_TARGET => {
                 Ok(DrawResult::RecreateTarget)
             }
             Err(error) => Err(error.into()),
+        }
+    }
+
+    fn draw_item(
+        &self,
+        scene: &SwitcherScene,
+        item: &LaidOutItem<'_, DockIcon>,
+        bitmap: Option<&ID2D1Bitmap1>,
+        icon_size: NonZeroU32,
+        close_bitmap: &ID2D1Bitmap1,
+        close_icon_size: NonZeroU32,
+    ) {
+        let bounds = rect(item.bounds);
+        if item.source_index == scene.selected() {
+            let selected = rounded(bounds, scaled(scene, scene.theme().radii.control));
+            // SAFETY: Drawing occurs inside the active switcher transaction.
+            unsafe {
+                self.context
+                    .FillRoundedRectangle(&raw const selected, &self.selected);
+            }
+        }
+
+        let icon_bounds = D2D_RECT_F {
+            bottom: bounds.top + (bounds.bottom - bounds.top) * 0.62,
+            ..bounds
+        };
+        self.draw_artwork(scene, item, bitmap, icon_size, icon_bounds);
+
+        let title = item.item.title.encode_utf16().collect::<Vec<_>>();
+        let title_bounds = D2D_RECT_F {
+            top: icon_bounds.bottom - scaled(scene, 4.0),
+            ..bounds
+        };
+        // SAFETY: The text and retained drawing resources remain live for the synchronous call.
+        unsafe {
+            self.context.DrawText(
+                &title,
+                &self.text_format,
+                &raw const title_bounds,
+                &self.text,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+        }
+        self.draw_close(scene, item, close_bitmap, close_icon_size);
+    }
+
+    fn draw_artwork(
+        &self,
+        scene: &SwitcherScene,
+        item: &LaidOutItem<'_, DockIcon>,
+        bitmap: Option<&ID2D1Bitmap1>,
+        icon_size: NonZeroU32,
+        bounds: D2D_RECT_F,
+    ) {
+        let (Some(icon), Some(bitmap)) = (&item.item.icon, bitmap) else {
+            let initial = item
+                .item
+                .title
+                .chars()
+                .next()
+                .unwrap_or('?')
+                .to_uppercase()
+                .to_string()
+                .encode_utf16()
+                .collect::<Vec<_>>();
+            // SAFETY: The text and retained drawing resources remain live for the synchronous call.
+            unsafe {
+                self.context.DrawText(
+                    &initial,
+                    &self.icon_format,
+                    &raw const bounds,
+                    &self.icon,
+                    D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+            }
+            return;
+        };
+
+        let width = as_f32(icon_size.get());
+        let center_x = bounds.left.midpoint(bounds.right);
+        let left = match icon {
+            DockIcon::Raster(_) => (center_x - width / 2.0).round(),
+            DockIcon::Embedded(_) => center_x - width / 2.0,
+        };
+        let destination = D2D_RECT_F {
+            left,
+            top: bounds.top + scaled(scene, 12.0),
+            right: left + width,
+            bottom: bounds.top + scaled(scene, 12.0) + width,
+        };
+        // SAFETY: The bitmap and destination remain live for the synchronous draw.
+        unsafe {
+            self.context.DrawBitmap(
+                bitmap,
+                Some(&raw const destination),
+                1.0,
+                icon_interpolation(icon, icon_size),
+                None,
+                None,
+            );
+        }
+    }
+
+    fn draw_close(
+        &self,
+        scene: &SwitcherScene,
+        item: &LaidOutItem<'_, DockIcon>,
+        bitmap: &ID2D1Bitmap1,
+        icon_size: NonZeroU32,
+    ) {
+        let hovered = scene.hovered();
+        let visible = item.source_index == scene.selected()
+            || matches!(
+                hovered,
+                Some(SwitcherHitTarget::Item(window) | SwitcherHitTarget::Close(window))
+                    if window == item.item.window
+            );
+        if !visible {
+            return;
+        }
+
+        let bounds = rect(item.close);
+        // SAFETY: Drawing occurs inside the active switcher transaction.
+        unsafe {
+            if hovered == Some(SwitcherHitTarget::Close(item.item.window)) {
+                let highlight = rounded(bounds, scaled(scene, scene.theme().radii.compact));
+                self.context
+                    .FillRoundedRectangle(&raw const highlight, &self.close_hover);
+            }
+            let width = as_f32(icon_size.get());
+            let destination = centered(bounds, width);
+            self.context.DrawBitmap(
+                bitmap,
+                Some(&raw const destination),
+                1.0,
+                D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                None,
+                None,
+            );
         }
     }
 
@@ -419,6 +521,15 @@ fn rect(value: lotus_ui::geometry::PhysicalRect) -> D2D_RECT_F {
         top: as_f32(value.min_y()),
         right: as_f32(value.max_x()),
         bottom: as_f32(value.max_y()),
+    }
+}
+
+fn centered(bounds: D2D_RECT_F, size: f32) -> D2D_RECT_F {
+    D2D_RECT_F {
+        left: (bounds.left + bounds.right - size) / 2.0,
+        top: (bounds.top + bounds.bottom - size) / 2.0,
+        right: (bounds.left + bounds.right + size) / 2.0,
+        bottom: (bounds.top + bounds.bottom + size) / 2.0,
     }
 }
 

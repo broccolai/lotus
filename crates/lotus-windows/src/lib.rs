@@ -19,6 +19,7 @@ pub mod image_picker;
 pub mod launch;
 pub mod media;
 pub mod native_icon;
+pub mod network;
 pub mod search_catalog;
 mod shell_bridge;
 pub mod single_instance;

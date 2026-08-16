@@ -38,7 +38,7 @@ use super::device::GraphicsDevice;
 use super::scene::{
     DockAnchor, DockBadge, DockDragState, DockHitTarget, DockIcon, DockInteractionState,
     DockLayout, DockScene, LaidOutItem, LaidOutMedia, LaidOutStatusItem, PixelRect,
-    RasterIcon, RasterIconId,
+    RasterIcon, RasterIconId, SystemStatusKind,
 };
 use super::surface::SurfaceSize;
 use super::theme;
@@ -68,6 +68,7 @@ pub(super) enum DrawResult {
 struct StatusTextFormats {
     time: IDWriteTextFormat,
     date: IDWriteTextFormat,
+    symbol: IDWriteTextFormat,
 }
 
 #[derive(Clone)]
@@ -448,7 +449,8 @@ impl Direct2DRenderer {
         let scale = f32::from(u16::try_from(dpi).unwrap_or(u16::MAX)) / TARGET_DPI;
         let time = centered_text_format(&self.write_factory, 12.5 * scale)?;
         let date = centered_text_format(&self.write_factory, 10.5 * scale)?;
-        let formats = StatusTextFormats { time, date };
+        let symbol = centered_symbol_format(&self.write_factory, 18.0 * scale)?;
+        let formats = StatusTextFormats { time, date, symbol };
         self.status_formats.insert(dpi, formats.clone());
         Ok(formats)
     }
@@ -630,8 +632,16 @@ impl Direct2DRenderer {
                         None,
                     );
                 }
-            } else {
+            } else if item.kind == SystemStatusKind::DateTime {
                 self.draw_status_clock(item, opacity, formats);
+            } else {
+                self.draw_status_text(
+                    &item.primary_text,
+                    pixel_rectangle(item.hit_bounds),
+                    &formats.symbol,
+                    &self.status_text_brush,
+                    opacity,
+                );
             }
         }
     }
@@ -1492,6 +1502,31 @@ fn centered_text_format(
     let format = unsafe {
         factory.CreateTextFormat(
             w!("Segoe UI Variable Text"),
+            None,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            size,
+            w!("en-us"),
+        )?
+    };
+    // SAFETY: The newly created format accepts these documented layout values.
+    unsafe {
+        format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+    }
+    Ok(format)
+}
+
+fn centered_symbol_format(
+    factory: &IDWriteFactory,
+    size: f32,
+) -> Result<IDWriteTextFormat, WindowsError> {
+    // SAFETY: Static family and locale strings are NUL terminated.
+    let format = unsafe {
+        factory.CreateTextFormat(
+            w!("Segoe Fluent Icons"),
             None,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
