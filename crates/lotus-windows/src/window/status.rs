@@ -120,8 +120,10 @@ impl StatusWindow {
             .bottom
             .saturating_sub(dock_bounds.bottom)
             .max(0);
+        let edge_inset =
+            DpiScale::from_system(self.dpi()).physical_i32(settings.screen_edge_inset);
         let x = match zone {
-            DockZone::Left => display.bounds.left.saturating_add(edge_gap),
+            DockZone::Left => display.bounds.left.saturating_add(edge_inset),
             DockZone::Center => display.bounds.left.saturating_add(
                 display
                     .bounds
@@ -133,7 +135,7 @@ impl StatusWindow {
             DockZone::Right => display
                 .bounds
                 .right
-                .saturating_sub(edge_gap)
+                .saturating_sub(edge_inset)
                 .saturating_sub(width),
         };
         let y = display
@@ -180,7 +182,7 @@ impl StatusWindow {
         let edge_gap = scale_physical_gap(source_gap, source_dpi.dpi(), target_dpi.dpi());
         let width = i32::try_from(size.width()).unwrap_or(i32::MAX);
         let height = i32::try_from(size.height()).unwrap_or(i32::MAX);
-        let inset = target_dpi.physical_i32(12);
+        let inset = target_dpi.physical_i32(settings.screen_edge_inset);
         let x = match settings.dock_zone {
             DockZone::Left => display.bounds.left.saturating_add(inset),
             DockZone::Center => display.bounds.left.saturating_add(

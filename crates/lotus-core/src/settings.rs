@@ -195,6 +195,7 @@ pub struct DockSettings {
     pub horizontal_padding: u32,
     pub vertical_padding: u32,
     pub bottom_offset: u32,
+    pub screen_edge_inset: u32,
     pub corner_radius: u32,
     pub appearance_version: u32,
     pub background_opacity: f64,
@@ -244,6 +245,7 @@ impl Default for DockSettings {
             horizontal_padding: 12,
             vertical_padding: 8,
             bottom_offset: 10,
+            screen_edge_inset: 12,
             corner_radius: 8,
             appearance_version: CURRENT_APPEARANCE_VERSION,
             background_opacity: 0.56,
@@ -294,6 +296,7 @@ impl DockSettings {
         self.horizontal_padding = self.horizontal_padding.clamp(4, 48);
         self.vertical_padding = self.vertical_padding.clamp(4, 32);
         self.bottom_offset = self.bottom_offset.min(96);
+        self.screen_edge_inset = self.screen_edge_inset.min(96);
         self.corner_radius = self.corner_radius.min(48);
         self.search_result_limit = self.search_result_limit.clamp(1, 8);
         self.background_opacity = self.background_opacity.clamp(0.08, 0.95);
@@ -457,6 +460,7 @@ fn canonicalize_property_names_in_json(json: &mut [u8]) {
         "horizontalPadding",
         "verticalPadding",
         "bottomOffset",
+        "screenEdgeInset",
         "cornerRadius",
         "appearanceVersion",
         "onboardingVersion",
@@ -620,6 +624,7 @@ fn normalize_signed_integer_fields(value: &mut Value) -> Result<(), SettingsDeco
         ("horizontalPadding", 4, 48),
         ("verticalPadding", 4, 32),
         ("bottomOffset", 0, 96),
+        ("screenEdgeInset", 0, 96),
         ("cornerRadius", 0, 48),
         ("appearanceVersion", 0, 2_147_483_647),
         ("searchResultLimit", 1, 8),

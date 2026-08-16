@@ -1577,6 +1577,7 @@ fn slider_label(value: SettingsSlider) -> &'static str {
         SettingsSlider::HorizontalPadding => "Horizontal padding",
         SettingsSlider::VerticalPadding => "Vertical padding",
         SettingsSlider::BottomOffset => "Bottom offset",
+        SettingsSlider::ScreenEdgeInset => "Screen edge inset",
         SettingsSlider::CornerRadius => "Corner radius",
         SettingsSlider::BackgroundOpacity => "Material opacity",
         SettingsSlider::SearchResultLimit => "Number of search results",

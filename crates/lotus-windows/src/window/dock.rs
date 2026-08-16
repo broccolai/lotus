@@ -31,7 +31,6 @@ use crate::window::settings::SettingsWindow;
 use crate::window::status::StatusWindow;
 
 const PREVIEW_WIDTH: u32 = 118;
-const EDGE_INSET_DIP: u32 = 12;
 
 pub struct DockWindow {
     window: NativeWindow<WindowState>,
@@ -112,7 +111,8 @@ impl DockWindow {
         let reserved = layout.reserved_rect();
         let width = rect.right - rect.left;
         let height = rect.bottom - rect.top;
-        let inset = DpiScale::from_system(self.dpi()).physical_i32(EDGE_INSET_DIP);
+        let inset =
+            DpiScale::from_system(self.dpi()).physical_i32(settings.screen_edge_inset);
         let x = zone_x(
             ScreenArea {
                 left: reserved.left,
@@ -181,7 +181,7 @@ impl DockWindow {
             size,
             bottom_offset,
             settings.dock_zone,
-            dpi.physical_i32(EDGE_INSET_DIP),
+            dpi.physical_i32(settings.screen_edge_inset),
         );
 
         self.window.place_at_layer(

@@ -164,6 +164,7 @@ pub enum SettingsSlider {
     HorizontalPadding,
     VerticalPadding,
     BottomOffset,
+    ScreenEdgeInset,
     CornerRadius,
     BackgroundOpacity,
     SearchResultLimit,
@@ -176,7 +177,7 @@ impl SettingsSlider {
             Self::ItemSpacing => (2, 24),
             Self::HorizontalPadding => (4, 48),
             Self::VerticalPadding => (4, 32),
-            Self::BottomOffset => (0, 96),
+            Self::BottomOffset | Self::ScreenEdgeInset => (0, 96),
             Self::CornerRadius => (0, 48),
             Self::BackgroundOpacity => (8, 95),
             Self::SearchResultLimit => (1, 8),
@@ -830,6 +831,7 @@ impl SettingsScene {
                         SettingsControl::Slider(SettingsSlider::HorizontalPadding),
                         SettingsControl::Slider(SettingsSlider::VerticalPadding),
                         SettingsControl::Slider(SettingsSlider::BottomOffset),
+                        SettingsControl::Slider(SettingsSlider::ScreenEdgeInset),
                     ],
                 ),
                 (
@@ -1537,6 +1539,7 @@ impl SettingsScene {
             SettingsSlider::HorizontalPadding => self.draft.horizontal_padding,
             SettingsSlider::VerticalPadding => self.draft.vertical_padding,
             SettingsSlider::BottomOffset => self.draft.bottom_offset,
+            SettingsSlider::ScreenEdgeInset => self.draft.screen_edge_inset,
             SettingsSlider::CornerRadius => self.draft.corner_radius,
             SettingsSlider::BackgroundOpacity => {
                 #[allow(
@@ -1572,6 +1575,7 @@ impl SettingsScene {
             SettingsSlider::HorizontalPadding => self.draft.horizontal_padding = value,
             SettingsSlider::VerticalPadding => self.draft.vertical_padding = value,
             SettingsSlider::BottomOffset => self.draft.bottom_offset = value,
+            SettingsSlider::ScreenEdgeInset => self.draft.screen_edge_inset = value,
             SettingsSlider::CornerRadius => self.draft.corner_radius = value,
             SettingsSlider::BackgroundOpacity => {
                 self.draft.background_opacity = f64::from(value) / 100.0;

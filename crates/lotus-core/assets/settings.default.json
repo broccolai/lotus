@@ -4,6 +4,7 @@
   "horizontalPadding": 12,
   "verticalPadding": 8,
   "bottomOffset": 10,
+  "screenEdgeInset": 12,
   "cornerRadius": 8,
   "appearanceVersion": 3,
   "onboardingVersion": 0,
