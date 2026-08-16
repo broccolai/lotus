@@ -24,6 +24,11 @@ pub struct DurableLaunch {
 
 pub fn durable_launch_for_executable(executable: &str) -> Option<DurableLaunch> {
     let executable = Path::new(executable);
+
+    squirrel_launch(executable).or_else(|| steam_launch(executable))
+}
+
+fn squirrel_launch(executable: &Path) -> Option<DurableLaunch> {
     let version_directory = executable.parent()?;
     let version_name = version_directory.file_name()?.to_str()?;
     if !version_name
@@ -48,6 +53,26 @@ pub fn durable_launch_for_executable(executable: &str) -> Option<DurableLaunch> 
             quoted_argument(executable_name)
         )),
         icon_source: icon.is_file().then(|| icon.to_string_lossy().into_owned()),
+    })
+}
+
+fn steam_launch(executable: &Path) -> Option<DurableLaunch> {
+    let executable_name = executable.file_name()?.to_str()?;
+    if !executable_name.eq_ignore_ascii_case("steamwebhelper.exe") {
+        return None;
+    }
+
+    let steam = executable
+        .ancestors()
+        .skip(1)
+        .map(|directory| directory.join("steam.exe"))
+        .find(|candidate| candidate.is_file())?;
+    let target = steam.to_string_lossy().into_owned();
+
+    Some(DurableLaunch {
+        icon_source: Some(target.clone()),
+        target,
+        arguments: None,
     })
 }
 
