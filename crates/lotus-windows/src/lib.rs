@@ -3,6 +3,7 @@ mod platform;
 
 pub mod activation;
 pub mod alt_tab;
+pub mod application_identity;
 pub mod clipboard;
 pub mod clock;
 pub mod color_picker;

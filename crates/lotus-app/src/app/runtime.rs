@@ -151,6 +151,7 @@ fn process_message(
             dock,
             graphics,
             dock_model,
+            &auxiliary.applications,
             &mut auxiliary.launcher,
         )?;
     }
@@ -164,7 +165,8 @@ fn process_message(
         )?;
     }
     if search_catalog_wake {
-        refresh_search_catalog(dock, graphics, surface, dock_model, auxiliary)?;
+        let windows = window_tracker.current_windows();
+        refresh_catalog(dock, graphics, surface, windows, dock_model, auxiliary)?;
     }
     sync_monitor_presentation(
         runtime,
@@ -176,18 +178,29 @@ fn process_message(
     )
 }
 
-fn refresh_search_catalog(
+fn refresh_catalog(
     dock: &DockWindow,
     graphics: &mut DeviceState,
     surface: &mut CompositionSurfaceState,
-    dock_model: &DockRuntime,
+    windows: &[lotus_core::window::WindowInfo],
+    dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
 ) -> Result<(), AppError> {
-    if !auxiliary
-        .launcher
-        .refresh_catalog_if_ready(dock, dock_model, graphics)?
-    {
+    let catalog_changed = auxiliary.launcher.refresh_catalog_if_ready(
+        dock,
+        dock_model,
+        &auxiliary.applications,
+        graphics,
+    )?;
+    let pins_changed = dock_model.upgrade_legacy_pins(windows, &auxiliary.applications)?;
+    if !catalog_changed && !pins_changed {
         return Ok(());
+    }
+    if pins_changed {
+        resize_dock(dock, graphics, surface, dock_model)?;
+        auxiliary
+            .status
+            .sync(dock, dock_model.settings(), dock_model.media(), graphics)?;
     }
     let dock_animation = render_surface(graphics, surface, dock_model.scene())?;
     let launcher_animation = auxiliary.launcher.render(graphics)?;
@@ -643,17 +656,28 @@ fn execute_app_menu_action(
             let pinned = dock_model
                 .item(source_index)
                 .is_some_and(|item| item.is_pinned);
-            let changed = match dock_model.set_pinned(source_index, !pinned, windows) {
-                Ok(changed) => changed,
-                Err(error) => {
-                    show_error(
-                        dock.handle(),
-                        "Lotus",
-                        &format!("Lotus could not save that pin.\n\n{error}"),
-                    );
-                    false
-                }
-            };
+            let registered = (!pinned)
+                .then(|| dock_model.item(source_index))
+                .flatten()
+                .and_then(|item| {
+                    item.windows.first().and_then(|window| {
+                        auxiliary
+                            .applications
+                            .registered_application(window, &item.display_name)
+                    })
+                });
+            let changed =
+                match dock_model.set_pinned(source_index, !pinned, windows, registered) {
+                    Ok(changed) => changed,
+                    Err(error) => {
+                        show_error(
+                            dock.handle(),
+                            "Lotus",
+                            &format!("Lotus could not save that pin.\n\n{error}"),
+                        );
+                        false
+                    }
+                };
             if changed {
                 resize_dock(dock, graphics, surface, dock_model)?;
                 auxiliary.status.sync(
@@ -871,8 +895,15 @@ fn apply_settings_action(
     match action {
         SettingsAction::None => Ok(()),
         SettingsAction::Changed => context.auxiliary.settings.render(context.graphics),
-        SettingsAction::ChooseBackgroundColor => choose_settings_color(context, true),
-        SettingsAction::ChooseAccentColor => choose_settings_color(context, false),
+        SettingsAction::ChooseBackgroundColor => {
+            choose_settings_color(context, SettingsColor::Background)
+        }
+        SettingsAction::ChooseAccentColor => {
+            choose_settings_color(context, SettingsColor::Accent)
+        }
+        SettingsAction::ChooseForegroundColor => {
+            choose_settings_color(context, SettingsColor::Foreground)
+        }
         SettingsAction::ChooseMascotImage => {
             let owner = context.auxiliary.settings.window.handle();
             match lotus_windows::image_picker::choose_image(owner) {
@@ -1056,22 +1087,39 @@ fn preserve_externally_managed_settings(
     next.pinned_apps.clone_from(&current.pinned_apps);
 }
 
+#[derive(Clone, Copy)]
+enum SettingsColor {
+    Background,
+    Accent,
+    Foreground,
+}
+
 fn choose_settings_color(
     context: &mut SettingsEventContext<'_>,
-    background: bool,
+    target: SettingsColor,
 ) -> Result<(), AppError> {
     let owner = context.auxiliary.settings.window.handle();
-    let initial = if background {
-        &context.auxiliary.settings.scene.draft().background_color
-    } else {
-        &context.auxiliary.settings.scene.draft().accent_color
+    let initial = match target {
+        SettingsColor::Background => {
+            &context.auxiliary.settings.scene.draft().background_color
+        }
+        SettingsColor::Accent => &context.auxiliary.settings.scene.draft().accent_color,
+        SettingsColor::Foreground => {
+            &context.auxiliary.settings.scene.draft().foreground_color
+        }
     };
     match lotus_windows::color_picker::choose_color(owner, initial) {
         Ok(Some(color)) => {
-            if background {
-                context.auxiliary.settings.scene.set_background_color(color);
-            } else {
-                context.auxiliary.settings.scene.set_accent_color(color);
+            match target {
+                SettingsColor::Background => {
+                    context.auxiliary.settings.scene.set_background_color(color);
+                }
+                SettingsColor::Accent => {
+                    context.auxiliary.settings.scene.set_accent_color(color);
+                }
+                SettingsColor::Foreground => {
+                    context.auxiliary.settings.scene.set_foreground_color(color);
+                }
             }
             context.auxiliary.settings.render(context.graphics)
         }
@@ -1418,8 +1466,12 @@ fn handle_dock_pointer(
         }
         DockHitTarget::Jirachi => {
             if dock_model.settings().search_enabled {
-                let needs_animation =
-                    auxiliary.launcher.toggle(dock, dock_model, graphics)?;
+                let needs_animation = auxiliary.launcher.toggle(
+                    dock,
+                    dock_model,
+                    &auxiliary.applications,
+                    graphics,
+                )?;
                 dock.set_animation_active(needs_animation)?;
             }
         }
@@ -1612,8 +1664,12 @@ fn handle_monitor_dock_action(
             )?,
             DockHitTarget::Jirachi => {
                 if dock_model.settings().search_enabled {
-                    let needs_animation =
-                        auxiliary.launcher.toggle(dock, dock_model, graphics)?;
+                    let needs_animation = auxiliary.launcher.toggle(
+                        dock,
+                        dock_model,
+                        &auxiliary.applications,
+                        graphics,
+                    )?;
                     dock.set_animation_active(needs_animation)?;
                 }
             }

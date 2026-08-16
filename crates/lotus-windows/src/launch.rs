@@ -15,67 +15,6 @@ use windows::core::{Interface, PCWSTR};
 
 const WINDOWS_PATH_CAPACITY: usize = 32_768;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DurableLaunch {
-    pub target: String,
-    pub arguments: Option<String>,
-    pub icon_source: Option<String>,
-}
-
-pub fn durable_launch_for_executable(executable: &str) -> Option<DurableLaunch> {
-    let executable = Path::new(executable);
-
-    squirrel_launch(executable).or_else(|| steam_launch(executable))
-}
-
-fn squirrel_launch(executable: &Path) -> Option<DurableLaunch> {
-    let version_directory = executable.parent()?;
-    let version_name = version_directory.file_name()?.to_str()?;
-    if !version_name
-        .get(..4)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("app-"))
-    {
-        return None;
-    }
-
-    let install_directory = version_directory.parent()?;
-    let updater = install_directory.join("Update.exe");
-    if !updater.is_file() {
-        return None;
-    }
-
-    let executable_name = executable.file_name()?.to_str()?;
-    let icon = install_directory.join("app.ico");
-    Some(DurableLaunch {
-        target: updater.to_string_lossy().into_owned(),
-        arguments: Some(format!(
-            "--processStart {}",
-            quoted_argument(executable_name)
-        )),
-        icon_source: icon.is_file().then(|| icon.to_string_lossy().into_owned()),
-    })
-}
-
-fn steam_launch(executable: &Path) -> Option<DurableLaunch> {
-    let executable_name = executable.file_name()?.to_str()?;
-    if !executable_name.eq_ignore_ascii_case("steamwebhelper.exe") {
-        return None;
-    }
-
-    let steam = executable
-        .ancestors()
-        .skip(1)
-        .map(|directory| directory.join("steam.exe"))
-        .find(|candidate| candidate.is_file())?;
-    let target = steam.to_string_lossy().into_owned();
-
-    Some(DurableLaunch {
-        icon_source: Some(target.clone()),
-        target,
-        arguments: None,
-    })
-}
-
 pub fn resolve_executable(target: &str) -> Option<PathBuf> {
     let target = prepare_target(target)?;
     let expanded = expand_environment_variables(target)?;
@@ -237,14 +176,6 @@ fn has_extension(path: &Path, expected: &str) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
-}
-
-fn quoted_argument(value: &str) -> String {
-    if value.contains(char::is_whitespace) {
-        format!("\"{}\"", value.replace('"', "\\\""))
-    } else {
-        value.to_owned()
-    }
 }
 
 pub(super) fn expand_environment_variables(source: &str) -> Option<String> {

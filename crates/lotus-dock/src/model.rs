@@ -39,9 +39,17 @@ pub struct DockModel {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PinLaunch {
+    pub id: String,
+    pub name: String,
     pub target: String,
     pub arguments: Option<String>,
     pub icon_source: Option<String>,
+    pub app_user_model_id: Option<String>,
+}
+
+pub struct PinUpgrade {
+    pub current_id: String,
+    pub launch: PinLaunch,
 }
 
 impl DockModel {
@@ -198,16 +206,36 @@ impl DockModel {
                 .into_iter()
                 .collect();
             let launch = launch.unwrap_or_else(|| PinLaunch {
+                id: item.id.clone(),
+                name: item.display_name.clone(),
                 target: item.launch_target.clone(),
                 arguments: item.arguments.clone(),
                 icon_source: Some(item.icon_source.clone()),
+                app_user_model_id: item
+                    .windows
+                    .first()
+                    .and_then(|window| window.app_user_model_id.clone()),
             });
+            if settings.pinned_apps.iter().any(|pin| {
+                pin.id.eq_ignore_ascii_case(&launch.id)
+                    || pin.app_user_model_id.as_deref().is_some_and(|identity| {
+                        launch
+                            .app_user_model_id
+                            .as_deref()
+                            .is_some_and(|candidate| {
+                                candidate.eq_ignore_ascii_case(identity)
+                            })
+                    })
+            }) {
+                return Ok(false);
+            }
             settings.pinned_apps.push(PinnedApp {
-                id: item.id.clone(),
-                name: item.display_name.clone(),
+                id: launch.id,
+                name: launch.name,
                 launch_target: launch.target,
                 arguments: launch.arguments,
                 icon_source: launch.icon_source,
+                app_user_model_id: launch.app_user_model_id,
                 match_executables: executable,
             });
             insert_item_order(&mut settings.item_order, &self.items, source_index);
@@ -220,6 +248,59 @@ impl DockModel {
         self.settings_store.save(&settings)?;
         self.settings = settings;
         Ok(true)
+    }
+
+    pub fn upgrade_pins(
+        &mut self,
+        upgrades: Vec<PinUpgrade>,
+    ) -> Result<bool, SettingsStoreError> {
+        if upgrades.is_empty() {
+            return Ok(false);
+        }
+
+        let mut settings = self.settings.clone();
+        let mut changed = false;
+        for upgrade in upgrades {
+            let Some(pin) = settings
+                .pinned_apps
+                .iter_mut()
+                .find(|pin| pin.id.eq_ignore_ascii_case(&upgrade.current_id))
+            else {
+                continue;
+            };
+            if pin.id.eq_ignore_ascii_case(&upgrade.launch.id)
+                && pin.name == upgrade.launch.name
+                && pin.launch_target == upgrade.launch.target
+                && pin.arguments == upgrade.launch.arguments
+                && pin.icon_source == upgrade.launch.icon_source
+            {
+                continue;
+            }
+
+            replace_order_identity(&mut settings.item_order, &pin.id, &upgrade.launch.id);
+            pin.id = upgrade.launch.id;
+            pin.name = upgrade.launch.name;
+            pin.launch_target = upgrade.launch.target;
+            pin.arguments = upgrade.launch.arguments;
+            pin.icon_source = upgrade.launch.icon_source;
+            pin.app_user_model_id = upgrade.launch.app_user_model_id;
+            changed = true;
+        }
+        if !changed {
+            return Ok(false);
+        }
+
+        self.settings_store.save(&settings)?;
+        self.settings = settings;
+        Ok(true)
+    }
+}
+
+fn replace_order_identity(order: &mut [String], previous: &str, current: &str) {
+    for identity in order {
+        if identity.eq_ignore_ascii_case(previous) {
+            current.clone_into(identity);
+        }
     }
 }
 

@@ -11,6 +11,7 @@
   "backgroundOpacity": 0.56,
   "backgroundColor": "#11141A",
   "accentColor": "#F5A5A5",
+  "foregroundColor": "#F7F8FB",
   "mascotImagePath": null,
   "showAppDock": true,
   "showUnpinnedRunningApps": true,

@@ -80,6 +80,7 @@ pub struct ApplicationEntry {
     pub name: String,
     pub launch_target: String,
     pub icon_source: String,
+    pub app_user_model_id: Option<String>,
     pub source: ApplicationSource,
     pub hidden_until_search: bool,
 }
@@ -105,9 +106,18 @@ impl ApplicationEntry {
                 .filter(|source| !source.trim().is_empty())
                 .unwrap_or_else(|| launch_target.clone()),
             launch_target,
+            app_user_model_id: None,
             source: ApplicationSource::default(),
             hidden_until_search: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_app_user_model_id(mut self, app_user_model_id: impl Into<String>) -> Self {
+        let app_user_model_id = app_user_model_id.into();
+        self.app_user_model_id =
+            (!app_user_model_id.trim().is_empty()).then_some(app_user_model_id);
+        self
     }
 
     #[must_use]

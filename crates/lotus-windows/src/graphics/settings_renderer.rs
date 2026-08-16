@@ -3,7 +3,7 @@ use std::ffi::c_void;
 use std::num::NonZeroU32;
 
 use lotus_core::settings::{DockZone, NotificationBadgeStyle};
-use lotus_settings::appearance::{AccentPreset, SurfacePreset};
+use lotus_settings::appearance::{AccentPreset, ForegroundPreset, SurfacePreset};
 use lotus_ui::theme::{Color, Theme};
 use thiserror::Error;
 use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, E_FAIL};
@@ -31,7 +31,7 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::core::{Error as WindowsError, Interface, w};
 
-use super::assets::{AssetError, RasterSize, SvgAsset, SvgAssetCache};
+use super::assets::{AssetError, IconTint, RasterSize, SvgAsset, SvgAssetCache};
 use super::device::GraphicsDevice;
 use super::settings_scene::{
     OnboardingModule, OnboardingStep, SettingsControl, SettingsLayout, SettingsPage,
@@ -231,7 +231,11 @@ impl SettingsRenderer {
         {
             let size = NonZeroU32::new(scale(scene, 64))
                 .expect("the scaled welcome icon is nonzero");
-            self.ensure_embedded(SvgAsset::LotusPixel, size)?;
+            self.ensure_embedded(
+                SvgAsset::LotusPixel,
+                size,
+                IconTint::from_color(scene.theme().text),
+            )?;
             Some(size)
         } else {
             None
@@ -474,6 +478,9 @@ impl SettingsRenderer {
         match control {
             SettingsControl::SurfacePreset => self.draw_surface_picker(scene, bounds),
             SettingsControl::AccentPreset => self.draw_accent_picker(scene, bounds),
+            SettingsControl::ForegroundPreset => {
+                self.draw_foreground_picker(scene, bounds);
+            }
             SettingsControl::NotificationBadgeStyle => {
                 self.draw_notification_badge_style(scene, bounds);
             }
@@ -634,6 +641,7 @@ impl SettingsRenderer {
         &mut self,
         asset: SvgAsset,
         size: NonZeroU32,
+        tint: IconTint,
     ) -> Result<(), SettingsRendererError> {
         let key = (asset, size);
         if self.embedded.contains_key(&key) {
@@ -641,7 +649,7 @@ impl SettingsRenderer {
         }
         let raster = self
             .assets
-            .rasterize(asset, RasterSize::square(size))
+            .rasterize(asset, RasterSize::square(size), tint)
             .map_err(|error| asset_error(&error))?;
         let bitmap = upload_bitmap(
             &self.context,
@@ -842,6 +850,7 @@ impl SettingsRenderer {
                     entry.control,
                     SettingsControl::SurfacePreset
                         | SettingsControl::AccentPreset
+                        | SettingsControl::ForegroundPreset
                         | SettingsControl::NotificationBadgeStyle
                         | SettingsControl::DockZone
                         | SettingsControl::SystemStatusZone
@@ -1031,6 +1040,86 @@ impl SettingsRenderer {
         }
         theme::set(&self.row, scene.theme().control);
         self.draw_focus(scene, SettingsControl::AccentPreset, bounds);
+    }
+
+    fn draw_foreground_picker(&self, scene: &SettingsScene, bounds: SettingsRect) {
+        self.draw_text(
+            "Text & icons",
+            inset(bounds, scale(scene, 16), 0),
+            &self.body_format,
+            &self.text,
+            false,
+        );
+        let picker = picker_bounds(scene, bounds);
+        let segment_width = picker.width / 3;
+        let selected = ForegroundPreset::selected(scene.draft());
+        for index in 0_u32..3 {
+            let diameter = scale(scene, 18);
+            let left = picker
+                .left
+                .saturating_add(index.saturating_mul(segment_width))
+                .saturating_add(segment_width.saturating_sub(diameter) / 2);
+            let swatch_bounds = SettingsRect {
+                left,
+                top: bounds
+                    .top
+                    .saturating_add(bounds.height.saturating_sub(diameter) / 2),
+                width: diameter,
+                height: diameter,
+            };
+            let swatch = rounded(rect(swatch_bounds), as_f32(diameter) * 0.5);
+            let preset = usize::try_from(index)
+                .ok()
+                .and_then(|index| ForegroundPreset::ALL.get(index));
+            let color = preset.map_or_else(
+                || {
+                    Color::from_hex(&scene.draft().foreground_color)
+                        .unwrap_or(scene.theme().text)
+                },
+                |preset| Color::from_hex(preset.color()).unwrap_or(scene.theme().text),
+            );
+            theme::set(&self.row, color);
+            // SAFETY: The active context, retained brush, and local geometry remain live.
+            unsafe {
+                self.context
+                    .FillRoundedRectangle(&raw const swatch, &self.row);
+            };
+            let is_selected =
+                preset.map_or(selected.is_none(), |preset| selected == Some(*preset));
+            if is_selected {
+                let outline = rounded(
+                    outset_rect(swatch.rect, scale_f32(scene, 3.0)),
+                    as_f32(diameter) * 0.5 + scale_f32(scene, 3.0),
+                );
+                // SAFETY: The active context, retained brush, and local outline remain live.
+                unsafe {
+                    self.context.DrawRoundedRectangle(
+                        &raw const outline,
+                        &self.accent,
+                        scale_f32(scene, 1.0),
+                        None,
+                    );
+                }
+            }
+            if preset.is_none() {
+                let contrast = if color.relative_luminance() > 0.5 {
+                    Color::rgb(0x18, 0x1A, 0x20)
+                } else {
+                    Color::rgb(0xF7, 0xF8, 0xFB)
+                };
+                theme::set(&self.disabled, contrast);
+                self.draw_text(
+                    "+",
+                    swatch_bounds,
+                    &self.small_format,
+                    &self.disabled,
+                    true,
+                );
+                theme::set(&self.disabled, scene.theme().text_disabled);
+            }
+        }
+        theme::set(&self.row, scene.theme().control);
+        self.draw_focus(scene, SettingsControl::ForegroundPreset, bounds);
     }
 
     fn draw_notification_badge_style(&self, scene: &SettingsScene, bounds: SettingsRect) {
@@ -1720,6 +1809,7 @@ fn is_page_content(control: SettingsControl) -> bool {
         control,
         SettingsControl::SurfacePreset
             | SettingsControl::AccentPreset
+            | SettingsControl::ForegroundPreset
             | SettingsControl::NotificationBadgeStyle
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone

@@ -45,6 +45,31 @@ pub enum AccentPreset {
     Mint,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ForegroundPreset {
+    Light,
+    Dark,
+}
+
+impl ForegroundPreset {
+    pub const ALL: [Self; 2] = [Self::Light, Self::Dark];
+
+    pub const fn color(self) -> &'static str {
+        match self {
+            Self::Light => "#F7F8FB",
+            Self::Dark => "#1D2026",
+        }
+    }
+
+    pub fn selected(settings: &DockSettings) -> Option<Self> {
+        Self::ALL.into_iter().find(|preset| {
+            preset
+                .color()
+                .eq_ignore_ascii_case(&settings.foreground_color)
+        })
+    }
+}
+
 impl AccentPreset {
     pub const ALL: [Self; 5] = [
         Self::Blossom,
@@ -85,6 +110,7 @@ pub fn theme_for(settings: &DockSettings) -> Theme {
     Theme::new(
         &settings.background_color,
         &settings.accent_color,
+        &settings.foreground_color,
         settings.corner_radius,
     )
 }

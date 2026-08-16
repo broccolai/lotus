@@ -19,6 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 use windows::core::{GUID, PWSTR};
 
 use super::launch::{ComApartment, resolve_executable, shortcut_arguments};
+use crate::application_identity::shortcut_application_id;
 
 const WINDOWS_SETTINGS_NAME: &str = "Windows Settings";
 const WINDOWS_SETTINGS_TARGET: &str = "ms-settings:";
@@ -42,6 +43,16 @@ pub struct SearchCatalogCache {
 pub struct ReadySearchCatalog {
     pub generation: u64,
     pub catalog: SearchCatalog,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegisteredApplication {
+    pub id: String,
+    pub name: String,
+    pub launch_target: String,
+    pub arguments: Option<String>,
+    pub icon_source: String,
+    pub app_user_model_id: Option<String>,
 }
 
 impl Default for SearchCatalogCache {
@@ -70,6 +81,75 @@ impl SearchCatalogCache {
     ) -> SearchCatalog {
         let entries = lock(&self.state).entries.clone();
         compose_catalog(dock_items, entries, hidden_executables)
+    }
+
+    pub fn registered_application(
+        &self,
+        window: &lotus_core::window::WindowInfo,
+        fallback_name: &str,
+    ) -> Option<RegisteredApplication> {
+        let native_identity =
+            crate::application_identity::window_application_identity(window.id);
+        if native_identity
+            .as_ref()
+            .is_some_and(|identity| identity.prevent_pinning)
+        {
+            return None;
+        }
+        let app_user_model_id = native_identity
+            .as_ref()
+            .and_then(|identity| identity.app_user_model_id.as_deref())
+            .or(window.app_user_model_id.as_deref());
+        let entries = lock(&self.state).entries.clone();
+        let entry = app_user_model_id
+            .and_then(|identity| {
+                entries.iter().find(|entry| {
+                    entry
+                        .app_user_model_id
+                        .as_deref()
+                        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(identity))
+                })
+            })
+            .or_else(|| {
+                entries.iter().find(|entry| {
+                    resolve_executable(&entry.launch_target).is_some_and(|candidate| {
+                        paths_equal(&candidate, &window.executable_path)
+                    })
+                })
+            });
+
+        if let Some(entry) = entry {
+            return Some(RegisteredApplication {
+                id: entry
+                    .app_user_model_id
+                    .clone()
+                    .unwrap_or_else(|| entry.launch_target.clone()),
+                name: entry.name.clone(),
+                launch_target: entry.launch_target.clone(),
+                arguments: None,
+                icon_source: entry.icon_source.clone(),
+                app_user_model_id: entry.app_user_model_id.clone(),
+            });
+        }
+
+        let identity = native_identity?;
+        let launch = crate::application_identity::relaunch_application(
+            identity.relaunch_command.as_deref()?,
+        )?;
+        let app_user_model_id = identity.app_user_model_id;
+        Some(RegisteredApplication {
+            id: app_user_model_id
+                .clone()
+                .unwrap_or_else(|| launch.target.clone()),
+            name: identity
+                .display_name
+                .filter(|name| !name.starts_with('@'))
+                .unwrap_or_else(|| fallback_name.to_owned()),
+            icon_source: launch.target.clone(),
+            launch_target: launch.target,
+            arguments: launch.arguments,
+            app_user_model_id,
+        })
     }
 
     pub fn ready_catalog(
@@ -138,6 +218,11 @@ impl SearchCatalogCache {
         let _ = cache.refresh_if_stale(Duration::ZERO);
         cache
     }
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
 }
 
 struct RefreshCompletion {
@@ -390,7 +475,10 @@ fn apps_folder_entry(name: String, identity: &str) -> Option<ApplicationEntry> {
         return None;
     }
     let target = format!(r"shell:AppsFolder\{identity}");
-    Some(ApplicationEntry::new(name, target.clone(), Some(target)))
+    Some(
+        ApplicationEntry::new(name, target.clone(), Some(target))
+            .with_app_user_model_id(identity),
+    )
 }
 
 fn shell_item_text(
@@ -439,7 +527,11 @@ fn discover_entries(roots: impl IntoIterator<Item = PathBuf>) -> Vec<Application
         .into_iter()
         .map(|(_, _, _, name, path)| {
             let target = path.to_string_lossy().into_owned();
-            ApplicationEntry::new(name, target.clone(), Some(target))
+            let mut entry = ApplicationEntry::new(name, target.clone(), Some(target));
+            if let Some(identity) = shortcut_application_id(&path) {
+                entry = entry.with_app_user_model_id(identity);
+            }
+            entry
         })
         .collect()
 }

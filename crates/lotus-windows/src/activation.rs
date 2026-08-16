@@ -13,7 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::PCWSTR;
 
-use super::launch::{durable_launch_for_executable, expand_environment_variables};
+use super::launch::expand_environment_variables;
 use crate::NativeError;
 use crate::interaction::activate_window;
 
@@ -185,17 +185,10 @@ impl LaunchRequest {
 
         let target = expand_environment_variables(target)
             .ok_or(ActivationError::EnvironmentExpansion)?;
-        let mut request = Self {
+        Ok(Self {
             target,
             arguments: arguments.map(str::to_owned),
-        };
-        if request.arguments.is_none()
-            && let Some(durable) = durable_launch_for_executable(&request.target)
-        {
-            request.target = durable.target;
-            request.arguments = durable.arguments;
-        }
-        Ok(request)
+        })
     }
 }
 

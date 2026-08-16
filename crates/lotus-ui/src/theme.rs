@@ -95,11 +95,18 @@ pub struct Theme {
 
 impl Theme {
     #[must_use]
-    pub fn new(background: &str, accent: &str, window_radius: u32) -> Self {
+    pub fn new(
+        background: &str,
+        accent: &str,
+        foreground: &str,
+        window_radius: u32,
+    ) -> Self {
         let canvas =
             Color::from_hex(background).unwrap_or_else(|| Color::rgb(0x11, 0x14, 0x1A));
         let accent =
             Color::from_hex(accent).unwrap_or_else(|| Color::rgb(0xF5, 0xA5, 0xA5));
+        let foreground =
+            Color::from_hex(foreground).unwrap_or_else(|| Color::rgb(0xF7, 0xF8, 0xFB));
         let white = Color::rgb(u8::MAX, u8::MAX, u8::MAX);
         let window = f32::from(u16::try_from(window_radius).unwrap_or(u16::MAX));
         Self {
@@ -114,9 +121,9 @@ impl Theme {
             border: white.with_alpha(0.085),
             border_strong: white.with_alpha(0.14),
             divider: white.with_alpha(0.105),
-            text: Color::rgba(0xF7, 0xF8, 0xFB, 0xF5),
-            text_muted: Color::rgba(0xF7, 0xF8, 0xFB, 0x9E),
-            text_disabled: Color::rgba(0xF7, 0xF8, 0xFB, 0x4D),
+            text: foreground.with_alpha(0.96),
+            text_muted: foreground.with_alpha(0.62),
+            text_disabled: foreground.with_alpha(0.30),
             accent,
             accent_soft: accent.with_alpha(0.22),
             accent_subtle: accent.with_alpha(0.12),
@@ -137,6 +144,6 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::new("#11141A", "#F5A5A5", 8)
+        Self::new("#11141A", "#F5A5A5", "#F7F8FB", 8)
     }
 }

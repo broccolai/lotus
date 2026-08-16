@@ -54,6 +54,7 @@ pub struct DockSettings {
     pub background_opacity: f64,
     pub background_color: String,
     pub accent_color: String,
+    pub foreground_color: String,
     pub mascot_image_path: Option<String>,
     pub show_app_dock: bool,
     pub show_unpinned_running_apps: bool,
@@ -104,6 +105,7 @@ impl Default for DockSettings {
             background_opacity: 0.56,
             background_color: "#11141A".into(),
             accent_color: "#F5A5A5".into(),
+            foreground_color: "#F7F8FB".into(),
             mascot_image_path: None,
             show_app_dock: true,
             show_unpinned_running_apps: true,
@@ -176,6 +178,9 @@ impl DockSettings {
         if !is_hex_color(&self.accent_color) {
             self.accent_color = "#F5A5A5".into();
         }
+        if !is_hex_color(&self.foreground_color) {
+            self.foreground_color = "#F7F8FB".into();
+        }
 
         self.mascot_image_path = self
             .mascot_image_path
@@ -200,6 +205,7 @@ pub struct PinnedApp {
     pub launch_target: String,
     pub arguments: Option<String>,
     pub icon_source: Option<String>,
+    pub app_user_model_id: Option<String>,
     pub match_executables: Vec<String>,
 }
 
@@ -215,6 +221,9 @@ impl PinnedApp {
             name => name.into(),
         };
         self.launch_target = self.launch_target.trim().into();
+        self.app_user_model_id = self.app_user_model_id.take().and_then(|identity| {
+            (!identity.trim().is_empty()).then(|| identity.trim().into())
+        });
     }
 }
 

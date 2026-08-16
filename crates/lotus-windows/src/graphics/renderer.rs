@@ -31,7 +31,9 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::core::{Error as WindowsError, Interface, w};
 
-use super::assets::{AssetError, RasterImage, RasterSize, SvgAsset, SvgAssetCache};
+use super::assets::{
+    AssetError, IconTint, RasterImage, RasterSize, SvgAsset, SvgAssetCache,
+};
 use super::device::GraphicsDevice;
 use super::scene::{
     DockAnchor, DockBadge, DockDragState, DockHitTarget, DockIcon, DockInteractionState,
@@ -95,6 +97,7 @@ pub(super) struct Direct2DRenderer {
     chrome: ChromeAnimator,
     exit: ExitAnimator,
     assets: SvgAssetCache,
+    icon_tint: IconTint,
     embedded_bitmaps: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
     raster_bitmaps: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
@@ -170,6 +173,7 @@ impl Direct2DRenderer {
             chrome: ChromeAnimator::default(),
             exit: ExitAnimator::default(),
             assets: SvgAssetCache::create()?,
+            icon_tint: IconTint::from_color(default_theme.text),
             embedded_bitmaps: HashMap::new(),
             raster_bitmaps: HashMap::new(),
         };
@@ -218,6 +222,7 @@ impl Direct2DRenderer {
         debug_assert!(self.target.is_some(), "drawing requires an attached target");
         let theme = scene.theme();
         self.apply_theme(&theme);
+        self.sync_icon_tint(theme.text);
         let layout = scene.layout(size.width(), size.height());
         let now = Instant::now();
         let (visuals, jirachi_visual, needs_animation) =
@@ -382,6 +387,14 @@ impl Direct2DRenderer {
         theme::set(&self.badge_text_brush, value.on_accent);
         theme::set(&self.status_text_brush, value.text);
         theme::set(&self.status_muted_text_brush, value.text_muted);
+    }
+
+    fn sync_icon_tint(&mut self, color: lotus_ui::theme::Color) {
+        let tint = IconTint::from_color(color);
+        if self.icon_tint != tint {
+            self.icon_tint = tint;
+            self.embedded_bitmaps.clear();
+        }
     }
 
     fn ensure_scene_icons(
@@ -877,7 +890,9 @@ impl Direct2DRenderer {
             return Ok(());
         }
 
-        let raster = self.assets.rasterize(asset, RasterSize::square(size))?;
+        let raster =
+            self.assets
+                .rasterize(asset, RasterSize::square(size), self.icon_tint)?;
         let bitmap = upload_bitmap(&self.context, raster)?;
         self.embedded_bitmaps.insert(key, bitmap);
         Ok(())

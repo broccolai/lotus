@@ -27,7 +27,7 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::core::{Error as WindowsError, w};
 
-use super::assets::{AssetError, RasterSize, SvgAsset, SvgAssetCache};
+use super::assets::{AssetError, IconTint, RasterSize, SvgAsset, SvgAssetCache};
 use super::context_menu_scene::{ContextMenuScene, PopupEntry, PopupIcon, PopupSymbol};
 use super::device::GraphicsDevice;
 use super::surface::SurfaceSize;
@@ -53,6 +53,7 @@ pub(super) struct ContextMenuRenderer {
     write_factory: IDWriteFactory,
     text_formats: HashMap<u32, IDWriteTextFormat>,
     assets: SvgAssetCache,
+    icon_tint: IconTint,
     embedded: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
     rasters: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
@@ -87,6 +88,7 @@ impl ContextMenuRenderer {
             write_factory,
             text_formats: HashMap::new(),
             assets: SvgAssetCache::create()?,
+            icon_tint: IconTint::from_color(theme.text),
             embedded: HashMap::new(),
             rasters: HashMap::new(),
         };
@@ -126,6 +128,7 @@ impl ContextMenuRenderer {
     ) -> Result<ContextMenuDrawResult, ContextMenuRendererError> {
         debug_assert!(self.target.is_some());
         self.apply_theme(&scene.theme());
+        self.sync_icon_tint(scene.theme().text);
         let entries = scene.entries();
         let icon_size = nonzero((20 * scene.dpi()).div_ceil(96));
         let fallback_size = nonzero((42 * scene.dpi()).div_ceil(96));
@@ -358,6 +361,14 @@ impl ContextMenuRenderer {
         theme::set(&self.text, value.text);
     }
 
+    fn sync_icon_tint(&mut self, color: lotus_ui::theme::Color) {
+        let tint = IconTint::from_color(color);
+        if self.icon_tint != tint {
+            self.icon_tint = tint;
+            self.embedded.clear();
+        }
+    }
+
     fn text_format(&mut self, dpi: u32) -> Result<IDWriteTextFormat, WindowsError> {
         if let Some(format) = self.text_formats.get(&dpi) {
             return Ok(format.clone());
@@ -406,7 +417,9 @@ impl ContextMenuRenderer {
         if self.embedded.contains_key(&key) {
             return Ok(());
         }
-        let raster = self.assets.rasterize(asset, RasterSize::square(size))?;
+        let raster =
+            self.assets
+                .rasterize(asset, RasterSize::square(size), self.icon_tint)?;
         let bitmap = upload_bitmap(
             &self.context,
             raster.size().width(),

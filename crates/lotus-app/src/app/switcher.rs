@@ -12,6 +12,7 @@ const SWITCHER_ICON_DIP: u32 = 38;
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
 
 pub(super) struct AuxiliaryWindows {
+    pub(super) applications: super::SearchCatalogCache,
     pub(super) launcher: LauncherRuntime,
     pub(super) settings: SettingsRuntime,
     pub(super) context_menu: ContextMenuRuntime,

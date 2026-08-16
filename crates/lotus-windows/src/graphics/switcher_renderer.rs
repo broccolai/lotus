@@ -27,7 +27,9 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::core::{Error as WindowsError, w};
 
-use super::assets::{AssetError, RasterImage, RasterSize, SvgAsset, SvgAssetCache};
+use super::assets::{
+    AssetError, IconTint, RasterImage, RasterSize, SvgAsset, SvgAssetCache,
+};
 use super::device::GraphicsDevice;
 use super::scene::{DockIcon, RasterIcon, RasterIconId};
 use super::surface::SurfaceSize;
@@ -54,6 +56,7 @@ pub(super) struct SwitcherRenderer {
     icon_format: IDWriteTextFormat,
     text_format: IDWriteTextFormat,
     assets: SvgAssetCache,
+    icon_tint: IconTint,
     embedded_bitmaps: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
     raster_bitmaps: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
@@ -90,6 +93,7 @@ impl SwitcherRenderer {
             icon_format,
             text_format,
             assets: SvgAssetCache::create()?,
+            icon_tint: IconTint::from_color(theme.text),
             embedded_bitmaps: HashMap::new(),
             raster_bitmaps: HashMap::new(),
         };
@@ -128,6 +132,11 @@ impl SwitcherRenderer {
         scene: &SwitcherScene,
     ) -> Result<DrawResult, RendererError> {
         let theme = scene.theme();
+        let icon_tint = IconTint::from_color(theme.text);
+        if self.icon_tint != icon_tint {
+            self.icon_tint = icon_tint;
+            self.embedded_bitmaps.clear();
+        }
         theme::set(&self.panel, theme.chrome_overlay);
         theme::set(&self.selected, theme.control_selected);
         theme::set(&self.icon, theme.accent);
@@ -253,7 +262,11 @@ impl SwitcherRenderer {
             DockIcon::Embedded(asset) => {
                 let key = (*asset, size);
                 if !self.embedded_bitmaps.contains_key(&key) {
-                    let raster = self.assets.rasterize(*asset, RasterSize::square(size))?;
+                    let raster = self.assets.rasterize(
+                        *asset,
+                        RasterSize::square(size),
+                        self.icon_tint,
+                    )?;
                     let bitmap = upload_bitmap(&self.context, raster)?;
                     self.embedded_bitmaps.insert(key, bitmap);
                 }

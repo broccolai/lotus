@@ -2,8 +2,8 @@ use super::{
     AltTabController, AltTabEvent, AppError, CompositionSurfaceState, DeviceState,
     DockHitTarget, DockRuntime, DockScene, DockWindow, LauncherCompositionSurfaceState,
     LauncherRuntime, LauncherSubmission, ModelCursorMove, PointerEvent, QueryEdit,
-    RestartError, SearchEdit, SearchEvent, StatusRuntime, SurfaceError, SurfaceSize,
-    SwitcherRuntime, WindowCursorMove, WindowTracker, WindowsKeyController,
+    RestartError, SearchCatalogCache, SearchEdit, SearchEvent, StatusRuntime, SurfaceError,
+    SurfaceSize, SwitcherRuntime, WindowCursorMove, WindowTracker, WindowsKeyController,
     WindowsKeyEvent, launch_target, local_time, read_text,
 };
 
@@ -41,12 +41,14 @@ pub(super) fn handle_windows_key_events(
     dock: &DockWindow,
     graphics: &mut DeviceState,
     dock_model: &DockRuntime,
+    catalog: &SearchCatalogCache,
     launcher: &mut LauncherRuntime,
 ) -> Result<(), AppError> {
     for event in controller.drain_events() {
         match event {
             WindowsKeyEvent::ToggleRequested => {
-                let needs_animation = launcher.toggle(dock, dock_model, graphics)?;
+                let needs_animation =
+                    launcher.toggle(dock, dock_model, catalog, graphics)?;
                 dock.set_animation_active(needs_animation)?;
             }
             WindowsKeyEvent::ReplayIncomplete { .. } => {}

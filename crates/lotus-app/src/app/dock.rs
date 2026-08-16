@@ -4,9 +4,10 @@ use std::time::{Duration, Instant};
 use lotus_core::dock::DockItem;
 use lotus_core::notification::count_for_item;
 use lotus_dock::interaction::{DockInteraction, map_visual_insertion_slot};
-use lotus_dock::model::{DockModel, PinLaunch, SettingsImpact, project_snapshot};
+use lotus_dock::model::{
+    DockModel, PinLaunch, PinUpgrade, SettingsImpact, project_snapshot,
+};
 use lotus_settings::appearance::theme_for;
-use lotus_windows::launch::durable_launch_for_executable;
 
 use super::{
     ActivationError, AppError, DockAnchor, DockBadge, DockContextRequest, DockHitTarget,
@@ -356,6 +357,7 @@ impl DockRuntime {
         source_index: usize,
         pinned: bool,
         windows: &[WindowInfo],
+        registered: Option<lotus_windows::search_catalog::RegisteredApplication>,
     ) -> Result<bool, AppError> {
         let previous = self
             .model
@@ -363,20 +365,14 @@ impl DockRuntime {
             .get(source_index)
             .cloned()
             .map(|item| (source_index, item));
-        let launch = if pinned {
-            previous.as_ref().and_then(|(_, item)| {
-                let launch = durable_launch_for_executable(&item.executable_path)?;
-                Some(PinLaunch {
-                    target: launch.target,
-                    arguments: launch.arguments,
-                    icon_source: launch
-                        .icon_source
-                        .or_else(|| Some(item.icon_source.clone())),
-                })
-            })
-        } else {
-            None
-        };
+        let launch = registered.map(|application| PinLaunch {
+            id: application.id,
+            name: application.name,
+            target: application.launch_target,
+            arguments: application.arguments,
+            icon_source: Some(application.icon_source),
+            app_user_model_id: application.app_user_model_id,
+        });
         if !self.model.set_pinned(source_index, pinned, launch)? {
             return Ok(false);
         }
@@ -391,6 +387,43 @@ impl DockRuntime {
         let mut items = projected_items(self.model.settings(), windows);
         self.merge_transient_unpinned(&mut items, windows);
         self.model.rebuild(items);
+        self.refresh_scene_items();
+        Ok(true)
+    }
+
+    pub(super) fn upgrade_legacy_pins(
+        &mut self,
+        windows: &[WindowInfo],
+        catalog: &lotus_windows::search_catalog::SearchCatalogCache,
+    ) -> Result<bool, AppError> {
+        let upgrades = self
+            .model
+            .items()
+            .iter()
+            .filter(|item| item.is_pinned)
+            .filter_map(|item| {
+                let window = item.windows.first()?;
+                let application =
+                    catalog.registered_application(window, &item.display_name)?;
+                Some(PinUpgrade {
+                    current_id: item.id.clone(),
+                    launch: PinLaunch {
+                        id: application.id,
+                        name: application.name,
+                        target: application.launch_target,
+                        arguments: application.arguments,
+                        icon_source: Some(application.icon_source),
+                        app_user_model_id: application.app_user_model_id,
+                    },
+                })
+            })
+            .collect();
+        if !self.model.upgrade_pins(upgrades)? {
+            return Ok(false);
+        }
+
+        self.model
+            .rebuild(projected_items(self.model.settings(), windows));
         self.refresh_scene_items();
         Ok(true)
     }

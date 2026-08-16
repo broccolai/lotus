@@ -238,6 +238,7 @@ fn repair_legacy_null_strings(value: &mut Value) {
 
     replace_null_string(object, "backgroundColor", "#11141A");
     replace_null_string(object, "accentColor", "#F5A5A5");
+    replace_null_string(object, "foregroundColor", "#F7F8FB");
 
     let Some(pinned_apps) = object.get_mut("pinnedApps").and_then(Value::as_array_mut)
     else {
@@ -329,6 +330,7 @@ const PROPERTY_NAMES: &[&str] = &[
     "backgroundOpacity",
     "backgroundColor",
     "accentColor",
+    "foregroundColor",
     "mascotImagePath",
     "showAppDock",
     "showUnpinnedRunningApps",
@@ -367,5 +369,6 @@ const PROPERTY_NAMES: &[&str] = &[
     "launchTarget",
     "arguments",
     "iconSource",
+    "appUserModelId",
     "matchExecutables",
 ];

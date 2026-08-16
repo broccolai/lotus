@@ -324,6 +324,7 @@ fn create_auxiliary_windows(
     )?;
 
     Ok(AuxiliaryWindows {
+        applications: SearchCatalogCache::new(),
         launcher,
         settings,
         context_menu,

@@ -5,7 +5,7 @@ use lotus_core::settings::{
 };
 use lotus_ui::theme::Theme;
 
-use crate::appearance::{AccentPreset, SurfacePreset, theme_for};
+use crate::appearance::{AccentPreset, ForegroundPreset, SurfacePreset, theme_for};
 
 const DIPS_PER_INCH: u64 = 96;
 const WIDTH_DIP: u32 = 900;
@@ -190,6 +190,7 @@ pub enum SettingsControl {
     Navigate(SettingsPage),
     SurfacePreset,
     AccentPreset,
+    ForegroundPreset,
     NotificationBadgeStyle,
     DockZone,
     SystemStatusZone,
@@ -216,6 +217,7 @@ pub enum SettingsAction {
     Changed,
     ChooseBackgroundColor,
     ChooseAccentColor,
+    ChooseForegroundColor,
     ChooseMascotImage,
     CheckForUpdates,
     ReplaySetup,
@@ -632,6 +634,7 @@ impl SettingsScene {
             control,
             SettingsControl::SurfacePreset
                 | SettingsControl::AccentPreset
+                | SettingsControl::ForegroundPreset
                 | SettingsControl::NotificationBadgeStyle
                 | SettingsControl::DockZone
                 | SettingsControl::SystemStatusZone
@@ -680,6 +683,7 @@ impl SettingsScene {
             SettingsControl::Navigate(_)
             | SettingsControl::SurfacePreset
             | SettingsControl::AccentPreset
+            | SettingsControl::ForegroundPreset
             | SettingsControl::NotificationBadgeStyle
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
@@ -769,6 +773,12 @@ impl SettingsScene {
             }
             (SettingsKey::Right, SettingsControl::AccentPreset) => {
                 self.cycle_accent_preset(false)
+            }
+            (SettingsKey::Left, SettingsControl::ForegroundPreset) => {
+                self.cycle_foreground_preset(true)
+            }
+            (SettingsKey::Right, SettingsControl::ForegroundPreset) => {
+                self.cycle_foreground_preset(false)
             }
             (SettingsKey::Left, SettingsControl::NotificationBadgeStyle) => {
                 self.cycle_notification_badge_style(true)
@@ -885,6 +895,7 @@ impl SettingsScene {
             SettingsPage::Appearance => vec![
                 SettingsControl::SurfacePreset,
                 SettingsControl::AccentPreset,
+                SettingsControl::ForegroundPreset,
                 SettingsControl::Slider(SettingsSlider::BackgroundOpacity),
                 SettingsControl::Slider(SettingsSlider::CornerRadius),
             ],
@@ -1154,6 +1165,7 @@ impl SettingsScene {
             }
             SettingsControl::SurfacePreset => SettingsAction::ChooseBackgroundColor,
             SettingsControl::AccentPreset => SettingsAction::ChooseAccentColor,
+            SettingsControl::ForegroundPreset => SettingsAction::ChooseForegroundColor,
             SettingsControl::NotificationBadgeStyle
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
@@ -1343,6 +1355,14 @@ impl SettingsScene {
                 };
                 preset.color().clone_into(&mut self.draft.accent_color);
             }
+            SettingsControl::ForegroundPreset => {
+                let index =
+                    usize::try_from(offset.saturating_mul(3) / width).unwrap_or_default();
+                let Some(preset) = ForegroundPreset::ALL.get(index) else {
+                    return SettingsAction::ChooseForegroundColor;
+                };
+                preset.color().clone_into(&mut self.draft.foreground_color);
+            }
             SettingsControl::NotificationBadgeStyle => {
                 let styles = [
                     NotificationBadgeStyle::Off,
@@ -1401,6 +1421,21 @@ impl SettingsScene {
         AccentPreset::ALL[next]
             .color()
             .clone_into(&mut self.draft.accent_color);
+        SettingsAction::Changed
+    }
+
+    fn cycle_foreground_preset(&mut self, reverse: bool) -> SettingsAction {
+        let current = ForegroundPreset::selected(&self.draft)
+            .and_then(|selected| {
+                ForegroundPreset::ALL
+                    .iter()
+                    .position(|item| *item == selected)
+            })
+            .unwrap_or_default();
+        let next = cycle_index(current, ForegroundPreset::ALL.len(), reverse);
+        ForegroundPreset::ALL[next]
+            .color()
+            .clone_into(&mut self.draft.foreground_color);
         SettingsAction::Changed
     }
 
@@ -1566,6 +1601,10 @@ impl SettingsScene {
         self.draft.accent_color = color;
     }
 
+    pub fn set_foreground_color(&mut self, color: String) {
+        self.draft.foreground_color = color;
+    }
+
     fn set_slider(&mut self, slider: SettingsSlider, value: u32) {
         let (minimum, maximum) = slider.range();
         let value = value.clamp(minimum, maximum);
@@ -1640,6 +1679,7 @@ fn is_page_content(control: SettingsControl) -> bool {
         control,
         SettingsControl::SurfacePreset
             | SettingsControl::AccentPreset
+            | SettingsControl::ForegroundPreset
             | SettingsControl::NotificationBadgeStyle
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone

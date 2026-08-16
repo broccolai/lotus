@@ -13,7 +13,6 @@ use super::{
 pub(super) struct LauncherRuntime {
     pub(super) window: SearchWindow,
     pub(super) controller: SearchController,
-    pub(super) catalog: SearchCatalogCache,
     pub(super) native_icons: NativeIconCache,
     pub(super) scene: Option<LauncherScene>,
     pub(super) surface: Option<LauncherCompositionSurfaceState>,
@@ -44,7 +43,6 @@ impl LauncherRuntime {
                 usage,
                 usage_store,
             ),
-            catalog: SearchCatalogCache::new(),
             native_icons: NativeIconCache::default(),
             scene: None,
             surface: None,
@@ -67,6 +65,7 @@ impl LauncherRuntime {
         &mut self,
         dock: &DockWindow,
         dock_model: &DockRuntime,
+        catalog: &SearchCatalogCache,
         graphics: &mut DeviceState,
     ) -> Result<bool, AppError> {
         if self.visible {
@@ -74,8 +73,8 @@ impl LauncherRuntime {
             return Ok(false);
         }
 
-        let _ = self.catalog.refresh_if_stale(Duration::from_mins(5));
-        if let Some(ready) = self.catalog.ready_catalog(
+        let _ = catalog.refresh_if_stale(Duration::from_mins(5));
+        if let Some(ready) = catalog.ready_catalog(
             dock_model.items(),
             &dock_model.settings().hidden_executables,
         ) {
@@ -83,7 +82,7 @@ impl LauncherRuntime {
         } else {
             self.controller.begin(
                 None,
-                self.catalog.catalog(
+                catalog.catalog(
                     dock_model.items(),
                     &dock_model.settings().hidden_executables,
                 ),
@@ -133,9 +132,10 @@ impl LauncherRuntime {
         &mut self,
         dock: &DockWindow,
         dock_model: &DockRuntime,
+        catalog: &SearchCatalogCache,
         graphics: &mut DeviceState,
     ) -> Result<bool, AppError> {
-        let Some(ready) = self.catalog.ready_catalog(
+        let Some(ready) = catalog.ready_catalog(
             dock_model.items(),
             &dock_model.settings().hidden_executables,
         ) else {

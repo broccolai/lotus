@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::num::NonZeroU32;
 
-use lotus_ui::theme::Theme;
+use lotus_ui::theme::{Color, Theme};
 use thiserror::Error;
 use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -26,7 +26,7 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::core::{Error as WindowsError, PCWSTR, w};
 
-use super::assets::{AssetError, RasterSize, SvgAsset, SvgAssetCache};
+use super::assets::{AssetError, IconTint, RasterSize, SvgAsset, SvgAssetCache};
 use super::device::GraphicsDevice;
 use super::launcher_scene::{LauncherLayout, LauncherResultKind, LauncherScene, PixelRect};
 use super::scene::{DockIcon, RasterIcon, RasterIconId};
@@ -76,6 +76,7 @@ pub(super) struct LauncherRenderer {
     footer_time_format: IDWriteTextFormat,
     command_format: IDWriteTextFormat,
     assets: SvgAssetCache,
+    icon_tint: IconTint,
     embedded_icons: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
     raster_icons: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
@@ -161,6 +162,7 @@ impl LauncherRenderer {
             footer_time_format,
             command_format,
             assets: SvgAssetCache::create()?,
+            icon_tint: IconTint::from_color(theme.text),
             embedded_icons: HashMap::new(),
             raster_icons: HashMap::new(),
         };
@@ -200,6 +202,7 @@ impl LauncherRenderer {
     ) -> Result<LauncherDrawResult, LauncherRendererError> {
         debug_assert!(self.target.is_some());
         self.apply_theme(&scene.theme());
+        self.sync_icon_tint(scene.theme().text);
         let layout = scene.layout();
         let chrome = self.prepare_chrome(size, scene, &layout)?;
         for entry in scene.results() {
@@ -252,6 +255,14 @@ impl LauncherRenderer {
         theme::set(&self.caret, value.accent);
         theme::set(&self.result_text, value.text);
         theme::set(&self.initial_text, value.text);
+    }
+
+    fn sync_icon_tint(&mut self, color: Color) {
+        let tint = IconTint::from_color(color);
+        if self.icon_tint != tint {
+            self.icon_tint = tint;
+            self.embedded_icons.clear();
+        }
     }
 
     fn prepare_chrome(
@@ -487,7 +498,11 @@ impl LauncherRenderer {
             DockIcon::Embedded(asset) => {
                 let key = (*asset, size);
                 if !self.embedded_icons.contains_key(&key) {
-                    let raster = self.assets.rasterize(*asset, RasterSize::square(size))?;
+                    let raster = self.assets.rasterize(
+                        *asset,
+                        RasterSize::square(size),
+                        self.icon_tint,
+                    )?;
                     let bitmap = upload_pixels(
                         &self.context,
                         raster.size().width(),

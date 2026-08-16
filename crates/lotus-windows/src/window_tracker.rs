@@ -27,6 +27,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, Error, Result as WindowsResult};
 
+use crate::application_identity::window_application_identity_in_apartment;
+use crate::launch::ComApartment;
 use crate::{NativeError, WindowHandle};
 
 const REFRESH_MESSAGE: u32 = WM_APP + 1;
@@ -314,6 +316,7 @@ unsafe extern "system" fn win_event_callback(
 }
 
 fn enumerate_windows(own_process_id: u32) -> WindowsResult<Vec<WindowInfo>> {
+    let _apartment = ComApartment::enter();
     let mut state = EnumerationState {
         own_process_id,
         windows: Vec::new(),
@@ -351,12 +354,16 @@ fn window_info(hwnd: HWND, own_process_id: u32) -> Option<WindowInfo> {
 
     let title = window_title(hwnd);
     let executable_path = window_icon_identity(&title, process_image_path(process_id)?);
+    let id = window_id(hwnd)?;
+    let application_identity = window_application_identity_in_apartment(id);
     Some(WindowInfo {
-        id: window_id(hwnd)?,
+        id,
         process_id,
         title,
         executable_path,
-        app_user_model_id: process_application_id(process_id),
+        app_user_model_id: application_identity
+            .and_then(|identity| identity.app_user_model_id)
+            .or_else(|| process_application_id(process_id)),
     })
 }
 

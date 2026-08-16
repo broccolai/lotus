@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 
+use lotus_ui::theme::Color;
 use resvg::usvg;
 use thiserror::Error;
 use tiny_skia::{Pixmap, Transform};
@@ -176,6 +177,23 @@ pub struct RasterImage {
     pixels: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct IconTint {
+    red: u8,
+    green: u8,
+    blue: u8,
+}
+
+impl IconTint {
+    pub fn from_color(color: Color) -> Self {
+        Self {
+            red: color_component(color.red),
+            green: color_component(color.green),
+            blue: color_component(color.blue),
+        }
+    }
+}
+
 impl RasterImage {
     pub const fn size(&self) -> RasterSize {
         self.size
@@ -195,7 +213,7 @@ impl RasterImage {
 
 pub struct SvgAssetCache {
     trees: HashMap<SvgAsset, usvg::Tree>,
-    rasters: HashMap<(SvgAsset, RasterSize), RasterImage>,
+    rasters: HashMap<(SvgAsset, RasterSize, Option<IconTint>), RasterImage>,
 }
 
 impl SvgAssetCache {
@@ -217,13 +235,15 @@ impl SvgAssetCache {
         &mut self,
         asset: SvgAsset,
         size: RasterSize,
+        tint: IconTint,
     ) -> Result<&RasterImage, AssetError> {
-        let key = (asset, size);
+        let tint = asset.is_interface_symbol().then_some(tint);
+        let key = (asset, size, tint);
         if !self.rasters.contains_key(&key) {
             let tree = self.trees.get(&asset).ok_or(AssetError::CacheInvariant)?;
             let mut raster = rasterize_tree(tree, size)?;
-            if asset.is_interface_symbol() {
-                tint_interface_symbol(&mut raster.pixels);
+            if let Some(tint) = tint {
+                tint_interface_symbol(&mut raster.pixels, tint);
             }
             self.rasters.insert(key, raster);
         }
@@ -267,17 +287,23 @@ fn rgba_to_bgra(pixels: &mut [u8]) {
     }
 }
 
-fn tint_interface_symbol(pixels: &mut [u8]) {
-    const BLUE: u16 = 255;
-    const GREEN: u16 = 250;
-    const RED: u16 = 247;
+fn tint_interface_symbol(pixels: &mut [u8], tint: IconTint) {
     const MAX: u16 = 255;
     for pixel in pixels.chunks_exact_mut(4) {
         let alpha = u16::from(pixel[3]);
-        pixel[0] = u8::try_from(alpha * BLUE / MAX).unwrap_or(u8::MAX);
-        pixel[1] = u8::try_from(alpha * GREEN / MAX).unwrap_or(u8::MAX);
-        pixel[2] = u8::try_from(alpha * RED / MAX).unwrap_or(u8::MAX);
+        pixel[0] = u8::try_from(alpha * u16::from(tint.blue) / MAX).unwrap_or(u8::MAX);
+        pixel[1] = u8::try_from(alpha * u16::from(tint.green) / MAX).unwrap_or(u8::MAX);
+        pixel[2] = u8::try_from(alpha * u16::from(tint.red) / MAX).unwrap_or(u8::MAX);
     }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "normalized theme components are clamped to the byte range"
+)]
+fn color_component(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * f32::from(u8::MAX)).round() as u8
 }
 
 #[allow(
