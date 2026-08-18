@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryIter};
 
+pub use lotus_core::settings::UpdateChannel;
 pub use lotus_update::{Release, StagedUpdate, UpdateError, UpdateStatus};
 use thiserror::Error;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -52,9 +53,10 @@ impl UpdateChecker {
     pub fn start_check(
         &self,
         current_version: &'static str,
+        channel: UpdateChannel,
     ) -> Result<bool, UpdateStartError> {
         self.spawn("lotus-update-check", move || {
-            UpdateResult::Checked(lotus_update::check(current_version))
+            UpdateResult::Checked(lotus_update::check(current_version, channel))
         })
     }
 

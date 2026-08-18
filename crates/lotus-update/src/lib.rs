@@ -6,13 +6,14 @@ use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use lotus_core::settings::UpdateChannel;
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-const LATEST_RELEASE_API: &str =
-    "https://api.github.com/repos/broccolai/lotus/releases/latest";
+const RELEASES_API: &str =
+    "https://api.github.com/repos/broccolai/lotus/releases?per_page=100";
 const RELEASE_BASE_URL: &str = "https://github.com/broccolai/lotus/releases";
 const DOWNLOAD_LIMIT: u64 = 64 * 1024 * 1024;
 
@@ -50,6 +51,8 @@ pub enum UpdateError {
         #[source]
         source: semver::Error,
     },
+    #[error("GitHub returned no eligible Lotus releases for the selected update channel")]
+    NoEligibleRelease,
     #[error("GitHub returned an invalid release checksum")]
     InvalidChecksum,
     #[error("the downloaded release did not match its published SHA-256 checksum")]
@@ -58,9 +61,12 @@ pub enum UpdateError {
     Staging(#[source] io::Error),
 }
 
-pub fn check(current_version: &str) -> Result<UpdateStatus, UpdateError> {
+pub fn check(
+    current_version: &str,
+    channel: UpdateChannel,
+) -> Result<UpdateStatus, UpdateError> {
     let current = Version::parse(current_version).map_err(UpdateError::CurrentVersion)?;
-    let release = fetch_release()?;
+    let release = fetch_release(channel)?;
     let latest =
         Version::parse(&release.version).map_err(|source| UpdateError::ReleaseVersion {
             tag: release.version.clone(),
@@ -111,17 +117,19 @@ pub fn stage(release: &Release) -> Result<StagedUpdate, UpdateError> {
     })
 }
 
-fn fetch_release() -> Result<Release, UpdateError> {
-    let release = agent()
-        .get(LATEST_RELEASE_API)
+fn fetch_release(channel: UpdateChannel) -> Result<Release, UpdateError> {
+    let releases = agent()
+        .get(RELEASES_API)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .header("User-Agent", concat!("Lotus/", env!("CARGO_PKG_VERSION")))
         .call()
         .map_err(UpdateError::Request)?
         .body_mut()
-        .read_json::<GitHubRelease>()
+        .read_json::<Vec<GitHubRelease>>()
         .map_err(UpdateError::Request)?;
+    let (_, release) =
+        select_release(releases, channel).ok_or(UpdateError::NoEligibleRelease)?;
     let tag = release.tag_name.trim();
     let version = tag.strip_prefix('v').unwrap_or(tag);
     Version::parse(version).map_err(|source| UpdateError::ReleaseVersion {
@@ -171,4 +179,64 @@ fn staging_directory(version: &str) -> PathBuf {
 #[derive(Deserialize)]
 struct GitHubRelease {
     tag_name: String,
+    draft: bool,
+    prerelease: bool,
+}
+
+fn select_release(
+    releases: Vec<GitHubRelease>,
+    channel: UpdateChannel,
+) -> Option<(Version, GitHubRelease)> {
+    releases
+        .into_iter()
+        .filter(|release| {
+            !release.draft && (channel == UpdateChannel::Alpha || !release.prerelease)
+        })
+        .filter_map(|release| {
+            let tag = release.tag_name.trim();
+            let version = Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()?;
+            if channel == UpdateChannel::Stable && !version.pre.is_empty() {
+                return None;
+            }
+            Some((version, release))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use lotus_core::settings::UpdateChannel;
+
+    use super::{GitHubRelease, Version, select_release};
+
+    #[test]
+    fn selection_respects_channel_filters_and_highest_version() {
+        let release = |tag_name: &str, draft: bool, prerelease: bool| GitHubRelease {
+            tag_name: tag_name.into(),
+            draft,
+            prerelease,
+        };
+        let releases = || {
+            vec![
+                release("v9.0.0", true, false),
+                release("v8.0.0-beta.1", false, true),
+                release("v7.0.0-alpha.1", false, false),
+                release("v2.0.0", false, false),
+                release("not-a-version", false, false),
+            ]
+        };
+
+        assert_eq!(
+            select_release(releases(), UpdateChannel::Stable)
+                .expect("stable release")
+                .0,
+            Version::parse("2.0.0").expect("valid version")
+        );
+        assert_eq!(
+            select_release(releases(), UpdateChannel::Alpha)
+                .expect("alpha release")
+                .0,
+            Version::parse("8.0.0-beta.1").expect("valid version")
+        );
+    }
 }

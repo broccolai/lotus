@@ -23,6 +23,7 @@
   "use24HourTime": true,
   "mediaZone": "center",
   "startWithWindows": true,
+  "updateChannel": "stable",
   "hideWhenFullscreen": true,
   "replaceWindowsTaskbar": true,
   "exclusiveTaskbarReplacement": true,

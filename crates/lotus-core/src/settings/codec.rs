@@ -350,6 +350,7 @@ const PROPERTY_NAMES: &[&str] = &[
     "showMediaMetadata",
     "mediaZone",
     "startWithWindows",
+    "updateChannel",
     "hideWhenFullscreen",
     "replaceWindowsTaskbar",
     "exclusiveTaskbarReplacement",

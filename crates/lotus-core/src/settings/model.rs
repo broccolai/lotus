@@ -24,6 +24,14 @@ pub enum WindowPickerStyle {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub enum UpdateChannel {
+    #[default]
+    Stable,
+    Alpha,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum DockZone {
     Left,
     #[default]
@@ -74,6 +82,7 @@ pub struct DockSettings {
     pub show_media_metadata: bool,
     pub media_zone: DockZone,
     pub start_with_windows: bool,
+    pub update_channel: UpdateChannel,
     pub hide_when_fullscreen: bool,
     pub replace_windows_taskbar: bool,
     pub exclusive_taskbar_replacement: bool,
@@ -125,6 +134,7 @@ impl Default for DockSettings {
             show_media_metadata: true,
             media_zone: DockZone::Center,
             start_with_windows: true,
+            update_channel: UpdateChannel::Stable,
             hide_when_fullscreen: true,
             replace_windows_taskbar: true,
             exclusive_taskbar_replacement: true,

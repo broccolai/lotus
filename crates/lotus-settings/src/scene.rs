@@ -2,6 +2,7 @@ use std::num::NonZeroU32;
 
 use lotus_core::settings::{
     CURRENT_ONBOARDING_VERSION, DockSettings, DockZone, NotificationBadgeStyle,
+    UpdateChannel,
 };
 use lotus_ui::theme::Theme;
 
@@ -192,6 +193,7 @@ pub enum SettingsControl {
     AccentPreset,
     ForegroundPreset,
     NotificationBadgeStyle,
+    UpdateChannel,
     DockZone,
     SystemStatusZone,
     MediaZone,
@@ -636,6 +638,7 @@ impl SettingsScene {
                 | SettingsControl::AccentPreset
                 | SettingsControl::ForegroundPreset
                 | SettingsControl::NotificationBadgeStyle
+                | SettingsControl::UpdateChannel
                 | SettingsControl::DockZone
                 | SettingsControl::SystemStatusZone
                 | SettingsControl::MediaZone
@@ -685,6 +688,7 @@ impl SettingsScene {
             | SettingsControl::AccentPreset
             | SettingsControl::ForegroundPreset
             | SettingsControl::NotificationBadgeStyle
+            | SettingsControl::UpdateChannel
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
             | SettingsControl::MediaZone
@@ -785,6 +789,12 @@ impl SettingsScene {
             }
             (SettingsKey::Right, SettingsControl::NotificationBadgeStyle) => {
                 self.cycle_notification_badge_style(false)
+            }
+            (SettingsKey::Left, SettingsControl::UpdateChannel) => {
+                self.cycle_update_channel(true)
+            }
+            (SettingsKey::Right, SettingsControl::UpdateChannel) => {
+                self.cycle_update_channel(false)
             }
             (SettingsKey::Left, SettingsControl::DockZone) => self.cycle_zone(false, true),
             (SettingsKey::Right, SettingsControl::DockZone) => {
@@ -905,6 +915,7 @@ impl SettingsScene {
                     SettingsControl::Toggle(SettingsToggle::ShowUnpinnedRunningApps),
                     SettingsControl::Toggle(SettingsToggle::AltTabEnabled),
                     SettingsControl::NotificationBadgeStyle,
+                    SettingsControl::UpdateChannel,
                     SettingsControl::ChooseMascotImage,
                 ];
                 if self.draft.mascot_image_path.is_some() {
@@ -1167,6 +1178,7 @@ impl SettingsScene {
             SettingsControl::AccentPreset => SettingsAction::ChooseAccentColor,
             SettingsControl::ForegroundPreset => SettingsAction::ChooseForegroundColor,
             SettingsControl::NotificationBadgeStyle
+            | SettingsControl::UpdateChannel
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
             | SettingsControl::MediaZone
@@ -1376,6 +1388,15 @@ impl SettingsScene {
                 };
                 self.draft.notification_badge_style = *style;
             }
+            SettingsControl::UpdateChannel => {
+                let index =
+                    usize::try_from(offset.saturating_mul(2) / width).unwrap_or_default();
+                self.draft.update_channel = match index {
+                    0 => UpdateChannel::Stable,
+                    1 => UpdateChannel::Alpha,
+                    _ => return SettingsAction::None,
+                };
+            }
             SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
             | SettingsControl::MediaZone => {
@@ -1451,6 +1472,16 @@ impl SettingsScene {
             .unwrap_or_default();
         self.draft.notification_badge_style =
             styles[cycle_index(current, styles.len(), reverse)];
+        SettingsAction::Changed
+    }
+
+    fn cycle_update_channel(&mut self, reverse: bool) -> SettingsAction {
+        let channels = [UpdateChannel::Stable, UpdateChannel::Alpha];
+        let current = channels
+            .iter()
+            .position(|channel| *channel == self.draft.update_channel)
+            .unwrap_or_default();
+        self.draft.update_channel = channels[cycle_index(current, channels.len(), reverse)];
         SettingsAction::Changed
     }
 
@@ -1681,6 +1712,7 @@ fn is_page_content(control: SettingsControl) -> bool {
             | SettingsControl::AccentPreset
             | SettingsControl::ForegroundPreset
             | SettingsControl::NotificationBadgeStyle
+            | SettingsControl::UpdateChannel
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
             | SettingsControl::MediaZone

@@ -8,6 +8,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+lotus-core.workspace = true
 semver.workspace = true
 serde.workspace = true
 sha2.workspace = true

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::num::NonZeroU32;
 
-use lotus_core::settings::{DockZone, NotificationBadgeStyle};
+use lotus_core::settings::{DockZone, NotificationBadgeStyle, UpdateChannel};
 use lotus_settings::appearance::{AccentPreset, ForegroundPreset, SurfacePreset};
 use lotus_ui::theme::{Color, Theme};
 use thiserror::Error;
@@ -484,6 +484,7 @@ impl SettingsRenderer {
             SettingsControl::NotificationBadgeStyle => {
                 self.draw_notification_badge_style(scene, bounds);
             }
+            SettingsControl::UpdateChannel => self.draw_update_channel(scene, bounds),
             SettingsControl::DockZone => self.draw_zone_picker(scene, bounds, false),
             SettingsControl::SystemStatusZone => self.draw_zone_picker(scene, bounds, true),
             SettingsControl::MediaZone => self.draw_media_zone_picker(scene, bounds),
@@ -852,6 +853,7 @@ impl SettingsRenderer {
                         | SettingsControl::AccentPreset
                         | SettingsControl::ForegroundPreset
                         | SettingsControl::NotificationBadgeStyle
+                        | SettingsControl::UpdateChannel
                         | SettingsControl::DockZone
                         | SettingsControl::SystemStatusZone
                         | SettingsControl::MediaZone
@@ -1133,6 +1135,20 @@ impl SettingsRenderer {
                 ("Off", selected == NotificationBadgeStyle::Off),
                 ("Dot", selected == NotificationBadgeStyle::Dot),
                 ("Number", selected == NotificationBadgeStyle::Count),
+            ],
+        );
+    }
+
+    fn draw_update_channel(&self, scene: &SettingsScene, bounds: SettingsRect) {
+        let selected = scene.draft().update_channel;
+        self.draw_text_segments(
+            scene,
+            bounds,
+            SettingsControl::UpdateChannel,
+            "Update channel",
+            &[
+                ("Stable", selected == UpdateChannel::Stable),
+                ("Alpha", selected == UpdateChannel::Alpha),
             ],
         );
     }
@@ -1811,6 +1827,7 @@ fn is_page_content(control: SettingsControl) -> bool {
             | SettingsControl::AccentPreset
             | SettingsControl::ForegroundPreset
             | SettingsControl::NotificationBadgeStyle
+            | SettingsControl::UpdateChannel
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
             | SettingsControl::MediaZone

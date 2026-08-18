@@ -91,7 +91,9 @@ impl SettingsRuntime {
     }
 
     pub(super) fn start_update_check(&mut self) -> Result<bool, UpdateStartError> {
-        let started = self.update_checker.start_check(env!("CARGO_PKG_VERSION"))?;
+        let started = self
+            .update_checker
+            .start_check(env!("CARGO_PKG_VERSION"), self.scene.draft().update_channel)?;
         if started {
             let _ = self
                 .scene
