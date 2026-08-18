@@ -27,7 +27,7 @@ OutputDir=..\dist
 OutputBaseFilename=lotus-v{#MyAppVersion}-windows-x86_64-setup
 VersionInfoVersion={#MyVersionInfoVersion}
 VersionInfoProductName={#MyAppName}
-VersionInfoProductVersion={#MyAppVersion}
+VersionInfoProductVersion={#MyVersionInfoVersion}
 
 [Files]
 Source: "..\target\release\lotus.exe"; DestDir: "{app}"; Flags: ignoreversion

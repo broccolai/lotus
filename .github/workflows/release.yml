@@ -61,7 +61,13 @@ jobs:
             $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           }
           & $iscc installer\lotus.iss
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE"
+          }
           $setup = "dist\lotus-v$env:LOTUS_VERSION-windows-x86_64-setup.exe"
+          if (-not (Test-Path $setup)) {
+            throw "Inno Setup completed without producing $setup"
+          }
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $(Split-Path $setup -Leaf)" | Set-Content "$setup.sha256" -Encoding ascii
           "LOTUS_SETUP=$setup" >> $env:GITHUB_ENV
