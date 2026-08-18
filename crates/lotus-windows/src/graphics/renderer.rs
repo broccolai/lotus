@@ -25,7 +25,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory,
-    IDWriteFactory, IDWriteTextFormat,
+    IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
@@ -1523,10 +1523,24 @@ fn centered_symbol_format(
     factory: &IDWriteFactory,
     size: f32,
 ) -> Result<IDWriteTextFormat, WindowsError> {
-    // SAFETY: Static family and locale strings are NUL terminated.
+    let mut collection = None;
+    // SAFETY: DirectWrite returns an owned system collection; the factory is live.
+    unsafe { factory.GetSystemFontCollection(&raw mut collection, false)? };
+    let collection = collection.ok_or_else(|| {
+        WindowsError::new(
+            windows::Win32::Foundation::E_FAIL,
+            "DirectWrite returned no system font collection",
+        )
+    })?;
+    let family = if system_font_family_exists(&collection, w!("Segoe Fluent Icons"))? {
+        w!("Segoe Fluent Icons")
+    } else {
+        w!("Segoe MDL2 Assets")
+    };
+    // SAFETY: The selected static family and locale strings are NUL terminated.
     let format = unsafe {
         factory.CreateTextFormat(
-            w!("Segoe Fluent Icons"),
+            family,
             None,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
@@ -1542,6 +1556,17 @@ fn centered_symbol_format(
         format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
     }
     Ok(format)
+}
+
+fn system_font_family_exists(
+    collection: &IDWriteFontCollection,
+    family: windows::core::PCWSTR,
+) -> Result<bool, WindowsError> {
+    let mut index = 0;
+    let mut exists = windows::core::BOOL(0);
+    // SAFETY: `collection` is a live DirectWrite object and `index` is valid output storage.
+    unsafe { collection.FindFamilyName(family, &raw mut index, &raw mut exists) }?;
+    Ok(exists.as_bool())
 }
 
 fn media_text_format(
