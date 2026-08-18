@@ -30,12 +30,9 @@ pub fn choose_color(
         Flags: CC_ANYCOLOR | CC_FULLOPEN | CC_RGBINIT,
         ..CHOOSECOLORW::default()
     };
-    // SAFETY: The owner HWND is live, and `choice` plus its custom-color buffer remain valid
-    // for the duration of this synchronous modal call.
     if unsafe { ChooseColorW(&raw mut choice) }.as_bool() {
         return Ok(Some(from_color_ref(choice.rgbResult)));
     }
-    // SAFETY: This reads the calling thread's common-dialog error immediately after failure.
     let error = unsafe { CommDlgExtendedError() }.0;
     if error == 0 {
         Ok(None)

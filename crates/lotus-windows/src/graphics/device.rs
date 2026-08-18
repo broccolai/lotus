@@ -59,8 +59,6 @@ impl GraphicsDevice {
     }
 
     pub fn loss(&self) -> Option<DeviceLost> {
-        // SAFETY: `self.device` is a live, typed COM interface. The method has
-        // no pointer arguments and `windows-rs` validates the returned HRESULT.
         unsafe { self.device.GetDeviceRemovedReason() }
             .err()
             .map(|error| DeviceLost::new(error.code()))
@@ -69,9 +67,6 @@ impl GraphicsDevice {
     fn create_with_driver(driver: DeviceDriver) -> Result<Self, WindowsError> {
         let mut device = None;
 
-        // SAFETY: All output pointers refer to initialized `Option` storage
-        // that remains alive for the synchronous call. No adapter is supplied,
-        // which is required when selecting either HARDWARE or WARP by type.
         unsafe {
             D3D11CreateDevice(
                 None,

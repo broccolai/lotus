@@ -38,8 +38,6 @@ pub enum ActivationError {
 }
 
 pub fn foreground_window() -> Option<WindowId> {
-    // SAFETY: GetForegroundWindow takes no pointers and returns either a live
-    // borrowed HWND or null. Lotus does not own or destroy the handle.
     let window = unsafe { GetForegroundWindow() };
     let address = window.0.addr();
     if address == 0 {
@@ -62,19 +60,13 @@ pub fn execute_activation(
 
 fn minimize(window: WindowId) -> Result<(), ActivationError> {
     let hwnd = existing_window(window)?;
-    // SAFETY: `existing_window` verified the borrowed HWND immediately before
-    // this non-blocking request. The return value is prior visibility, not an
-    // operation-success indicator.
     let _was_visible = unsafe { ShowWindow(hwnd, SW_MINIMIZE) };
     Ok(())
 }
 
 fn focus(window: WindowId) -> Result<(), ActivationError> {
     let hwnd = existing_window(window)?;
-    // SAFETY: `hwnd` was validated immediately above and remains borrowed.
     if unsafe { IsIconic(hwnd) }.as_bool() {
-        // SAFETY: ShowWindow does not transfer ownership; its BOOL is the prior
-        // visibility state rather than a failure signal.
         let _was_visible = unsafe { ShowWindow(hwnd, SW_RESTORE) };
     }
 
@@ -91,15 +83,10 @@ pub fn focus_window(window: WindowId) -> Result<(), ActivationError> {
 
 pub fn switch_window(window: WindowId) -> Result<(), ActivationError> {
     let hwnd = existing_window(window)?;
-    // SAFETY: `hwnd` was validated immediately above and remains borrowed.
     if unsafe { IsIconic(hwnd) }.as_bool() {
-        // SAFETY: ShowWindow does not transfer ownership; its BOOL is the prior
-        // visibility state rather than a failure signal.
         let _was_visible = unsafe { ShowWindow(hwnd, SW_RESTORE) };
     }
 
-    // SAFETY: `hwnd` is a live borrowed top-level window. Passing true selects
-    // the native Alt/Ctrl+Tab switching behavior documented by Windows.
     unsafe { SwitchToThisWindow(hwnd, true) };
     if activate_window(hwnd).is_owned() {
         Ok(())
@@ -110,8 +97,6 @@ pub fn switch_window(window: WindowId) -> Result<(), ActivationError> {
 
 pub fn request_window_close(window: WindowId) -> Result<(), ActivationError> {
     let hwnd = existing_window(window)?;
-    // SAFETY: The HWND was validated immediately above. SC_CLOSE follows the same system-command
-    // path as the window's close button and transfers no pointers between processes.
     unsafe {
         PostMessageW(
             Some(hwnd),
@@ -125,8 +110,6 @@ pub fn request_window_close(window: WindowId) -> Result<(), ActivationError> {
 
 fn existing_window(window: WindowId) -> Result<HWND, ActivationError> {
     let hwnd = hwnd_from_id(window)?;
-    // SAFETY: IsWindow only inspects the numeric handle and accepts stale
-    // values; no ownership or lifetime claim is made by this check.
     unsafe { IsWindow(Some(hwnd)) }
         .as_bool()
         .then_some(hwnd)
@@ -162,9 +145,6 @@ pub fn launch_target(target: &str, arguments: Option<&str>) -> Result<(), Activa
         ..SHELLEXECUTEINFOW::default()
     };
 
-    // SAFETY: `execute` has the documented size, all optional fields are null,
-    // and its UTF-16 buffers remain alive through this synchronous call. No
-    // process handle is requested, so there is no returned ownership to close.
     unsafe { ShellExecuteExW(&raw mut execute) }.map_err(|source| ActivationError::Launch {
         target: request.target,
         source: source.into(),

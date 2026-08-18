@@ -18,17 +18,12 @@ type Result<T> = std::result::Result<T, NativeError>;
 pub struct WindowHandle(HWND);
 
 impl WindowHandle {
-    pub(crate) const fn from_raw(hwnd: HWND) -> Self {
-        Self(hwnd)
-    }
-
     pub(crate) const fn raw(self) -> HWND {
         self.0
     }
 }
 
 pub fn current_instance() -> Result<HINSTANCE> {
-    // SAFETY: Passing None requests the module handle for the current process.
     let module = unsafe { GetModuleHandleW(None)? };
     Ok(HINSTANCE(module.0))
 }
@@ -80,8 +75,6 @@ impl<State> NativeWindow<State> {
         let state_pointer = std::ptr::from_mut(state.as_mut())
             .cast::<std::ffi::c_void>()
             .cast_const();
-        // SAFETY: The caller supplies a registered class. `state_pointer` points into the Box this
-        // guard takes ownership of, so it remains stable until after the owned HWND is destroyed.
         let hwnd = unsafe {
             CreateWindowExW(
                 specification.extended_style,
@@ -122,13 +115,11 @@ impl<State> NativeWindow<State> {
     }
 
     pub fn dpi(&self) -> DpiScale {
-        // SAFETY: Reading per-window DPI does not mutate the owned live HWND.
         DpiScale::from_system(unsafe { GetDpiForWindow(self.hwnd) })
     }
 
     pub fn client_size(&self) -> Result<(u32, u32)> {
         let mut bounds = RECT::default();
-        // SAFETY: `bounds` is writable storage and this guard owns a live HWND.
         unsafe { GetClientRect(self.hwnd, &raw mut bounds)? };
         Ok((
             u32::try_from(bounds.right - bounds.left).unwrap_or_default(),
@@ -175,7 +166,6 @@ impl<State> NativeWindow<State> {
             WindowLayer::Bottom => HWND_BOTTOM,
             WindowLayer::Topmost => HWND_TOPMOST,
         };
-        // SAFETY: This guard owns the HWND; geometry is already validated physical-pixel input.
         unsafe {
             SetWindowPos(
                 self.hwnd,
@@ -195,13 +185,10 @@ impl<State> NativeWindow<State> {
             Activation::Activate => SW_SHOW,
             Activation::KeepInactive => SW_SHOWNOACTIVATE,
         };
-        // SAFETY: Showing this owned HWND transfers no ownership. The caller selects activation
-        // explicitly so dock/search/settings semantics cannot be confused at call sites.
         let _ = unsafe { ShowWindow(self.hwnd, command) };
     }
 
     pub fn reveal_without_repositioning(&self) -> Result<()> {
-        // SAFETY: The operation only changes visibility/z-order for this owned HWND.
         unsafe {
             SetWindowPos(
                 self.hwnd,
@@ -221,8 +208,6 @@ impl<State> NativeWindow<State> {
             WindowLayer::Bottom => HWND_BOTTOM,
             WindowLayer::Topmost => HWND_TOPMOST,
         };
-        // SAFETY: This changes only the z-order and visibility of the owned HWND without
-        // activating, moving, or resizing it.
         unsafe {
             SetWindowPos(
                 self.hwnd,
@@ -238,20 +223,16 @@ impl<State> NativeWindow<State> {
     }
 
     pub fn hide(&self) {
-        // SAFETY: Hiding this owned HWND is reversible and transfers no ownership.
         let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
     }
 
     pub fn is_visible(&self) -> bool {
-        // SAFETY: This is a read-only query against the owned HWND.
         unsafe { IsWindowVisible(self.hwnd).as_bool() }
     }
 }
 
 impl<State> Drop for NativeWindow<State> {
     fn drop(&mut self) {
-        // SAFETY: This guard owns the HWND and drops on its creating UI thread. The IsWindow check
-        // prevents a second destruction after normal WM_DESTROY processing.
         unsafe {
             if IsWindow(Some(self.hwnd)).as_bool() {
                 let _ = DestroyWindow(self.hwnd);

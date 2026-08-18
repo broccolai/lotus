@@ -1,0 +1,79 @@
+use std::path::Path;
+
+use lotus_core::search::ApplicationEntry;
+
+use super::super::application_identity::shortcut_application_id;
+use super::super::launch::{resolve_executable, shortcut_arguments};
+
+pub(super) fn shortcut_entry(name: String, path: &Path) -> ApplicationEntry {
+    let target = path.to_string_lossy().into_owned();
+    let mut entry = ApplicationEntry::new(name, target.clone(), Some(target));
+    if let Some(identity) = shortcut_application_id(path) {
+        entry = entry.with_app_user_model_id(identity);
+    }
+    entry
+}
+
+pub(super) fn is_chromium_web_app_shortcut(path: &Path) -> bool {
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
+    {
+        return false;
+    }
+
+    let arguments = shortcut_arguments(path);
+    let target = resolve_executable(&path.to_string_lossy());
+    chromium_web_app_identity(arguments.as_deref(), target.as_deref())
+}
+
+fn chromium_web_app_identity(arguments: Option<&str>, target: Option<&Path>) -> bool {
+    arguments.is_some_and(chromium_web_app_arguments)
+        || target
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.to_ascii_lowercase().ends_with("_proxy.exe"))
+}
+
+fn chromium_web_app_arguments(arguments: &str) -> bool {
+    arguments.split_ascii_whitespace().any(|argument| {
+        let argument = argument.trim_matches('"').to_ascii_lowercase();
+        argument.starts_with("--app-id=") || argument.starts_with("--app=")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::chromium_web_app_identity;
+
+    #[test]
+    fn chromium_web_app_shortcuts_accept_launch_switches_and_browser_proxies() {
+        let cases = [
+            (
+                Some("--profile-directory=Default --app-id=abcdefghijkl"),
+                Some(Path::new("chrome.exe")),
+                true,
+            ),
+            (
+                Some("--app=https://mail.proton.me/"),
+                Some(Path::new("chrome.exe")),
+                true,
+            ),
+            (None, Some(Path::new("chrome_proxy.exe")), true),
+            (None, Some(Path::new("msedge_proxy.exe")), true),
+            (
+                Some("--profile-directory=Default"),
+                Some(Path::new("chrome.exe")),
+                false,
+            ),
+            (None, Some(Path::new("ordinary.exe")), false),
+        ];
+
+        for (arguments, target, expected) in cases {
+            assert_eq!(chromium_web_app_identity(arguments, target), expected);
+        }
+    }
+}

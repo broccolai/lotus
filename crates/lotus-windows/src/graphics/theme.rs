@@ -13,6 +13,5 @@ pub(super) const fn d2d(color: Color) -> D2D1_COLOR_F {
 
 pub(super) fn set(brush: &ID2D1SolidColorBrush, color: Color) {
     let color = d2d(color);
-    // SAFETY: The live brush copies the stack-local color during this synchronous call.
     unsafe { brush.SetColor(&raw const color) };
 }

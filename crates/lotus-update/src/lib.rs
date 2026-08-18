@@ -128,14 +128,10 @@ fn fetch_release(channel: UpdateChannel) -> Result<Release, UpdateError> {
         .body_mut()
         .read_json::<Vec<GitHubRelease>>()
         .map_err(UpdateError::Request)?;
-    let (_, release) =
+    let release =
         select_release(releases, channel).ok_or(UpdateError::NoEligibleRelease)?;
     let tag = release.tag_name.trim();
     let version = tag.strip_prefix('v').unwrap_or(tag);
-    Version::parse(version).map_err(|source| UpdateError::ReleaseVersion {
-        tag: release.tag_name.clone(),
-        source,
-    })?;
     let installer_name = format!("lotus-v{version}-windows-x86_64-setup.exe");
     let download_base = format!("{RELEASE_BASE_URL}/download/{}", release.tag_name);
     Ok(Release {
@@ -144,6 +140,28 @@ fn fetch_release(channel: UpdateChannel) -> Result<Release, UpdateError> {
         installer_url: format!("{download_base}/{installer_name}"),
         checksum_url: format!("{download_base}/{installer_name}.sha256"),
     })
+}
+
+fn select_release(
+    releases: impl IntoIterator<Item = GitHubRelease>,
+    channel: UpdateChannel,
+) -> Option<GitHubRelease> {
+    releases
+        .into_iter()
+        .filter_map(|release| {
+            let tag = release.tag_name.trim();
+            let version = tag.strip_prefix('v').unwrap_or(tag);
+            Version::parse(version)
+                .ok()
+                .map(|version| (version, release))
+        })
+        .filter(|(version, release)| {
+            !release.draft
+                && (channel == UpdateChannel::Alpha
+                    || (!release.prerelease && version.pre.is_empty()))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0))
+        .map(|(_, release)| release)
 }
 
 fn download(url: &str) -> Result<Vec<u8>, UpdateError> {
@@ -183,34 +201,12 @@ struct GitHubRelease {
     prerelease: bool,
 }
 
-fn select_release(
-    releases: Vec<GitHubRelease>,
-    channel: UpdateChannel,
-) -> Option<(Version, GitHubRelease)> {
-    releases
-        .into_iter()
-        .filter(|release| {
-            !release.draft && (channel == UpdateChannel::Alpha || !release.prerelease)
-        })
-        .filter_map(|release| {
-            let tag = release.tag_name.trim();
-            let version = Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()?;
-            if channel == UpdateChannel::Stable && !version.pre.is_empty() {
-                return None;
-            }
-            Some((version, release))
-        })
-        .max_by(|left, right| left.0.cmp(&right.0))
-}
-
 #[cfg(test)]
 mod tests {
-    use lotus_core::settings::UpdateChannel;
-
-    use super::{GitHubRelease, Version, select_release};
+    use super::*;
 
     #[test]
-    fn selection_respects_channel_filters_and_highest_version() {
+    fn release_channel_selects_the_highest_eligible_version() {
         let release = |tag_name: &str, draft: bool, prerelease: bool| GitHubRelease {
             tag_name: tag_name.into(),
             draft,
@@ -218,25 +214,21 @@ mod tests {
         };
         let releases = || {
             vec![
+                release("invalid", false, false),
                 release("v9.0.0", true, false),
-                release("v8.0.0-beta.1", false, true),
-                release("v7.0.0-alpha.1", false, false),
-                release("v2.0.0", false, false),
-                release("not-a-version", false, false),
+                release("v1.2.0", false, false),
+                release("v1.4.0-alpha.1", false, true),
+                release("v1.5.0-alpha.1", false, false),
             ]
         };
 
         assert_eq!(
-            select_release(releases(), UpdateChannel::Stable)
-                .expect("stable release")
-                .0,
-            Version::parse("2.0.0").expect("valid version")
+            select_release(releases(), UpdateChannel::Stable).map(|value| value.tag_name),
+            Some("v1.2.0".into())
         );
         assert_eq!(
-            select_release(releases(), UpdateChannel::Alpha)
-                .expect("alpha release")
-                .0,
-            Version::parse("8.0.0-beta.1").expect("valid version")
+            select_release(releases(), UpdateChannel::Alpha).map(|value| value.tag_name),
+            Some("v1.5.0-alpha.1".into())
         );
     }
 }

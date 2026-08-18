@@ -40,7 +40,6 @@ pub struct UpdateChecker {
 impl UpdateChecker {
     pub fn new() -> Self {
         let (sender, results) = mpsc::channel();
-        // SAFETY: GetCurrentThreadId has no preconditions and captures the message-loop owner.
         let owner_thread = unsafe { GetCurrentThreadId() };
         Self {
             owner_thread,
@@ -91,7 +90,6 @@ impl UpdateChecker {
                 let result = work();
                 working.store(false, Ordering::Release);
                 if sender.send(result).is_ok() {
-                    // SAFETY: This private message carries no pointers and targets the captured UI thread.
                     let _ = unsafe {
                         PostThreadMessageW(
                             owner_thread,
@@ -261,7 +259,6 @@ pub const fn is_update_wake(message: u32) -> bool {
 fn replace_file(source: &Path, target: &Path) -> Result<(), UpdateInstallError> {
     let source = wide_null(source.as_os_str());
     let target = wide_null(target.as_os_str());
-    // SAFETY: Both paths are NUL-terminated and remain alive through this synchronous move.
     unsafe {
         MoveFileExW(
             PCWSTR(source.as_ptr()),

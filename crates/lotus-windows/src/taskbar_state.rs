@@ -120,8 +120,6 @@ struct ShellTaskbarState;
 impl TaskbarStateApi for ShellTaskbarState {
     fn state(&mut self) -> Result<TaskbarState, TaskbarStateError> {
         let mut data = appbar_data(None)?;
-        // SAFETY: `data` has the correct ABI size and remains writable for the
-        // synchronous AppBar query. ABM_GETSTATE returns the state flags.
         let state = unsafe { SHAppBarMessage(ABM_GETSTATE, &raw mut data) };
         u32::try_from(state)
             .map(TaskbarState)
@@ -132,8 +130,6 @@ impl TaskbarStateApi for ShellTaskbarState {
         let parameter = isize::try_from(state.bits())
             .map_err(|_| TaskbarStateError::StateOutOfRange(state.bits() as usize))?;
         let mut data = appbar_data(Some(parameter))?;
-        // SAFETY: `data` has the correct ABI size and lParam contains only the
-        // captured state flags plus, when requested, ABS_AUTOHIDE.
         let accepted = unsafe { SHAppBarMessage(ABM_SETSTATE, &raw mut data) };
         if accepted == 0 {
             return Err(TaskbarStateError::SetRejected {
@@ -156,8 +152,6 @@ fn appbar_data(parameter: Option<isize>) -> Result<APPBARDATA, TaskbarStateError
 }
 
 fn taskbar_window() -> Result<windows::Win32::Foundation::HWND, TaskbarStateError> {
-    // SAFETY: Both search strings are static and nul-terminated. A null title
-    // requests the first top-level window with the primary taskbar class.
     unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) }
         .map_err(|_| TaskbarStateError::MissingTaskbar)
 }

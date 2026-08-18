@@ -2,13 +2,20 @@ use lotus_core::settings::{DockSettings, DockZone};
 use lotus_media::MediaHitTarget;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::geometry::NonZeroPhysicalSize;
-
-use super::dock::{dock_anchor, metrics, popup_overlap, status_items, status_popup_center};
-use super::{
-    AppError, CompositionSurfaceState, DeviceState, DockHitTarget, DockIcon, DockScene,
-    DockWindow, MediaItem, SignedPoint, StatusWindow, SurfaceSize, SvgAsset,
-    SystemStatusKind, WindowEvent, render_surface, resize_surface,
+use lotus_windows::graphics::assets::SvgAsset;
+use lotus_windows::graphics::scene::{
+    DockHitTarget, DockIcon, DockScene, MediaItem, SystemStatusItem, SystemStatusKind,
 };
+use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
+use lotus_windows::window::{
+    DockWindow, PointerEvent, SignedPoint, StatusWindow, WindowEvent,
+};
+
+use crate::app::AppError;
+use crate::app::dock::{
+    dock_anchor, metrics, popup_overlap, status_items, status_popup_center,
+};
+use crate::app::runtime::{render_surface, resize_surface};
 
 pub(super) enum AuxiliaryZoneAction {
     Media(MediaHitTarget),
@@ -159,27 +166,27 @@ impl StatusRuntime {
         };
         let action = match event {
             WindowEvent::Pointer(pointer) => match pointer {
-                super::PointerEvent::Moved { x, y } => {
+                PointerEvent::Moved { x, y } => {
                     let target = zone.hit_test(x, y);
                     let _ = zone.scene.set_hovered(target);
                     None
                 }
-                super::PointerEvent::Left => {
+                PointerEvent::Left => {
                     let _ = zone.scene.set_hovered(None);
                     None
                 }
-                super::PointerEvent::LeftButtonPressed { x, y } => {
+                PointerEvent::LeftButtonPressed { x, y } => {
                     let target = zone.hit_test(x, y);
                     let _ = zone.scene.set_pressed(target);
                     None
                 }
-                super::PointerEvent::LeftButtonReleased { x, y } => {
+                PointerEvent::LeftButtonReleased { x, y } => {
                     let target = zone.hit_test(x, y);
                     let pressed = zone.scene.interaction().pressed;
                     let _ = zone.scene.set_pressed(None);
                     (pressed == target).then_some(target).flatten()
                 }
-                super::PointerEvent::Cancelled => {
+                PointerEvent::Cancelled => {
                     let _ = zone.scene.set_pressed(None);
                     None
                 }
@@ -278,7 +285,7 @@ fn build_zone_scene(
     zone: DockZone,
     settings: &DockSettings,
     media: Option<MediaItem>,
-    status: Option<Vec<super::SystemStatusItem>>,
+    status: Option<Vec<SystemStatusItem>>,
 ) -> Result<DockScene, AppError> {
     let mut scene = DockScene::new(
         dpi,

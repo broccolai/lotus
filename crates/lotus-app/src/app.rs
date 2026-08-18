@@ -4,117 +4,56 @@ mod launcher;
 mod media;
 mod monitors;
 mod runtime;
-mod runtime_helpers;
 mod settings;
 mod status;
 mod switcher;
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::PathBuf;
 
 use context_menu::ContextMenuRuntime;
 use dock::DockRuntime;
-use launcher::{LauncherRuntime, LauncherSubmission};
-use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit, SelectionMove};
-use lotus_core::notification::NotificationSource;
+use launcher::LauncherRuntime;
 use lotus_core::search::SearchUsage;
 use lotus_core::settings::{
-    CURRENT_ONBOARDING_VERSION, DockSettings, DockZone, NotificationBadgeStyle,
-    SettingsDecodeError, SettingsStore, SettingsStoreError, WindowPickerStyle,
-    decode_settings,
+    CURRENT_ONBOARDING_VERSION, DockSettings, NotificationBadgeStyle, SettingsDecodeError,
+    SettingsStore, SettingsStoreError, decode_settings,
 };
-use lotus_core::window::{WindowId, WindowInfo};
-use lotus_dock::popup::order_picker_windows;
-use lotus_media::MediaSnapshot;
-use lotus_search::command::CommandId;
-use lotus_search::controller::{SearchController, SearchPresentation};
 use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
-use lotus_switcher::model::{RecentOrder, SwitcherSession};
-use lotus_ui::geometry::NonZeroPhysicalSize;
-use lotus_windows::WindowHandle;
-use lotus_windows::activation::{
-    ActivationError, execute_activation, foreground_window, launch_target,
-    request_window_close, switch_window,
-};
-use lotus_windows::alt_tab::{AltTabController, AltTabEvent, is_alt_tab_wake};
-use lotus_windows::appbar::{ShellIntegration, fullscreen_notification};
-use lotus_windows::clipboard::{read_text, write_text};
-use lotus_windows::clock::{local_date, local_time};
-use lotus_windows::dialog::{
-    confirm_install_update, confirm_restart, confirm_shutdown, show_error, show_information,
-};
+use lotus_windows::activation::ActivationError;
+use lotus_windows::alt_tab::AltTabController;
+use lotus_windows::appbar::ShellIntegration;
 use lotus_windows::dpi::enable_per_monitor_v2;
-use lotus_windows::dwm_thumbnail::DwmThumbnailHost;
-use lotus_windows::interaction::{next_message, request_exit};
-use lotus_windows::launch::resolve_executable;
-use lotus_windows::media::{
-    MediaCommand, MediaController, MediaEvent, decode_artwork, is_media_wake,
+use lotus_windows::graphics::{
+    CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize,
 };
-use lotus_windows::native_icon::NativeIconCache;
-use lotus_windows::search_catalog::{SearchCatalogCache, is_search_catalog_wake};
+use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::single_instance::SingleInstance;
 use lotus_windows::startup::{
     self as startup_registration, RestartWaitError, StartupArgsError, parse_startup_args,
     wait_for_restart_source,
 };
-use lotus_windows::taskbar_badges::{TaskbarBadgeController, is_taskbar_badge_wake};
-use lotus_windows::update::{
-    UpdateResult, UpdateStatus, is_installed, is_update_wake, launch_installer,
-};
-use lotus_windows::window_tracker::{WindowTracker, WindowTrackerEvent};
-use lotus_windows::windows_key::{
-    WindowsKeyController, WindowsKeyError, WindowsKeyEvent, is_windows_key_wake,
-};
+use lotus_windows::taskbar_badges::TaskbarBadgeController;
+use lotus_windows::update::is_installed;
+use lotus_windows::window::DockWindow;
+use lotus_windows::window_tracker::WindowTracker;
+use lotus_windows::windows_key::{WindowsKeyController, WindowsKeyError};
 use media::MediaRuntime;
-use monitors::{MonitorDockAction, MonitorDocks};
-use runtime::run_message_loop;
-use runtime_helpers::{
+use monitors::MonitorDocks;
+use runtime::{
     apply_fullscreen_visibility, enable_optional_alt_tab, enable_optional_windows_key,
-    handle_alt_tab_events, handle_pointer_event, handle_search_event,
-    handle_windows_key_events, render_and_schedule, render_surface, resize_dock,
-    resize_launcher_surface, resize_surface, restart_current_process,
+    render_and_schedule, resize_dock, run_message_loop,
 };
 use settings::SettingsRuntime;
-use status::{AuxiliaryZoneAction, StatusRuntime};
+use status::StatusRuntime;
 use switcher::{AuxiliaryWindows, SwitcherRuntime};
 use thiserror::Error;
-
-use crate::graphics::assets::SvgAsset;
-use crate::graphics::context_menu_scene::{
-    AppMenuAction, ContextMenuAction, ContextMenuScene, NativePickerWindow, PopupAction,
-    PowerAction,
-};
-use crate::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
-use crate::graphics::launcher_scene::{LauncherResult, LauncherScene};
-use crate::graphics::launcher_surface::LauncherCompositionSurfaceState;
-use crate::graphics::scene::{
-    DockAnchor, DockBadge, DockHitTarget, DockIcon, DockMetrics, DockScene, MediaItem,
-    MediaSymbols, SystemStatusItem, SystemStatusKind,
-};
-use crate::graphics::scene_adapter::{
-    adapt_dock_items_with_native, resolve_icon_with_native,
-};
-use crate::graphics::settings_scene::{
-    SettingsAction, SettingsKey as SceneSettingsKey, SettingsScene, SettingsSize,
-    SettingsSlider, SettingsUpdateActivity,
-};
-use crate::graphics::settings_surface::SettingsCompositionSurfaceState;
-use crate::graphics::switcher_scene::{SwitcherHitTarget, SwitcherItem, SwitcherScene};
-use crate::graphics::switcher_surface::SwitcherCompositionSurfaceState;
-use crate::graphics::{CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize};
-use crate::window::{
-    ContextMenuEvent, ContextMenuWindow, CursorMove as WindowCursorMove,
-    DockContextRequest, DockWindow, PointerEvent, PopupAlignment, SearchEdit, SearchEvent,
-    SearchWindow, SelectionDirection, SettingsEvent, SettingsKey as WindowSettingsKey,
-    SettingsWindow, SignedPoint, StatusWindow, SwitcherEvent, SwitcherWindow, WindowEvent,
-};
 
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error(transparent)]
-    Graphics(#[from] crate::graphics::GraphicsDeviceError),
+    Graphics(#[from] lotus_windows::graphics::GraphicsDeviceError),
     #[error("the newly created graphics device was unexpectedly unavailable")]
     GraphicsUnavailable,
     #[error(transparent)]

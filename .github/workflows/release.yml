@@ -32,9 +32,11 @@ jobs:
             throw "tag $env:GITHUB_REF_NAME does not match lotus-app version $version"
           }
           "LOTUS_VERSION=$version" >> $env:GITHUB_ENV
+          $numericVersion = ($version -split "-", 2)[0]
+          "LOTUS_VERSION_INFO=$numericVersion.0" >> $env:GITHUB_ENV
       - name: build
         shell: cmd
-        run: scripts\cargo.cmd build --release --locked -p lotus-app -p lotus-shell-bridge -p lotus-explorer-bridge
+        run: cargo build --release --locked -p lotus-app -p lotus-shell-bridge -p lotus-explorer-bridge
       - name: package portable build
         shell: powershell
         run: |
@@ -68,11 +70,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:GITHUB_REF_NAME `
-            $env:LOTUS_ARCHIVE `
-            "$env:LOTUS_ARCHIVE.sha256" `
-            $env:LOTUS_SETUP `
-            "$env:LOTUS_SETUP.sha256" `
-            --verify-tag `
-            --title "lotus $env:GITHUB_REF_NAME" `
-            --generate-notes
+          $arguments = @(
+            "release", "create", $env:GITHUB_REF_NAME,
+            $env:LOTUS_ARCHIVE,
+            "$env:LOTUS_ARCHIVE.sha256",
+            $env:LOTUS_SETUP,
+            "$env:LOTUS_SETUP.sha256",
+            "--verify-tag",
+            "--title", "lotus $env:GITHUB_REF_NAME",
+            "--generate-notes"
+          )
+          if ($env:LOTUS_VERSION.Contains("-")) {
+            $arguments += "--prerelease"
+          }
+          & gh @arguments

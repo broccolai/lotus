@@ -1,8 +1,0 @@
-pub use lotus_search::scene::{
-    LauncherLayout, LauncherResultKind, LauncherSize, PixelRect,
-};
-
-use super::assets::SvgAsset;
-
-pub type LauncherResult = lotus_search::scene::LauncherResult<SvgAsset>;
-pub type LauncherScene = lotus_search::scene::LauncherScene<SvgAsset>;

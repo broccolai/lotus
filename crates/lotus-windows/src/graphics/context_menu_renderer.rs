@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::num::NonZeroU32;
 
 use lotus_ui::geometry::{PhysicalRect, physical_rect};
@@ -7,12 +6,9 @@ use lotus_ui::icon::{Icon, RasterIcon, RasterIconId};
 use lotus_ui::theme::Theme;
 use thiserror::Error;
 use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
-};
+use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_COLOR_F};
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
     D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext,
     ID2D1Factory1, ID2D1Image, ID2D1SolidColorBrush,
@@ -23,15 +19,14 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
     DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::core::{Error as WindowsError, w};
 
 use super::assets::{AssetError, IconTint, RasterSize, SvgAsset, SvgAssetCache};
-use super::context_menu_scene::{ContextMenuScene, PopupEntry, PopupIcon, PopupSymbol};
 use super::device::GraphicsDevice;
+use super::resources::{raster_key, target_bitmap_properties, upload_bgra_pixels};
 use super::surface::SurfaceSize;
-use super::theme;
+use super::{ContextMenuScene, PopupEntry, PopupIcon, PopupSymbol, theme};
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = rgba8(0, 0, 0, 0);
@@ -64,15 +59,11 @@ impl ContextMenuRenderer {
         swap_chain: &IDXGISwapChain1,
     ) -> Result<Self, ContextMenuRendererError> {
         let dxgi = graphics.dxgi_device()?;
-        // SAFETY: A supported typed factory is requested without retained options.
         let factory: ID2D1Factory1 =
             unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
-        // SAFETY: The live DXGI device is compatible with the Direct2D factory.
         let device = unsafe { factory.CreateDevice(&dxgi)? };
-        // SAFETY: The live device returns an owned drawing context.
         let context =
             unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
-        // SAFETY: DirectWrite returns an owned shared factory.
         let write_factory: IDWriteFactory =
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let theme = Theme::default();
@@ -97,7 +88,6 @@ impl ContextMenuRenderer {
     }
 
     pub(super) fn detach_target(&mut self) {
-        // SAFETY: A null target releases the swap-chain buffer before resize.
         unsafe { self.context.SetTarget(None::<&ID2D1Image>) };
         self.target = None;
     }
@@ -107,15 +97,12 @@ impl ContextMenuRenderer {
         chain: &IDXGISwapChain1,
     ) -> Result<(), WindowsError> {
         self.detach_target();
-        // SAFETY: Buffer zero exists on the initialized composition swap chain.
         let surface: IDXGISurface = unsafe { chain.GetBuffer(0)? };
-        let properties = target_properties();
-        // SAFETY: Surface and properties remain live through bitmap creation.
+        let properties = target_bitmap_properties();
         let target = unsafe {
             self.context
                 .CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
         };
-        // SAFETY: The bitmap belongs to this context and has TARGET enabled.
         unsafe { self.context.SetTarget(&target) };
         self.target = Some(target);
         Ok(())
@@ -157,7 +144,6 @@ impl ContextMenuRenderer {
         );
         let transparent = TRANSPARENT;
 
-        // SAFETY: Target, brushes, text, bitmaps and local geometry remain live through EndDraw.
         let result = unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&raw const transparent));
@@ -218,14 +204,12 @@ impl ContextMenuRenderer {
         icon_size: NonZeroU32,
     ) -> Result<(), ContextMenuRendererError> {
         let background = rounded(rect(bounds), as_f32(bounds.height()) / 2.0);
-        // SAFETY: Drawing occurs inside the active Direct2D draw transaction.
         unsafe {
             self.context
                 .FillRoundedRectangle(&raw const background, &self.highlight);
         };
         let bitmap = self.embedded_bitmap(asset, icon_size)?;
         let destination = centered_rect(bounds, icon_size.get());
-        // SAFETY: The bitmap and destination rectangle remain live for the synchronous draw.
         unsafe {
             self.context.DrawBitmap(
                 bitmap,
@@ -251,7 +235,6 @@ impl ContextMenuRenderer {
         let radius = scale(scene, scene.theme().radii.control);
         if entry.highlighted {
             let highlight = rounded(bounds, radius);
-            // SAFETY: Drawing occurs inside the active Direct2D draw transaction.
             unsafe {
                 self.context
                     .FillRoundedRectangle(&raw const highlight, &self.highlight);
@@ -259,7 +242,6 @@ impl ContextMenuRenderer {
         }
         if entry.active {
             let active = rounded(bounds, radius);
-            // SAFETY: Drawing occurs inside the active Direct2D draw transaction.
             unsafe {
                 self.context.DrawRoundedRectangle(
                     &raw const active,
@@ -277,7 +259,6 @@ impl ContextMenuRenderer {
         };
         let icon = self.popup_bitmap(&entry.icon, artwork_size)?;
         let icon_bounds = icon_bounds(entry, artwork_size);
-        // SAFETY: The bitmap and destination rectangle are live through this synchronous draw.
         unsafe {
             self.context.DrawBitmap(
                 icon,
@@ -309,7 +290,6 @@ impl ContextMenuRenderer {
             bounds.right = as_f32(close.min_x().saturating_sub(4));
         }
         let text = entry.label.encode_utf16().collect::<Vec<_>>();
-        // SAFETY: Drawing occurs inside the active transaction; text and bounds remain live.
         unsafe {
             self.context.DrawText(
                 &text,
@@ -332,7 +312,6 @@ impl ContextMenuRenderer {
         };
         if entry.close_highlighted {
             let highlight = rounded(rect(close), as_f32(close.height()) * 0.25);
-            // SAFETY: Drawing occurs inside the active Direct2D draw transaction.
             unsafe {
                 self.context
                     .FillRoundedRectangle(&raw const highlight, &self.highlight);
@@ -340,7 +319,6 @@ impl ContextMenuRenderer {
         }
         let bitmap = self.embedded_bitmap(SvgAsset::FluentDismiss, icon_size)?;
         let bounds = centered_rect(close, icon_size.get());
-        // SAFETY: The retained bitmap and local bounds are live for the synchronous draw.
         unsafe {
             self.context.DrawBitmap(
                 bitmap,
@@ -374,7 +352,6 @@ impl ContextMenuRenderer {
             return Ok(format.clone());
         }
         let size = 13.5 * as_f32(dpi) / TARGET_DPI;
-        // SAFETY: Static family and locale strings are NUL terminated.
         let format = unsafe {
             self.write_factory.CreateTextFormat(
                 w!("Segoe UI Variable Text"),
@@ -386,7 +363,6 @@ impl ContextMenuRenderer {
                 w!("en-us"),
             )?
         };
-        // SAFETY: The newly created format accepts these documented layout values.
         unsafe {
             format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
             format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
@@ -420,7 +396,7 @@ impl ContextMenuRenderer {
         let raster =
             self.assets
                 .rasterize(asset, RasterSize::square(size), self.icon_tint)?;
-        let bitmap = upload_bitmap(
+        let bitmap = upload_bgra_pixels(
             &self.context,
             raster.size().width(),
             raster.size().height(),
@@ -439,7 +415,7 @@ impl ContextMenuRenderer {
         if self.rasters.contains_key(&key) {
             return Ok(());
         }
-        let bitmap = upload_bitmap(
+        let bitmap = upload_bgra_pixels(
             &self.context,
             raster.width(),
             raster.height(),
@@ -486,58 +462,11 @@ pub(super) enum ContextMenuRendererError {
     Windows(#[from] WindowsError),
 }
 
-fn upload_bitmap(
-    context: &ID2D1DeviceContext,
-    width: u32,
-    height: u32,
-    pixels: &[u8],
-    stride: u32,
-) -> Result<ID2D1Bitmap1, WindowsError> {
-    let properties = source_properties();
-    // SAFETY: The validated source slice contains premultiplied BGRA bytes and remains live
-    // through the synchronous Direct2D copy.
-    unsafe {
-        context.CreateBitmap(
-            D2D_SIZE_U { width, height },
-            Some(pixels.as_ptr().cast::<c_void>()),
-            stride,
-            &raw const properties,
-        )
-    }
-}
-
 fn brush(
     context: &ID2D1DeviceContext,
     color: &D2D1_COLOR_F,
 ) -> Result<ID2D1SolidColorBrush, WindowsError> {
-    // SAFETY: Direct2D copies the color synchronously.
     unsafe { context.CreateSolidColorBrush(color, None) }
-}
-
-fn target_properties() -> D2D1_BITMAP_PROPERTIES1 {
-    D2D1_BITMAP_PROPERTIES1 {
-        pixelFormat: D2D1_PIXEL_FORMAT {
-            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-        },
-        dpiX: TARGET_DPI,
-        dpiY: TARGET_DPI,
-        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-        ..D2D1_BITMAP_PROPERTIES1::default()
-    }
-}
-
-fn source_properties() -> D2D1_BITMAP_PROPERTIES1 {
-    D2D1_BITMAP_PROPERTIES1 {
-        pixelFormat: D2D1_PIXEL_FORMAT {
-            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-        },
-        dpiX: TARGET_DPI,
-        dpiY: TARGET_DPI,
-        bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
-        ..D2D1_BITMAP_PROPERTIES1::default()
-    }
 }
 
 fn icon_bounds(entry: &PopupEntry<SvgAsset>, size: NonZeroU32) -> D2D_RECT_F {
@@ -599,10 +528,6 @@ const fn symbol_asset(symbol: PopupSymbol) -> SvgAsset {
         PopupSymbol::Pin => SvgAsset::FluentPin,
         PopupSymbol::Unpin => SvgAsset::FluentPinOff,
     }
-}
-
-fn raster_key(raster: &RasterIcon) -> (RasterIconId, u32, u32) {
-    (raster.id().clone(), raster.width(), raster.height())
 }
 
 fn scale(scene: &ContextMenuScene, dips: f32) -> f32 {

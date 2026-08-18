@@ -1,14 +1,30 @@
+use std::path::Path;
+use std::time::Duration;
+
+use lotus_core::launcher_model::SelectionMove;
+use lotus_core::settings::DockSettings;
+use lotus_search::command::CommandId;
+use lotus_search::controller::{SearchController, SearchPresentation};
+use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::theme::Theme;
-
-use super::{
-    AppError, CommandId, DeviceState, DockIcon, DockRuntime, DockSettings, DockWindow,
-    Duration, LauncherCompositionSurfaceState, LauncherResult, LauncherScene,
-    NativeIconCache, Path, SearchCatalogCache, SearchController, SearchEvent,
-    SearchPresentation, SearchUsageStore, SearchWindow, SelectionDirection, SelectionMove,
-    SurfaceError, SurfaceSize, SvgAsset, WindowHandle, launch_target, local_time,
-    resize_launcher_surface, show_error,
+use lotus_windows::WindowHandle;
+use lotus_windows::activation::launch_target;
+use lotus_windows::clock::local_time;
+use lotus_windows::dialog::show_error;
+use lotus_windows::graphics::assets::SvgAsset;
+use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
+use lotus_windows::graphics::scene::DockIcon;
+use lotus_windows::graphics::{
+    DeviceState, LauncherResult, LauncherScene, SurfaceError, SurfaceSize,
 };
+use lotus_windows::native_icon::NativeIconCache;
+use lotus_windows::search_catalog::SearchCatalogCache;
+use lotus_windows::window::{DockWindow, SearchEvent, SearchWindow, SelectionDirection};
+
+use crate::app::AppError;
+use crate::app::dock::DockRuntime;
+use crate::app::runtime::resize_launcher_surface;
 
 pub(super) struct LauncherRuntime {
     pub(super) window: SearchWindow,

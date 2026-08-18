@@ -1,12 +1,17 @@
-use lotus_core::settings::DockSettings;
+use lotus_core::settings::{DockSettings, WindowPickerStyle};
 use lotus_settings::appearance::theme_for;
+use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::theme::Theme;
-
-use super::{
-    AppError, ContextMenuCompositionSurfaceState, ContextMenuEvent, ContextMenuScene,
-    ContextMenuWindow, DeviceState, DwmThumbnailHost, NativePickerWindow,
-    NonZeroPhysicalSize, PopupAlignment, SignedPoint, SurfaceError, WindowPickerStyle,
+use lotus_windows::dwm_thumbnail::DwmThumbnailHost;
+use lotus_windows::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
+use lotus_windows::graphics::{
+    ContextMenuScene, DeviceState, NativePickerWindow, SurfaceError,
 };
+use lotus_windows::window::{
+    ContextMenuEvent, ContextMenuWindow, PopupAlignment, SignedPoint,
+};
+
+use crate::app::AppError;
 
 pub(super) struct ContextMenuRuntime {
     pub(super) window: ContextMenuWindow,

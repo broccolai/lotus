@@ -1,17 +1,21 @@
+use lotus_core::settings::DockSettings;
+use lotus_windows::graphics::settings_surface::SettingsCompositionSurfaceState;
+use lotus_windows::graphics::{
+    DeviceState, SettingsScene, SettingsSize, SettingsSlider, SettingsUpdateActivity,
+    SurfaceError,
+};
 use lotus_windows::interaction::PointerCursor;
 use lotus_windows::update::{Release, UpdateChecker, UpdateResult, UpdateStartError};
+use lotus_windows::window::{SettingsEvent, SettingsWindow};
 
-use super::{
-    AppError, DeviceState, DockSettings, SettingsCompositionSurfaceState, SettingsEvent,
-    SettingsScene, SettingsSize, SettingsUpdateActivity, SettingsWindow, SurfaceError,
-};
+use crate::app::AppError;
 
 pub(super) struct SettingsRuntime {
     pub(super) window: SettingsWindow,
     pub(super) scene: SettingsScene,
     pub(super) surface: Option<SettingsCompositionSurfaceState>,
     pub(super) visible: bool,
-    pub(super) dragging_slider: Option<super::SettingsSlider>,
+    pub(super) dragging_slider: Option<SettingsSlider>,
     update_checker: UpdateChecker,
 }
 

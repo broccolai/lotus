@@ -1,16 +1,12 @@
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::num::NonZeroU32;
 
 use lotus_ui::theme::{Color, Theme};
 use thiserror::Error;
 use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
-};
+use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_COLOR_F};
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT,
     D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
     ID2D1Image, ID2D1SolidColorBrush,
@@ -22,16 +18,15 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
     DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::core::{Error as WindowsError, PCWSTR, w};
 
 use super::assets::{AssetError, IconTint, RasterSize, SvgAsset, SvgAssetCache};
 use super::device::GraphicsDevice;
-use super::launcher_scene::{LauncherLayout, LauncherResultKind, LauncherScene, PixelRect};
-use super::scene::{DockIcon, RasterIcon, RasterIconId};
+use super::resources::{raster_key, target_bitmap_properties, upload_bgra_pixels};
+use super::scene::{DockIcon, RasterIconId};
 use super::surface::SurfaceSize;
-use super::theme;
+use super::{LauncherLayout, LauncherResultKind, LauncherScene, PixelRect, theme};
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = color(0.0, 0.0, 0.0, 0.0);
@@ -87,18 +82,13 @@ impl LauncherRenderer {
         swap_chain: &IDXGISwapChain1,
     ) -> Result<Self, LauncherRendererError> {
         let dxgi = graphics.dxgi_device()?;
-        // SAFETY: A supported typed Direct2D factory is requested with no retained options.
         let factory: ID2D1Factory1 =
             unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
-        // SAFETY: Both typed device creation calls use live COM interfaces.
         let device = unsafe { factory.CreateDevice(&dxgi)? };
-        // SAFETY: The device is live and returns an owned context.
         let context =
             unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
-        // SAFETY: DirectWrite returns an owned typed shared factory.
         let write_factory: IDWriteFactory =
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
-        // SAFETY: Static color values remain alive for each synchronous brush creation.
         let theme = Theme::default();
         let panel = brush(&context, &theme::d2d(theme.chrome_overlay))?;
         let field = brush(&context, &theme::d2d(theme.control))?;
@@ -122,7 +112,6 @@ impl LauncherRenderer {
             text_format(&write_factory, 12.5, DWRITE_FONT_WEIGHT_NORMAL)?;
         let command_format =
             text_format(&write_factory, 10.5, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-        // SAFETY: The owned format is live and alignment values are valid.
         unsafe {
             title_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             query_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
@@ -171,7 +160,6 @@ impl LauncherRenderer {
     }
 
     pub(super) fn detach_target(&mut self) {
-        // SAFETY: A null target releases the current buffer reference before resize.
         unsafe { self.context.SetTarget(None::<&ID2D1Image>) };
         self.target = None;
     }
@@ -181,15 +169,12 @@ impl LauncherRenderer {
         chain: &IDXGISwapChain1,
     ) -> Result<(), WindowsError> {
         self.detach_target();
-        // SAFETY: Buffer zero exists on the initialized composition swap chain.
         let surface: IDXGISurface = unsafe { chain.GetBuffer(0)? };
-        let properties = target_properties();
-        // SAFETY: Surface and properties are live through the synchronous call.
+        let properties = target_bitmap_properties();
         let target = unsafe {
             self.context
                 .CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
         };
-        // SAFETY: The bitmap belongs to this context and has TARGET enabled.
         unsafe { self.context.SetTarget(&target) };
         self.target = Some(target);
         Ok(())
@@ -225,7 +210,6 @@ impl LauncherRenderer {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let transparent = TRANSPARENT;
-        // SAFETY: Target, brushes, formats, text and geometry live through EndDraw.
         let result = unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&raw const transparent));
@@ -302,7 +286,6 @@ impl LauncherRenderer {
         layout: &LauncherLayout,
         search_bitmap: &ID2D1Bitmap1,
     ) {
-        // SAFETY: The active draw target, retained brushes, formats, and geometry remain live.
         unsafe {
             self.context
                 .FillRectangle(&raw const chrome.panel, &self.panel);
@@ -342,7 +325,6 @@ impl LauncherRenderer {
     }
 
     fn draw_row_states(&self, layout: &LauncherLayout, radius: f32) {
-        // SAFETY: The active draw target, retained brushes, and projected geometry remain live.
         unsafe {
             if let Some(hovered) = layout
                 .hovered
@@ -377,7 +359,6 @@ impl LauncherRenderer {
         layout: &LauncherLayout,
         icon_draws: &[(&ID2D1Bitmap1, D2D_RECT_F)],
     ) {
-        // SAFETY: The active draw target and all cached bitmaps, text, formats, and brushes live.
         unsafe {
             for (bitmap, bounds) in icon_draws {
                 self.context.DrawBitmap(
@@ -452,8 +433,6 @@ impl LauncherRenderer {
         let separator = rect(layout.footer_separator);
         let label = rect(layout.footer_label);
         let time = rect(layout.footer_time);
-        // SAFETY: The active target, retained brushes/formats, and local UTF-16 buffers remain
-        // live for all synchronous Direct2D/DirectWrite calls.
         unsafe {
             if let Some(thumb) = layout.scrollbar_thumb {
                 let radius =
@@ -503,7 +482,7 @@ impl LauncherRenderer {
                         RasterSize::square(size),
                         self.icon_tint,
                     )?;
-                    let bitmap = upload_pixels(
+                    let bitmap = upload_bgra_pixels(
                         &self.context,
                         raster.size().width(),
                         raster.size().height(),
@@ -516,7 +495,7 @@ impl LauncherRenderer {
             DockIcon::Raster(raster) => {
                 let key = raster_key(raster);
                 if !self.raster_icons.contains_key(&key) {
-                    let bitmap = upload_pixels(
+                    let bitmap = upload_bgra_pixels(
                         &self.context,
                         raster.width(),
                         raster.height(),
@@ -567,7 +546,6 @@ fn text_format_family(
     size: f32,
     weight: DWRITE_FONT_WEIGHT,
 ) -> Result<IDWriteTextFormat, WindowsError> {
-    // SAFETY: Static family and locale strings are NUL terminated.
     unsafe {
         factory.CreateTextFormat(
             family,
@@ -585,58 +563,7 @@ fn brush(
     context: &ID2D1DeviceContext,
     value: &D2D1_COLOR_F,
 ) -> Result<ID2D1SolidColorBrush, WindowsError> {
-    // SAFETY: The color remains live for Direct2D's synchronous copy.
     unsafe { context.CreateSolidColorBrush(value, None) }
-}
-
-fn target_properties() -> D2D1_BITMAP_PROPERTIES1 {
-    D2D1_BITMAP_PROPERTIES1 {
-        pixelFormat: D2D1_PIXEL_FORMAT {
-            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-        },
-        dpiX: TARGET_DPI,
-        dpiY: TARGET_DPI,
-        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-        ..D2D1_BITMAP_PROPERTIES1::default()
-    }
-}
-
-fn source_properties() -> D2D1_BITMAP_PROPERTIES1 {
-    D2D1_BITMAP_PROPERTIES1 {
-        pixelFormat: D2D1_PIXEL_FORMAT {
-            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-        },
-        dpiX: TARGET_DPI,
-        dpiY: TARGET_DPI,
-        bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
-        ..D2D1_BITMAP_PROPERTIES1::default()
-    }
-}
-
-fn upload_pixels(
-    context: &ID2D1DeviceContext,
-    width: u32,
-    height: u32,
-    pixels: &[u8],
-    stride: u32,
-) -> Result<ID2D1Bitmap1, WindowsError> {
-    let properties = source_properties();
-    // SAFETY: Both icon sources validate tightly packed premultiplied BGRA8;
-    // the slice remains live for Direct2D's synchronous copy.
-    unsafe {
-        context.CreateBitmap(
-            D2D_SIZE_U { width, height },
-            Some(pixels.as_ptr().cast::<c_void>()),
-            stride,
-            &raw const properties,
-        )
-    }
-}
-
-fn raster_key(raster: &RasterIcon) -> (RasterIconId, u32, u32) {
-    (raster.id().clone(), raster.width(), raster.height())
 }
 
 const fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
@@ -718,8 +645,6 @@ fn caret_rect(
     text: &str,
 ) -> Result<D2D_RECT_F, WindowsError> {
     let text = utf16(text);
-    // SAFETY: The text slice and format are live for layout creation, and the
-    // metrics pointer is valid for the synchronous read.
     let metrics = unsafe {
         let layout = factory.CreateTextLayout(
             &text,

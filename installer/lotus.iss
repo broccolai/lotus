@@ -2,6 +2,7 @@
 #define MyAppPublisher "lotus contributors"
 #define MyAppExeName "lotus.exe"
 #define MyAppVersion GetEnv("LOTUS_VERSION")
+#define MyVersionInfoVersion GetEnv("LOTUS_VERSION_INFO")
 
 [Setup]
 AppId={{EB208C8B-11C0-4B22-93A9-8113140647AA}
@@ -24,7 +25,7 @@ RestartApplications=no
 AppMutex=Local\Lotus.Dock.SingleInstance
 OutputDir=..\dist
 OutputBaseFilename=lotus-v{#MyAppVersion}-windows-x86_64-setup
-VersionInfoVersion={#MyAppVersion}
+VersionInfoVersion={#MyVersionInfoVersion}
 VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
 

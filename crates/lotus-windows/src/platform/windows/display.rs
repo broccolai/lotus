@@ -45,7 +45,6 @@ impl Display {
     pub fn dpi(self) -> Result<DpiScale> {
         let mut horizontal = 0;
         let mut vertical = 0;
-        // SAFETY: The handle came from live monitor enumeration and both outputs are writable.
         unsafe {
             GetDpiForMonitor(
                 self.handle,
@@ -59,13 +58,11 @@ impl Display {
 }
 
 pub fn nearest_display(hwnd: HWND) -> Result<Display> {
-    // SAFETY: The live or defensive fallback HWND is used only to select its nearest monitor.
     let handle = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
     display_info(handle)
 }
 
 pub fn nearest_display_to_point(x: i32, y: i32) -> Result<Display> {
-    // SAFETY: The physical screen point is a value and selects, but does not retain, a monitor.
     let handle = unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST) };
     display_info(handle)
 }
@@ -86,7 +83,6 @@ pub(crate) fn secondary_displays() -> Result<Vec<Display>> {
 
 fn all_displays() -> Result<Vec<Display>> {
     let mut displays = Vec::new();
-    // SAFETY: Enumeration is synchronous and LPARAM carries a live vector pointer throughout.
     unsafe {
         EnumDisplayMonitors(
             None,
@@ -105,7 +101,6 @@ unsafe extern "system" fn collect_display(
     _bounds: *mut RECT,
     state: LPARAM,
 ) -> BOOL {
-    // SAFETY: `state` is the live vector pointer supplied to synchronous enumeration.
     let displays = unsafe { &mut *(state.0 as *mut Vec<Display>) };
     if let Ok(display) = display_info(monitor) {
         displays.push(display);
@@ -118,7 +113,6 @@ fn display_info(handle: HMONITOR) -> Result<Display> {
         cbSize: monitor_info_size(),
         ..MONITORINFO::default()
     };
-    // SAFETY: The monitor handle is live and `info` is initialized writable ABI storage.
     unsafe { GetMonitorInfoW(handle, &raw mut info).ok()? };
     Ok(Display {
         handle,

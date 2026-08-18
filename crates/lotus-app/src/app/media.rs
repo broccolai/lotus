@@ -1,8 +1,9 @@
 use lotus_media::{MediaHitTarget, MediaModel, MediaWidgetAction};
+use lotus_windows::activation::switch_window;
+use lotus_windows::dialog::show_error;
+use lotus_windows::media::{MediaCommand, MediaController, MediaEvent};
 
-use super::{
-    DockRuntime, MediaCommand, MediaController, MediaEvent, show_error, switch_window,
-};
+use crate::app::dock::DockRuntime;
 
 pub(super) struct MediaRuntime {
     controller: Option<MediaController>,

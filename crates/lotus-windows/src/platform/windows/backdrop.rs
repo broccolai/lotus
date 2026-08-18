@@ -54,8 +54,6 @@ pub(crate) fn apply(hwnd: HWND) {
 
     let border_color = DWMWA_COLOR_NONE;
 
-    // SAFETY: The attribute pointer references a correctly typed, initialized value and remains
-    // valid for the duration of its synchronous DWM call.
     unsafe {
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -100,8 +98,6 @@ pub(crate) fn apply_settings_window(hwnd: HWND) {
     let corner = DWMWCP_ROUND;
     let backdrop = DWMSBT_NONE;
     let border_color = DWMWA_COLOR_NONE;
-    // SAFETY: Every attribute pointer references a correctly typed local value that remains live
-    // through its synchronous DWM call. No acrylic policy is installed for this window.
     unsafe {
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -166,8 +162,6 @@ fn apply_system_backdrop(
         cyBottomHeight: -1,
     };
 
-    // SAFETY: Every attribute pointer references a correctly typed, initialized value and
-    // remains valid for the duration of its synchronous DWM call.
     unsafe {
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -196,8 +190,6 @@ fn detect_settings_material() -> SettingsMaterial {
         dwOSVersionInfoSize: size_u32::<OSVERSIONINFOW>(),
         ..OSVERSIONINFOW::default()
     };
-    // SAFETY: The initialized structure has the required size and remains writable for the
-    // synchronous version query.
     let status = unsafe { RtlGetVersion(&raw mut version) };
     if status.is_ok() && version.dwBuildNumber >= WINDOWS_11_22H2_BUILD {
         SettingsMaterial::Acrylic
@@ -207,17 +199,14 @@ fn detect_settings_material() -> SettingsMaterial {
 }
 
 fn apply_explicit_acrylic(hwnd: HWND, tint: u32) -> bool {
-    // SAFETY: user32.dll is loaded in every process that owns a Win32 window.
     let Ok(user32) = (unsafe { GetModuleHandleW(w!("user32.dll")) }) else {
         return false;
     };
-    // SAFETY: The symbol is queried by its stable export name and checked for absence.
     let Some(procedure) =
         (unsafe { GetProcAddress(user32, s!("SetWindowCompositionAttribute")) })
     else {
         return false;
     };
-    // SAFETY: This export has the SetWindowCompositionAttribute ABI represented by the alias.
     let set_attribute: SetWindowCompositionAttribute =
         unsafe { std::mem::transmute(procedure) };
 
@@ -233,8 +222,6 @@ fn apply_explicit_acrylic(hwnd: HWND, tint: u32) -> bool {
         size: size_of::<AccentPolicy>(),
     };
 
-    // SAFETY: The undocumented compatibility API is isolated here. Both ABI structures match
-    // their Win32 layouts and remain valid for the duration of this synchronous call.
     unsafe { set_attribute(hwnd, &raw mut data) }.as_bool()
 }
 

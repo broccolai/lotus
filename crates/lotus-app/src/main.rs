@@ -4,12 +4,6 @@
 compile_error!("Lotus is a native Windows application.");
 
 mod app;
-#[allow(
-    dead_code,
-    reason = "graphics modules are composed through the native surface abstractions"
-)]
-mod graphics;
-mod window;
 
 fn main() {
     match lotus_windows::update::run_helper_if_requested() {

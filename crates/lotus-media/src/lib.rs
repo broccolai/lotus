@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use lotus_ui::geometry::{DpiScale, PhysicalRect, physical_rect};
 
 const ARTWORK_DIPS: u32 = 40;

@@ -168,7 +168,6 @@ pub fn wait_for_restart_source(
         return Ok(RestartWaitOutcome::CurrentProcessIgnored);
     }
 
-    // SAFETY: The validated PID is used only for synchronize access and the handle enters RAII.
     let process = match unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, process_id) } {
         Ok(handle) => OwnedProcess(handle),
         Err(source) if source.code() == HRESULT::from_win32(ERROR_INVALID_PARAMETER.0) => {
@@ -182,7 +181,6 @@ pub fn wait_for_restart_source(
         }
     };
 
-    // SAFETY: The guard owns a synchronize-capable handle and the wait has a finite timeout.
     let status = unsafe { WaitForSingleObject(process.0, RESTART_WAIT_MILLISECONDS) };
     match status {
         WAIT_OBJECT_0 => Ok(RestartWaitOutcome::Exited),
@@ -202,7 +200,6 @@ struct OwnedProcess(HANDLE);
 
 impl Drop for OwnedProcess {
     fn drop(&mut self) {
-        // SAFETY: The guard uniquely owns the successful OpenProcess result.
         unsafe {
             let _ = CloseHandle(self.0);
         }

@@ -25,8 +25,6 @@ pub fn toggle() -> Result<(), ShowDesktopError> {
         key(VK_LWIN, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
     ];
     let expected = u32::try_from(inputs.len()).unwrap_or(u32::MAX);
-    // SAFETY: Each value is a fully initialized keyboard INPUT and the size
-    // matches the exact ABI type supplied to SendInput.
     let inserted = unsafe {
         SendInput(
             &inputs,
@@ -41,8 +39,6 @@ pub fn toggle() -> Result<(), ShowDesktopError> {
 }
 
 pub fn lock() -> windows::core::Result<()> {
-    // SAFETY: LockWorkStation has no arguments or caller-owned memory and reports failure
-    // through GetLastError, which windows-rs converts into a Result.
     unsafe { LockWorkStation() }
 }
 

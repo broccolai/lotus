@@ -18,7 +18,6 @@ pub fn show_unowned_error(title: &str, message: &str) {
 pub fn show_information(owner: WindowHandle, title: &str, message: &str) {
     let title = HSTRING::from(title);
     let message = HSTRING::from(message);
-    // SAFETY: Strings remain live for the synchronous dialog and `owner` is a live Lotus HWND.
     unsafe {
         let _ = MessageBoxW(
             Some(owner.raw()),
@@ -43,7 +42,6 @@ pub fn confirm_install_update(owner: WindowHandle, version: &str, installed: boo
     let message = HSTRING::from(format!(
         "{action} Lotus {version}?\n\nLotus will restart when it is ready."
     ));
-    // SAFETY: Strings remain live for the synchronous dialog and `owner` is a live Lotus HWND.
     unsafe {
         MessageBoxW(
             Some(owner.raw()),
@@ -57,8 +55,6 @@ pub fn confirm_install_update(owner: WindowHandle, version: &str, installed: boo
 fn show_error_for(owner: HWND, title: &str, message: &str) {
     let title = HSTRING::from(title);
     let message = HSTRING::from(message);
-    // SAFETY: Both strings remain alive for the synchronous call and `owner`
-    // is either Lotus's live dock HWND or a null handle supplied by the caller.
     unsafe {
         let _ = MessageBoxW(Some(owner), &message, &title, MB_OK | MB_ICONERROR);
     }
@@ -75,7 +71,6 @@ pub fn confirm_restart(owner: WindowHandle) -> bool {
 fn confirm_power_action(owner: WindowHandle, message: &str) -> bool {
     let title = HSTRING::from("Lotus");
     let message = HSTRING::from(message);
-    // SAFETY: Strings remain live for the synchronous dialog and `owner` is Lotus's dock HWND.
     unsafe {
         MessageBoxW(
             Some(owner.raw()),

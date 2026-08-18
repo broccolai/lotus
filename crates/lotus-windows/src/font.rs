@@ -18,12 +18,10 @@ struct RegisteredFontLoader {
 impl RegisteredFontLoader {
     fn create(factory: &IDWriteFactory5) -> Result<Self, WindowsError> {
         let base_factory: &IDWriteFactory = factory;
-        // SAFETY: The factory creates and returns an owned loader interface.
         let loader =
             unsafe { factory.CreateInMemoryFontFileLoader() }.map_err(|error| {
                 WindowsError::new(error.code(), "Lotus could not create its font loader")
             })?;
-        // SAFETY: Both interfaces are live and originate from the same DirectWrite factory.
         unsafe { base_factory.RegisterFontFileLoader(&loader) }.map_err(|error| {
             WindowsError::new(error.code(), "Lotus could not register its font loader")
         })?;
@@ -37,7 +35,6 @@ impl RegisteredFontLoader {
 
 impl Drop for RegisteredFontLoader {
     fn drop(&mut self) {
-        // SAFETY: This guard unregisters the exact loader it registered with this factory.
         let _ = unsafe { self.factory.UnregisterFontFileLoader(&self.loader) };
     }
 }
@@ -52,7 +49,6 @@ impl BundledFontCollection {
         })?;
 
         let loader = RegisteredFontLoader::create(factory)?;
-        // SAFETY: The static byte range is valid for data_size bytes and the owner remains live.
         let font_file = unsafe {
             loader.loader.CreateInMemoryFontFileReference(
                 base_factory,
@@ -64,19 +60,15 @@ impl BundledFontCollection {
         .map_err(|error| {
             WindowsError::new(error.code(), "Lotus could not load its bundled font")
         })?;
-        // SAFETY: The builder and font file are live DirectWrite objects from the same factory.
         let builder = unsafe { factory.CreateFontSetBuilder() }.map_err(|error| {
             WindowsError::new(error.code(), "Lotus could not create its font set")
         })?;
-        // SAFETY: DirectWrite retains the supplied font file in the builder.
         unsafe { builder.AddFontFile(&font_file) }.map_err(|error| {
             WindowsError::new(error.code(), "Lotus could not add its bundled font")
         })?;
-        // SAFETY: The populated builder produces an owned immutable font set.
         let font_set = unsafe { builder.CreateFontSet() }.map_err(|error| {
             WindowsError::new(error.code(), "Lotus could not finalize its font set")
         })?;
-        // SAFETY: The font set and factory are compatible and remain live for this call.
         let collection = unsafe { factory.CreateFontCollectionFromFontSet(&font_set) }
             .map_err(|error| {
                 WindowsError::new(

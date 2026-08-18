@@ -94,7 +94,6 @@ impl StatusWindow {
             x: point.x,
             y: point.y,
         };
-        // SAFETY: `native` is writable and this window owns the live HWND.
         unsafe { ClientToScreen(self.window.hwnd(), &raw mut native) }.ok()?;
         Ok(super::SignedPoint {
             x: native.x,
@@ -111,7 +110,6 @@ impl StatusWindow {
     ) -> Result<()> {
         let display = self.display.map_or_else(primary_display, Ok)?;
         let mut dock_bounds = RECT::default();
-        // SAFETY: Both HWND and writable RECT belong to the current process.
         unsafe { GetWindowRect(dock, &raw mut dock_bounds)? };
         let width = i32::try_from(size.width()).unwrap_or(i32::MAX);
         let height = i32::try_from(size.height()).unwrap_or(i32::MAX);
@@ -170,11 +168,9 @@ impl StatusWindow {
     ) -> Result<()> {
         let display = self.display.map_or_else(primary_display, Ok)?;
         let mut dock_bounds = RECT::default();
-        // SAFETY: The borrowed primary dock HWND is live and `dock_bounds` is writable.
         unsafe { GetWindowRect(dock, &raw mut dock_bounds)? };
         let primary = primary_display()?;
         let source_gap = primary.bounds.bottom.saturating_sub(dock_bounds.bottom);
-        // SAFETY: The borrowed primary dock HWND remains live for this placement call.
         let source_dpi = DpiScale::from_system(unsafe {
             windows::Win32::UI::HiDpi::GetDpiForWindow(dock)
         });

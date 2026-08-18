@@ -118,7 +118,6 @@ impl AppBarController {
         dock: &DockWindow,
         settings: &DockSettings,
     ) -> Result<Self, ShellIntegrationError> {
-        // SAFETY: The static message name is NUL-terminated and process lifetime stable.
         let callback_message =
             unsafe { RegisterWindowMessageW(w!("Lotus.AppBar.Callback")) };
         if callback_message == 0 {
@@ -131,7 +130,6 @@ impl AppBarController {
         };
         let mut data = appbar_data(controller.reservation.hwnd());
         data.uCallbackMessage = callback_message;
-        // SAFETY: APPBARDATA has the correct ABI size and refers to Lotus's live dock HWND.
         if unsafe { SHAppBarMessage(ABM_NEW, &raw mut data) } == 0 {
             return Err(ShellIntegrationError::AppBarRejected("ABM_NEW"));
         }
@@ -147,11 +145,9 @@ impl AppBarController {
         let mut data = appbar_data(self.reservation.hwnd());
         data.uEdge = ABE_BOTTOM;
         data.rc = to_rect(layout.reserved_rect());
-        // SAFETY: The shell synchronously reads and updates this initialized APPBARDATA.
         unsafe { SHAppBarMessage(ABM_QUERYPOS, &raw mut data) };
         let queried = layout.with_shell_bounds(to_screen_rect(data.rc))?;
         data.rc = to_rect(queried.reserved_rect());
-        // SAFETY: The registered AppBar HWND and negotiated rectangle remain valid.
         if unsafe { SHAppBarMessage(ABM_SETPOS, &raw mut data) } == 0 {
             return Err(ShellIntegrationError::AppBarRejected("ABM_SETPOS"));
         }
@@ -165,7 +161,6 @@ impl AppBarController {
             return;
         }
         let mut data = appbar_data(self.reservation.hwnd());
-        // SAFETY: This controller owns the matching successful ABM_NEW registration.
         let _ = unsafe { SHAppBarMessage(ABM_REMOVE, &raw mut data) };
         self.registered = false;
     }
@@ -184,8 +179,6 @@ struct ReservationWindow {
 impl ReservationWindow {
     fn create(callback_message: u32) -> Result<Self, windows::core::Error> {
         let extended_style = WINDOW_EX_STYLE(WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0);
-        // SAFETY: STATIC is a process-independent system class. The reservation is a hidden,
-        // ownerless top-level popup with no application state or custom window procedure.
         let hwnd = unsafe {
             CreateWindowExW(
                 extended_style,
@@ -202,15 +195,12 @@ impl ReservationWindow {
                 None,
             )?
         };
-        // SAFETY: Reading the creating UI thread identifier has no preconditions.
         let thread_id = unsafe { GetCurrentThreadId() };
         let callback = Box::new(ReservationCallback {
             message: callback_message,
             thread_id,
         });
         let callback_pointer = std::ptr::from_ref(callback.as_ref()).addr();
-        // SAFETY: The boxed callback state stays at a stable address until this owned HWND removes
-        // the subclass during Drop. The callback itself never unwinds or retains message pointers.
         if !unsafe {
             SetWindowSubclass(
                 hwnd,
@@ -221,7 +211,6 @@ impl ReservationWindow {
         }
         .as_bool()
         {
-            // SAFETY: The HWND was created above and no subclass ownership was established.
             let _ = unsafe { DestroyWindow(hwnd) };
             return Err(windows::core::Error::from_thread());
         }
@@ -236,8 +225,6 @@ impl ReservationWindow {
     }
 
     fn move_to(&self, rect: ScreenRect) -> Result<(), windows::core::Error> {
-        // SAFETY: AppBar geometry validates a positive Win32-sized rectangle, and this guard
-        // owns the live reservation HWND for the duration of the registration.
         unsafe {
             SetWindowPos(
                 self.hwnd,
@@ -255,8 +242,6 @@ impl ReservationWindow {
 
 impl Drop for ReservationWindow {
     fn drop(&mut self) {
-        // SAFETY: This exactly removes the subclass installed by create while its callback state
-        // is still live.
         let _ = unsafe {
             RemoveWindowSubclass(
                 self.hwnd,
@@ -264,7 +249,6 @@ impl Drop for ReservationWindow {
                 RESERVATION_SUBCLASS_ID,
             )
         };
-        // SAFETY: This guard uniquely owns the hidden HWND and drops only after AppBar removal.
         let _ = unsafe { DestroyWindow(self.hwnd) };
     }
 }
@@ -279,14 +263,11 @@ unsafe extern "system" fn reservation_subclass_proc(
 ) -> LRESULT {
     let callback =
         std::ptr::with_exposed_provenance::<ReservationCallback>(callback_pointer);
-    // SAFETY: SetWindowSubclass receives the stable boxed pointer and RemoveWindowSubclass runs
-    // before that box is dropped.
     let callback = unsafe { &*callback };
     if message == callback.message
         && wparam.0 == usize::try_from(ABN_FULLSCREENAPP).unwrap_or(2)
     {
         let fullscreen = usize::from(lparam.0 != 0);
-        // SAFETY: This posts a pointer-free private message to the creating UI thread.
         let _ = unsafe {
             PostThreadMessageW(
                 callback.thread_id,
@@ -297,7 +278,6 @@ unsafe extern "system" fn reservation_subclass_proc(
         };
         return LRESULT(0);
     }
-    // SAFETY: Unhandled messages must continue through the subclass chain unchanged.
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
@@ -318,13 +298,11 @@ fn requested_layout(
 }
 
 fn monitor_rect(hwnd: HWND) -> Result<ScreenRect, windows::core::Error> {
-    // SAFETY: The dock HWND is live; primary fallback guarantees a monitor handle.
     let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY) };
     let mut info = MONITORINFO {
         cbSize: monitor_info_size(),
         ..MONITORINFO::default()
     };
-    // SAFETY: `info` has the required ABI size and valid writable storage.
     unsafe { GetMonitorInfoW(monitor, &raw mut info).ok()? };
     Ok(to_screen_rect(info.rcMonitor))
 }

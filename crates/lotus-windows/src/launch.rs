@@ -39,17 +39,14 @@ pub(crate) fn resolve_shortcut_icon(shortcut_path: &Path) -> Option<(PathBuf, i3
         return None;
     }
     let _apartment = ComApartment::enter()?;
-    // SAFETY: COM is initialized for this thread and ShellLink is an in-process COM class.
     let shell_link: IShellLinkW =
         unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.ok()?;
     let persist: IPersistFile = shell_link.cast().ok()?;
     let shortcut = wide_path_null(shortcut_path);
-    // SAFETY: `shortcut` is a live null-terminated path for this synchronous COM call.
     unsafe { persist.Load(PCWSTR(shortcut.as_ptr()), STGM_READ) }.ok()?;
 
     let mut icon_path = vec![0u16; WINDOWS_PATH_CAPACITY];
     let mut icon_index = 0;
-    // SAFETY: The output buffer and icon-index pointer are valid for this synchronous call.
     unsafe { shell_link.GetIconLocation(&mut icon_path, &raw mut icon_index) }.ok()?;
     let icon_path = String::from_utf16_lossy(utf16_without_nul(&icon_path));
     let expanded = expand_environment_variables(icon_path.trim().trim_matches('"'))?;
@@ -71,16 +68,13 @@ pub(crate) fn shortcut_arguments(shortcut_path: &Path) -> Option<String> {
     }
 
     let _apartment = ComApartment::enter()?;
-    // SAFETY: COM is initialized for this thread and ShellLink is an in-process COM class.
     let shell_link: IShellLinkW =
         unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.ok()?;
     let persist: IPersistFile = shell_link.cast().ok()?;
     let shortcut = wide_path_null(shortcut_path);
-    // SAFETY: `shortcut` is a live null-terminated path for this synchronous COM call.
     unsafe { persist.Load(PCWSTR(shortcut.as_ptr()), STGM_READ) }.ok()?;
 
     let mut arguments = vec![0_u16; WINDOWS_PATH_CAPACITY];
-    // SAFETY: `arguments` is valid writable UTF-16 storage for this synchronous COM call.
     unsafe { shell_link.GetArguments(&mut arguments) }.ok()?;
     let arguments = String::from_utf16_lossy(utf16_without_nul(&arguments));
     let arguments = arguments.trim();
@@ -180,16 +174,12 @@ fn has_extension(path: &Path, expected: &str) -> bool {
 
 pub(super) fn expand_environment_variables(source: &str) -> Option<String> {
     let source = wide_null(source);
-    // SAFETY: `source` is a valid, null-terminated UTF-16 string. A null
-    // destination is the documented size-query form.
     let required = unsafe { ExpandEnvironmentStringsW(PCWSTR(source.as_ptr()), None) };
     if required == 0 {
         return None;
     }
 
     let mut expanded = vec![0u16; usize::try_from(required).ok()?];
-    // SAFETY: Both UTF-16 buffers are live and the destination has exactly the
-    // capacity requested by the preceding call.
     let written = unsafe {
         ExpandEnvironmentStringsW(PCWSTR(source.as_ptr()), Some(expanded.as_mut_slice()))
     };
@@ -205,8 +195,6 @@ fn search_path(file_name: &str) -> Option<PathBuf> {
     let extension = wide_null(".exe");
     let mut buffer = vec![0u16; WINDOWS_PATH_CAPACITY];
 
-    // SAFETY: Input strings are null-terminated and `buffer` is valid writable
-    // storage for the full slice passed to SearchPathW.
     let length = unsafe {
         SearchPathW(
             PCWSTR::null(),
@@ -227,19 +215,13 @@ fn search_path(file_name: &str) -> Option<PathBuf> {
 
 fn resolve_shortcut(shortcut_path: &Path) -> Option<PathBuf> {
     let _apartment = ComApartment::enter()?;
-    // SAFETY: COM is initialized for this thread (or was already initialized
-    // in a different apartment), and ShellLink is an in-process COM class.
     let shell_link: IShellLinkW =
         unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.ok()?;
     let persist: IPersistFile = shell_link.cast().ok()?;
     let shortcut_path = wide_path_null(shortcut_path);
-    // SAFETY: `shortcut_path` is null-terminated and the COM interfaces remain
-    // alive for the synchronous Load call.
     unsafe { persist.Load(PCWSTR(shortcut_path.as_ptr()), STGM_READ) }.ok()?;
 
     let mut target = vec![0u16; WINDOWS_PATH_CAPACITY];
-    // SAFETY: `target` is valid writable UTF-16 storage. A null find-data
-    // pointer is permitted when only the resolved path is requested.
     unsafe {
         shell_link.GetPath(&mut target, ptr::null_mut(), SLGP_RAWPATH.0.cast_unsigned())
     }
@@ -263,8 +245,6 @@ pub(super) struct ComApartment {
 
 impl ComApartment {
     pub(super) fn enter() -> Option<Self> {
-        // SAFETY: The reserved pointer must be null. The returned status tells
-        // us whether this call owns a matching CoUninitialize obligation.
         let result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
         if result.is_ok() {
             Some(Self { uninitialize: true })
@@ -281,8 +261,6 @@ impl ComApartment {
 impl Drop for ComApartment {
     fn drop(&mut self) {
         if self.uninitialize {
-            // SAFETY: `enter` successfully initialized COM on this thread and
-            // every COM interface declared after the guard has already dropped.
             unsafe { CoUninitialize() };
         }
     }

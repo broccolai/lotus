@@ -63,7 +63,6 @@ pub(crate) fn window_application_identity_in_apartment(
 ) -> Option<WindowApplicationIdentity> {
     let window = window_handle(window)?;
 
-    // SAFETY: `window` is a live top-level HWND and windows-rs owns the returned interface.
     let properties: IPropertyStore = unsafe { SHGetPropertyStoreForWindow(window) }.ok()?;
 
     Some(WindowApplicationIdentity {
@@ -77,12 +76,10 @@ pub(crate) fn window_application_identity_in_apartment(
 
 pub(crate) fn shortcut_application_id(path: &Path) -> Option<String> {
     let _apartment = ComApartment::enter()?;
-    // SAFETY: COM is initialized for this thread and ShellLink is an in-process COM class.
     let shortcut: IShellLinkW =
         unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.ok()?;
     let persist: IPersistFile = shortcut.cast().ok()?;
     let path = wide_null(path.as_os_str());
-    // SAFETY: `path` remains a live null-terminated UTF-16 string during this call.
     unsafe { persist.Load(PCWSTR(path.as_ptr()), STGM_READ) }.ok()?;
     let properties: IPropertyStore = shortcut.cast().ok()?;
 
@@ -102,22 +99,17 @@ fn parse_relaunch_application(
 ) -> Option<RelaunchApplication> {
     let command = wide_null(OsStr::new(command));
     let mut argument_count = 0;
-    // SAFETY: `command` is a live null-terminated UTF-16 string and the count is writable.
     let arguments =
         unsafe { CommandLineToArgvW(PCWSTR(command.as_ptr()), &raw mut argument_count) };
     if arguments.is_null() || argument_count <= 0 {
         return None;
     }
     let arguments = LocalArguments(arguments);
-    // SAFETY: CommandLineToArgvW returned exactly `argument_count` PWSTR entries.
     let values = unsafe {
         std::slice::from_raw_parts(arguments.0, usize::try_from(argument_count).ok()?)
     }
     .iter()
-    .map(|value| {
-        // SAFETY: Each entry returned by CommandLineToArgvW is a live null-terminated string.
-        unsafe { value.to_string() }.ok()
-    })
+    .map(|value| unsafe { value.to_string() }.ok())
     .collect::<Option<Vec<_>>>()?;
     let target_length =
         (1..=values.len()).find(|length| is_launchable(&values[..*length].join(" ")))?;
@@ -137,7 +129,6 @@ fn parse_relaunch_application(
 }
 
 fn string_property(properties: &IPropertyStore, key: &PROPERTYKEY) -> Option<String> {
-    // SAFETY: `properties` is live and `key` has static storage for this synchronous query.
     let value = unsafe { properties.GetValue(key) }.ok()?;
     let value = BSTR::try_from(&value).ok()?.to_string();
     let value = value.trim();
@@ -146,7 +137,6 @@ fn string_property(properties: &IPropertyStore, key: &PROPERTYKEY) -> Option<Str
 }
 
 fn bool_property(properties: &IPropertyStore, key: &PROPERTYKEY) -> Option<bool> {
-    // SAFETY: `properties` is live and `key` has static storage for this synchronous query.
     let value = unsafe { properties.GetValue(key) }.ok()?;
     bool::try_from(&value).ok()
 }
@@ -158,7 +148,6 @@ fn window_handle(window: WindowId) -> Option<HWND> {
     }
 
     let window = HWND(std::ptr::with_exposed_provenance_mut::<c_void>(address));
-    // SAFETY: This only validates the opaque numeric handle before the property query.
     unsafe { IsWindow(Some(window)) }
         .as_bool()
         .then_some(window)
@@ -203,7 +192,6 @@ struct LocalArguments(*mut windows::core::PWSTR);
 
 impl Drop for LocalArguments {
     fn drop(&mut self) {
-        // SAFETY: This allocation came from CommandLineToArgvW and is released exactly once.
         let _ = unsafe { LocalFree(Some(HLOCAL(self.0.cast::<c_void>()))) };
     }
 }

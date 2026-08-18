@@ -32,20 +32,14 @@ impl ShellBridgeLease {
         let path = bridge_path()?;
         let path = HSTRING::from(path.as_os_str());
 
-        // SAFETY: The absolute path names Lotus's own bridge beside the running executable.
         let module = unsafe { LoadLibraryW(&path) }.ok()?;
-        // SAFETY: The module is live and the exported name is static and null terminated.
         let procedure =
             unsafe { GetProcAddress(module, PCSTR::from_raw(HOOK_EXPORT_NAME.as_ptr())) };
         let Some(procedure) = procedure else {
-            // SAFETY: This process owns the successful LoadLibrary reference.
             let _ = unsafe { FreeLibrary(module) };
             return None;
         };
-        // SAFETY: The bridge export has the exact HOOKPROC ABI declared by its shared contract.
         let hook_procedure: HOOKPROC = unsafe { std::mem::transmute(procedure) };
-        // SAFETY: The module and callback remain live for the returned lease, and the hook is
-        // restricted to the validated ShellHost UI thread.
         let Ok(hook) = (unsafe {
             SetWindowsHookExW(
                 WH_CALLWNDPROC,
@@ -54,19 +48,14 @@ impl ShellBridgeLease {
                 thread_id,
             )
         }) else {
-            // SAFETY: This process owns the successful LoadLibrary reference.
             let _ = unsafe { FreeLibrary(module) };
             return None;
         };
 
-        // SAFETY: The shared message name has process-lifetime storage.
         let message = unsafe { RegisterWindowMessageW(CONFIG_MESSAGE_NAME) };
-        // SAFETY: The shared acknowledgement name has process-lifetime storage.
         let ack_message = unsafe { RegisterWindowMessageW(ACK_MESSAGE_NAME) };
         if message == 0 || ack_message == 0 {
-            // SAFETY: Both handles were acquired successfully by this process.
             let _ = unsafe { UnhookWindowsHookEx(hook) };
-            // SAFETY: The thread hook has been removed before releasing the module.
             let _ = unsafe { FreeLibrary(module) };
             return None;
         }
@@ -99,10 +88,7 @@ impl ShellBridgeLease {
 impl Drop for ShellBridgeLease {
     fn drop(&mut self) {
         let _ = self.send(DISABLE_SENTINEL);
-        // SAFETY: This lease owns the successful thread-hook registration.
         let _ = unsafe { UnhookWindowsHookEx(self.hook) };
-        // SAFETY: The injected bridge holds its own target-process reference until its cleanup
-        // worker removes the process detour; this releases only Lotus's local reference.
         let _ = unsafe { FreeLibrary(self.module) };
     }
 }
@@ -114,7 +100,6 @@ fn send_configuration(
     ack_message: u32,
     configuration: isize,
 ) -> bool {
-    // SAFETY: The validated target window is messaged synchronously with scalar configuration.
     let outcome = unsafe {
         SendMessageTimeoutW(
             window,
@@ -131,7 +116,6 @@ fn send_configuration(
     }
 
     let mut acknowledgement = MSG::default();
-    // SAFETY: Only the registered bridge acknowledgement for Lotus's own HWND is removed.
     unsafe {
         PeekMessageW(
             &raw mut acknowledgement,
@@ -147,7 +131,6 @@ fn send_configuration(
 
 fn trusted_shell_thread(window: HWND) -> Option<u32> {
     let mut class_name = [0_u16; 64];
-    // SAFETY: The borrowed HWND is queried synchronously into writable storage.
     let length = unsafe { GetClassNameW(window, &mut class_name) };
     let length = usize::try_from(length).ok()?;
     let class_name = String::from_utf16_lossy(&class_name[..length]);
@@ -156,7 +139,6 @@ fn trusted_shell_thread(window: HWND) -> Option<u32> {
     }
 
     let mut process_id = 0;
-    // SAFETY: The borrowed HWND is queried synchronously and the output remains writable.
     let thread_id = unsafe { GetWindowThreadProcessId(window, Some(&raw mut process_id)) };
     if thread_id == 0 || process_id == 0 {
         return None;

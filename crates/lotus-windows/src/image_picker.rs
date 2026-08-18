@@ -33,8 +33,6 @@ impl From<WindowsError> for ImagePickerError {
 
 pub fn choose_image(owner: WindowHandle) -> Result<Option<PathBuf>, ImagePickerError> {
     let _apartment = ComApartment::enter().ok_or(ImagePickerError::ComUnavailable)?;
-    // SAFETY: FileOpenDialog is an in-process COM class. COM is initialized for
-    // this thread and the returned interface owns its reference.
     let dialog: IFileOpenDialog =
         unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }?;
     let filters = [
@@ -47,26 +45,18 @@ pub fn choose_image(owner: WindowHandle) -> Result<Option<PathBuf>, ImagePickerE
             pszSpec: w!("*.*"),
         },
     ];
-    // SAFETY: Filter labels are static NUL-terminated UTF-16 strings, and the
-    // dialog copies its configuration during these synchronous calls.
     unsafe {
         dialog.SetFileTypes(&filters)?;
         dialog.SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST)?;
     }
-    // SAFETY: `owner` is Lotus's live settings HWND. Cancellation is represented
-    // by the documented ERROR_CANCELLED result and is not an application error.
     match unsafe { dialog.Show(Some(owner.raw())) } {
         Ok(()) => {}
         Err(error) if error.code() == ERROR_CANCELLED.into() => return Ok(None),
         Err(error) => return Err(error.into()),
     }
-    // SAFETY: The dialog completed successfully and returns an owned shell item.
     let item = unsafe { dialog.GetResult() }?;
-    // SAFETY: SIGDN_FILESYSPATH asks the filesystem-backed item for a task-memory
-    // UTF-16 path that stays live until the guard frees it below.
     let path = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH) }?;
     let path = TaskPath(path);
-    // SAFETY: The shell returned a valid NUL-terminated string owned by `path`.
     let value = unsafe { PCWSTR(path.0.0).to_string() }?;
     Ok(Some(PathBuf::from(value)))
 }
@@ -75,8 +65,6 @@ struct TaskPath(windows::core::PWSTR);
 
 impl Drop for TaskPath {
     fn drop(&mut self) {
-        // SAFETY: This allocation came from IShellItem::GetDisplayName and is
-        // released once with the COM task allocator.
         unsafe { CoTaskMemFree(Some(self.0.0.cast::<c_void>())) };
     }
 }

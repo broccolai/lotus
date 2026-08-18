@@ -1,12 +1,16 @@
 use lotus_ui::geometry::NonZeroPhysicalSize;
-
-use super::dock::{popup_overlap, status_popup_center};
-use super::{
-    AppError, CompositionSurfaceState, DeviceState, DockAnchor, DockContextRequest,
-    DockHitTarget, DockRuntime, DockScene, DockWindow, PointerEvent, PopupAlignment,
-    SignedPoint, StatusWindow, SurfaceSize, WindowEvent, WindowHandle, WindowTracker,
-    render_surface, resize_surface,
+use lotus_windows::WindowHandle;
+use lotus_windows::graphics::scene::{DockAnchor, DockHitTarget, DockScene};
+use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
+use lotus_windows::window::{
+    DockContextRequest, DockWindow, PointerEvent, PopupAlignment, SignedPoint,
+    StatusWindow, WindowEvent,
 };
+use lotus_windows::window_tracker::WindowTracker;
+
+use crate::app::AppError;
+use crate::app::dock::{DockRuntime, popup_overlap, status_popup_center};
+use crate::app::runtime::{render_surface, resize_surface};
 
 #[derive(Clone, Copy)]
 pub(super) enum MonitorDockAction {

@@ -1,17 +1,13 @@
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::num::NonZeroU32;
 
 use lotus_ui::geometry::DpiScale;
 use lotus_ui::theme::Theme;
 use thiserror::Error;
 use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
-};
+use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_COLOR_F};
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
     D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_ROUNDED_RECT, D2D1CreateFactory,
     ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1Image,
@@ -23,7 +19,6 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::core::{Error as WindowsError, w};
 
@@ -31,10 +26,10 @@ use super::assets::{
     AssetError, IconTint, RasterImage, RasterSize, SvgAsset, SvgAssetCache,
 };
 use super::device::GraphicsDevice;
-use super::scene::{DockIcon, RasterIcon, RasterIconId};
+use super::resources::{raster_key, target_bitmap_properties, upload_bgra_pixels};
+use super::scene::{DockIcon, RasterIconId};
 use super::surface::SurfaceSize;
-use super::switcher_scene::{LaidOutItem, SwitcherHitTarget, SwitcherScene};
-use super::theme;
+use super::{LaidOutItem, SwitcherHitTarget, SwitcherScene, theme};
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = rgba(0, 0, 0, 0);
@@ -68,15 +63,11 @@ impl SwitcherRenderer {
         swap_chain: &IDXGISwapChain1,
     ) -> Result<Self, RendererError> {
         let dxgi = graphics.dxgi_device()?;
-        // SAFETY: A typed factory is requested without retained options.
         let factory: ID2D1Factory1 =
             unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
-        // SAFETY: The live DXGI device is compatible with this factory.
         let device = unsafe { factory.CreateDevice(&dxgi)? };
-        // SAFETY: The live device returns an owned drawing context.
         let context =
             unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
-        // SAFETY: DirectWrite returns an owned shared factory.
         let write: IDWriteFactory =
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let icon_format = text_format(&write, 26.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
@@ -104,7 +95,6 @@ impl SwitcherRenderer {
     }
 
     pub(super) fn detach_target(&mut self) {
-        // SAFETY: A null target releases the swap-chain buffer before resize.
         unsafe { self.context.SetTarget(None::<&ID2D1Image>) };
         self.target = None;
     }
@@ -114,15 +104,12 @@ impl SwitcherRenderer {
         chain: &IDXGISwapChain1,
     ) -> Result<(), WindowsError> {
         self.detach_target();
-        // SAFETY: Buffer zero exists on the initialized swap chain.
         let surface: IDXGISurface = unsafe { chain.GetBuffer(0)? };
-        let properties = target_properties();
-        // SAFETY: Surface and properties remain live through bitmap creation.
+        let properties = target_bitmap_properties();
         let target = unsafe {
             self.context
                 .CreateBitmapFromDxgiSurface(&surface, Some(&raw const properties))?
         };
-        // SAFETY: The bitmap belongs to this context and is target-capable.
         unsafe { self.context.SetTarget(&target) };
         self.target = Some(target);
         Ok(())
@@ -186,7 +173,6 @@ impl SwitcherRenderer {
             )?
             .clone();
         let transparent = TRANSPARENT;
-        // SAFETY: The target, panel geometry, and retained brushes remain live for this transaction.
         unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&raw const transparent));
@@ -203,7 +189,6 @@ impl SwitcherRenderer {
                 close_icon_size,
             );
         }
-        // SAFETY: This closes the active transaction begun above.
         let result = unsafe { self.context.EndDraw(None, None) };
         match result {
             Ok(()) => Ok(DrawResult::Complete),
@@ -226,7 +211,6 @@ impl SwitcherRenderer {
         let bounds = rect(item.bounds);
         if item.source_index == scene.selected() {
             let selected = rounded(bounds, scaled(scene, scene.theme().radii.control));
-            // SAFETY: Drawing occurs inside the active switcher transaction.
             unsafe {
                 self.context
                     .FillRoundedRectangle(&raw const selected, &self.selected);
@@ -244,7 +228,6 @@ impl SwitcherRenderer {
             top: icon_bounds.bottom - scaled(scene, 4.0),
             ..bounds
         };
-        // SAFETY: The text and retained drawing resources remain live for the synchronous call.
         unsafe {
             self.context.DrawText(
                 &title,
@@ -277,7 +260,6 @@ impl SwitcherRenderer {
                 .to_string()
                 .encode_utf16()
                 .collect::<Vec<_>>();
-            // SAFETY: The text and retained drawing resources remain live for the synchronous call.
             unsafe {
                 self.context.DrawText(
                     &initial,
@@ -303,7 +285,6 @@ impl SwitcherRenderer {
             right: left + width,
             bottom: bounds.top + scaled(scene, 12.0) + width,
         };
-        // SAFETY: The bitmap and destination remain live for the synchronous draw.
         unsafe {
             self.context.DrawBitmap(
                 bitmap,
@@ -335,7 +316,6 @@ impl SwitcherRenderer {
         }
 
         let bounds = rect(item.close);
-        // SAFETY: Drawing occurs inside the active switcher transaction.
         unsafe {
             if hovered == Some(SwitcherHitTarget::Close(item.item.window)) {
                 let highlight = rounded(bounds, scaled(scene, scene.theme().radii.compact));
@@ -376,7 +356,7 @@ impl SwitcherRenderer {
             DockIcon::Raster(raster) => {
                 let key = raster_key(raster);
                 if !self.raster_bitmaps.contains_key(&key) {
-                    let bitmap = upload_pixels(
+                    let bitmap = upload_bgra_pixels(
                         &self.context,
                         raster.width(),
                         raster.height(),
@@ -423,7 +403,6 @@ fn text_format(
     size: f32,
     weight: windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT,
 ) -> Result<IDWriteTextFormat, WindowsError> {
-    // SAFETY: Static family and locale are NUL terminated.
     let format = unsafe {
         factory.CreateTextFormat(
             w!("Segoe UI Variable Text"),
@@ -435,7 +414,6 @@ fn text_format(
             w!("en-us"),
         )?
     };
-    // SAFETY: These are valid layout properties for the retained format.
     unsafe {
         format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
         format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
@@ -448,34 +426,7 @@ fn brush(
     context: &ID2D1DeviceContext,
     color: &D2D1_COLOR_F,
 ) -> Result<ID2D1SolidColorBrush, WindowsError> {
-    // SAFETY: Direct2D copies the color synchronously.
     unsafe { context.CreateSolidColorBrush(color, None) }
-}
-
-fn target_properties() -> D2D1_BITMAP_PROPERTIES1 {
-    D2D1_BITMAP_PROPERTIES1 {
-        pixelFormat: D2D1_PIXEL_FORMAT {
-            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-        },
-        dpiX: TARGET_DPI,
-        dpiY: TARGET_DPI,
-        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-        ..D2D1_BITMAP_PROPERTIES1::default()
-    }
-}
-
-fn source_properties() -> D2D1_BITMAP_PROPERTIES1 {
-    D2D1_BITMAP_PROPERTIES1 {
-        pixelFormat: D2D1_PIXEL_FORMAT {
-            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-        },
-        dpiX: TARGET_DPI,
-        dpiY: TARGET_DPI,
-        bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
-        ..D2D1_BITMAP_PROPERTIES1::default()
-    }
 }
 
 fn upload_bitmap(
@@ -483,36 +434,13 @@ fn upload_bitmap(
     raster: &RasterImage,
 ) -> Result<ID2D1Bitmap1, RendererError> {
     let size = raster.size();
-    upload_pixels(
+    Ok(upload_bgra_pixels(
         context,
         size.width(),
         size.height(),
         raster.pixels(),
         raster.stride()?,
-    )
-}
-
-fn upload_pixels(
-    context: &ID2D1DeviceContext,
-    width: u32,
-    height: u32,
-    pixels: &[u8],
-    stride: u32,
-) -> Result<ID2D1Bitmap1, RendererError> {
-    let properties = source_properties();
-    // SAFETY: Both asset and native icon types validate tightly packed premultiplied BGRA data.
-    unsafe {
-        Ok(context.CreateBitmap(
-            D2D_SIZE_U { width, height },
-            Some(pixels.as_ptr().cast::<c_void>()),
-            stride,
-            &raw const properties,
-        )?)
-    }
-}
-
-fn raster_key(raster: &RasterIcon) -> (RasterIconId, u32, u32) {
-    (raster.id().clone(), raster.width(), raster.height())
+    )?)
 }
 
 fn rect(value: lotus_ui::geometry::PhysicalRect) -> D2D_RECT_F {

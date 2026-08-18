@@ -222,7 +222,6 @@ impl DockWindow {
             y: point.y,
         };
 
-        // SAFETY: `native` is valid writable storage and the HWND remains owned by `self`.
         unsafe { ClientToScreen(self.hwnd(), &raw mut native) }.ok()?;
         Ok(SignedPoint {
             x: native.x,

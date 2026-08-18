@@ -31,20 +31,14 @@ impl ExplorerBridgeLease {
         let thread_id = trusted_explorer_thread(taskbar)?;
         let path = HSTRING::from(bridge_path()?.as_os_str());
 
-        // SAFETY: The absolute path names Lotus's bridge beside the running executable.
         let module = unsafe { LoadLibraryW(&path) }.ok()?;
-        // SAFETY: The module is live and the export name is static and null terminated.
         let procedure =
             unsafe { GetProcAddress(module, PCSTR::from_raw(HOOK_EXPORT_NAME.as_ptr())) };
         let Some(procedure) = procedure else {
-            // SAFETY: This process owns the successful LoadLibrary reference.
             let _ = unsafe { FreeLibrary(module) };
             return None;
         };
-        // SAFETY: The bridge export has the exact HOOKPROC ABI declared by the shared contract.
         let hook_procedure: HOOKPROC = unsafe { std::mem::transmute(procedure) };
-        // SAFETY: The module and callback remain live for this lease and the hook is restricted
-        // to the verified Explorer taskbar thread.
         let Ok(hook) = (unsafe {
             SetWindowsHookExW(
                 WH_CALLWNDPROC,
@@ -53,19 +47,14 @@ impl ExplorerBridgeLease {
                 thread_id,
             )
         }) else {
-            // SAFETY: This process owns the successful LoadLibrary reference.
             let _ = unsafe { FreeLibrary(module) };
             return None;
         };
 
-        // SAFETY: Both shared message names have process-lifetime storage.
         let message = unsafe { RegisterWindowMessageW(CONFIG_MESSAGE_NAME) };
-        // SAFETY: Both shared message names have process-lifetime storage.
         let acknowledgement = unsafe { RegisterWindowMessageW(ACK_MESSAGE_NAME) };
         if message == 0 || acknowledgement == 0 {
-            // SAFETY: Both handles were acquired successfully by this process.
             let _ = unsafe { UnhookWindowsHookEx(hook) };
-            // SAFETY: The thread hook is gone before releasing the bridge module.
             let _ = unsafe { FreeLibrary(module) };
             return None;
         }
@@ -82,7 +71,6 @@ impl ExplorerBridgeLease {
     }
 
     fn configure(&self, enabled: bool) -> bool {
-        // SAFETY: The verified taskbar window receives only scalar bridge configuration.
         let outcome = unsafe {
             SendMessageTimeoutW(
                 self.taskbar,
@@ -99,7 +87,6 @@ impl ExplorerBridgeLease {
         }
 
         let mut acknowledgement = MSG::default();
-        // SAFETY: Only this registered acknowledgement for Lotus's owner HWND is removed.
         unsafe {
             PeekMessageW(
                 &raw mut acknowledgement,
@@ -117,22 +104,17 @@ impl ExplorerBridgeLease {
 impl Drop for ExplorerBridgeLease {
     fn drop(&mut self) {
         let _ = self.configure(false);
-        // SAFETY: This lease owns the successful thread-hook registration.
         let _ = unsafe { UnhookWindowsHookEx(self.hook) };
-        // SAFETY: Explorer's bridge worker independently retains the injected module until all
-        // detours have been removed; this releases Lotus's local reference.
         let _ = unsafe { FreeLibrary(self.module) };
     }
 }
 
 fn primary_taskbar() -> Option<HWND> {
-    // SAFETY: The static class is NUL terminated and a null title matches any primary taskbar.
     unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) }.ok()
 }
 
 fn trusted_explorer_thread(window: HWND) -> Option<u32> {
     let mut class_name = [0_u16; 32];
-    // SAFETY: The borrowed HWND is queried synchronously into writable storage.
     let length = unsafe { GetClassNameW(window, &mut class_name) };
     let length = usize::try_from(length).ok()?;
     if String::from_utf16_lossy(&class_name[..length]) != "Shell_TrayWnd" {
@@ -140,7 +122,6 @@ fn trusted_explorer_thread(window: HWND) -> Option<u32> {
     }
 
     let mut process_id = 0;
-    // SAFETY: The borrowed HWND is queried synchronously and the output remains writable.
     let thread_id = unsafe { GetWindowThreadProcessId(window, Some(&raw mut process_id)) };
     if thread_id == 0 || process_id == 0 {
         return None;

@@ -50,8 +50,6 @@ struct DwmThumbnail {
 impl DwmThumbnail {
     fn register(destination: HWND, source: WindowId) -> Option<Self> {
         let source = hwnd(source)?;
-        // SAFETY: Both destination and source are borrowed live top-level HWND values. The
-        // returned thumbnail handle is owned by this guard until DwmUnregisterThumbnail.
         let handle = unsafe { DwmRegisterThumbnail(destination, source) }.ok()?;
         Some(Self {
             handle: Some(handle),
@@ -82,8 +80,6 @@ impl DwmThumbnail {
             fSourceClientAreaOnly: false.into(),
             ..DWM_THUMBNAIL_PROPERTIES::default()
         };
-        // SAFETY: `handle` remains owned by this guard and `properties` is live for the
-        // synchronous DWM update.
         let _ = unsafe { DwmUpdateThumbnailProperties(handle, &raw const properties) };
     }
 }
@@ -91,7 +87,6 @@ impl DwmThumbnail {
 impl Drop for DwmThumbnail {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
-            // SAFETY: This guard owns the registration and unregisters it exactly once.
             let _ = unsafe { DwmUnregisterThumbnail(handle) };
         }
     }
