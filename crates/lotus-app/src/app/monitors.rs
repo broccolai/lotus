@@ -203,6 +203,10 @@ impl MonitorDocks {
             let physical = NonZeroPhysicalSize::new(size.width(), size.height())
                 .ok_or(AppError::ZeroSizedSurface)?;
             dock.place_secondary_dock_window(&replica.window, physical, model.settings())?;
+            lotus_windows::backdrop::apply_dock_settings(
+                replica.window.handle(),
+                model.settings(),
+            );
             resize_surface(
                 graphics,
                 replica.surface.value_mut(),

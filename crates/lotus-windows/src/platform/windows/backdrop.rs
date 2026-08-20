@@ -18,6 +18,7 @@ use windows::core::{BOOL, s, w};
 use crate::WindowHandle;
 
 const WINDOW_COMPOSITION_ATTRIBUTE_ACCENT_POLICY: i32 = 19;
+const ACCENT_DISABLED: i32 = 0;
 const ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND: i32 = 4;
 const DEFAULT_ACRYLIC_TINT: u32 = 0x8F1A_1411;
 const WINDOWS_11_22H2_BUILD: u32 = 22_621;
@@ -117,9 +118,11 @@ pub(crate) fn apply_settings_window(hwnd: HWND) {
 }
 
 pub(crate) fn apply_settings_material(hwnd: HWND, settings: &DockSettings) {
-    match settings_material() {
-        SettingsMaterial::Acrylic => apply_unified_material(hwnd, DWMWCP_ROUND, settings),
-        SettingsMaterial::Opaque => apply_settings_window(hwnd),
+    apply_window_backdrop(hwnd, DWMWCP_ROUND, DWMSBT_NONE, Some(DWMWA_COLOR_NONE));
+    if settings.use_acrylic && settings_material() == SettingsMaterial::Acrylic {
+        let _ = apply_explicit_acrylic(hwnd, acrylic_tint(settings));
+    } else {
+        let _ = disable_explicit_acrylic(hwnd);
     }
 }
 
@@ -142,7 +145,11 @@ fn apply_unified_material(
     settings: &DockSettings,
 ) {
     apply_window_backdrop(hwnd, corner, DWMSBT_NONE, Some(DWMWA_COLOR_NONE));
-    let _ = apply_explicit_acrylic(hwnd, acrylic_tint(settings));
+    if settings.use_acrylic {
+        let _ = apply_explicit_acrylic(hwnd, acrylic_tint(settings));
+    } else {
+        let _ = disable_explicit_acrylic(hwnd);
+    }
 }
 
 fn apply_window_backdrop(
@@ -219,6 +226,32 @@ fn apply_explicit_acrylic(hwnd: HWND, tint: u32) -> bool {
         state: ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND,
         flags: 2,
         gradient_color: tint,
+        animation_id: 0,
+    };
+    let mut data = CompositionAttributeData {
+        attribute: WINDOW_COMPOSITION_ATTRIBUTE_ACCENT_POLICY,
+        data: (&raw mut policy).cast::<c_void>(),
+        size: size_of::<AccentPolicy>(),
+    };
+
+    unsafe { set_attribute(hwnd, &raw mut data) }.as_bool()
+}
+
+fn disable_explicit_acrylic(hwnd: HWND) -> bool {
+    let Ok(user32) = (unsafe { GetModuleHandleW(w!("user32.dll")) }) else {
+        return false;
+    };
+    let Some(procedure) =
+        (unsafe { GetProcAddress(user32, s!("SetWindowCompositionAttribute")) })
+    else {
+        return false;
+    };
+    let set_attribute: SetWindowCompositionAttribute =
+        unsafe { std::mem::transmute(procedure) };
+    let mut policy = AccentPolicy {
+        state: ACCENT_DISABLED,
+        flags: 0,
+        gradient_color: 0,
         animation_id: 0,
     };
     let mut data = CompositionAttributeData {

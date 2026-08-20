@@ -115,5 +115,10 @@ pub fn theme_for(settings: &DockSettings) -> Theme {
     );
 
     #[allow(clippy::cast_possible_truncation)]
-    theme.with_material_opacity(settings.background_opacity as f32)
+    let opacity = if settings.use_acrylic {
+        settings.background_opacity as f32
+    } else {
+        1.0
+    };
+    theme.with_material_opacity(opacity)
 }

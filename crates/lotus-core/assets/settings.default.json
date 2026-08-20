@@ -9,6 +9,7 @@
   "appearanceVersion": 3,
   "onboardingVersion": 0,
   "backgroundOpacity": 0.56,
+  "useAcrylic": true,
   "backgroundColor": "#11141A",
   "accentColor": "#F5A5A5",
   "foregroundColor": "#F7F8FB",

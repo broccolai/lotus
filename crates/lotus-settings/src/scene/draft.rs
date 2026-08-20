@@ -72,6 +72,7 @@ impl SettingsDraft {
 
     pub(super) fn toggle_value(&self, toggle: SettingsToggle) -> bool {
         match toggle {
+            SettingsToggle::UseAcrylic => self.draft.use_acrylic,
             SettingsToggle::ShowAppDock => self.draft.show_app_dock,
             SettingsToggle::ShowUnpinnedRunningApps => {
                 self.draft.show_unpinned_running_apps
@@ -103,6 +104,7 @@ impl SettingsDraft {
 
     pub(super) fn set_toggle_value(&mut self, toggle: SettingsToggle, value: bool) {
         match toggle {
+            SettingsToggle::UseAcrylic => self.draft.use_acrylic = value,
             SettingsToggle::ShowAppDock => self.draft.show_app_dock = value,
             SettingsToggle::ShowUnpinnedRunningApps => {
                 self.draft.show_unpinned_running_apps = value;

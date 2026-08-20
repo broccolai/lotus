@@ -270,7 +270,8 @@ impl SettingsRenderer {
 
     fn apply_theme(&self, scene: &SettingsScene) {
         let value = scene.theme();
-        let acrylic = self.material == SettingsMaterial::Acrylic;
+        let acrylic =
+            self.material == SettingsMaterial::Acrylic && scene.draft().use_acrylic;
         let canvas = if acrylic {
             value.chrome_overlay
         } else {
@@ -496,6 +497,7 @@ fn asset_error(error: &AssetError) -> SettingsRendererError {
 
 fn toggle_label(value: SettingsToggle) -> &'static str {
     match value {
+        SettingsToggle::UseAcrylic => "Acrylic",
         SettingsToggle::ShowAppDock => "Application dock",
         SettingsToggle::ShowUnpinnedRunningApps => "Show unpinned running applications",
         SettingsToggle::ShowRunningIndicators => "Show indicators for open applications",

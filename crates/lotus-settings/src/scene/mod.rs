@@ -95,6 +95,7 @@ impl SettingsPage {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettingsToggle {
+    UseAcrylic,
     ShowAppDock,
     ShowUnpinnedRunningApps,
     ShowRunningIndicators,

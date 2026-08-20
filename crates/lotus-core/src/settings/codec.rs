@@ -336,6 +336,7 @@ const PROPERTY_NAMES: &[&str] = &[
     "appearanceVersion",
     "onboardingVersion",
     "backgroundOpacity",
+    "useAcrylic",
     "backgroundColor",
     "accentColor",
     "foregroundColor",
