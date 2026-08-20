@@ -46,8 +46,6 @@ mod onboarding;
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = color(0.0, 0.0, 0.0, 0.0);
-const MATERIAL_CANVAS_ALPHA: f32 = 0.72;
-const SETTINGS_SURFACE_ALPHA: f32 = 0.72;
 const FRAUNCES_SOFTNESS: DWRITE_FONT_AXIS_TAG =
     DWRITE_FONT_AXIS_TAG(u32::from_le_bytes(*b"SOFT"));
 const FRAUNCES_WONK: DWRITE_FONT_AXIS_TAG =
@@ -75,6 +73,7 @@ pub(super) struct SettingsRenderer {
     sidebar_selected: ID2D1SolidColorBrush,
     group: ID2D1SolidColorBrush,
     row: ID2D1SolidColorBrush,
+    hover: ID2D1SolidColorBrush,
     selected: ID2D1SolidColorBrush,
     accent: ID2D1SolidColorBrush,
     accent_dark: ID2D1SolidColorBrush,
@@ -164,6 +163,7 @@ impl SettingsRenderer {
             sidebar_selected: brush(&context, &theme::d2d(theme.border_strong))?,
             group: brush(&context, &theme::d2d(theme.surface))?,
             row: brush(&context, &theme::d2d(theme.control))?,
+            hover: brush(&context, &theme::d2d(theme.control_hover))?,
             selected: brush(&context, &theme::d2d(theme.control_selected))?,
             accent: brush(&context, &theme::d2d(theme.accent))?,
             accent_dark: brush(&context, &theme::d2d(theme.on_accent))?,
@@ -270,13 +270,12 @@ impl SettingsRenderer {
 
     fn apply_theme(&self, scene: &SettingsScene) {
         let value = scene.theme();
-        let onboarding = scene.onboarding_step().is_some();
         let acrylic = self.material == SettingsMaterial::Acrylic;
-        let canvas = value.canvas.with_alpha(if acrylic {
-            MATERIAL_CANVAS_ALPHA
+        let canvas = if acrylic {
+            value.chrome_overlay
         } else {
-            1.0
-        });
+            value.canvas
+        };
         let sidebar = if acrylic {
             value.accent.with_alpha(0.38)
         } else {
@@ -287,13 +286,14 @@ impl SettingsRenderer {
         theme::set(&self.sidebar_selected, value.text.with_alpha(0.14));
         theme::set(
             &self.group,
-            if onboarding {
-                value.surface
+            if acrylic {
+                value.control
             } else {
-                value.surface.with_alpha(SETTINGS_SURFACE_ALPHA)
+                value.surface
             },
         );
         theme::set(&self.row, value.control);
+        theme::set(&self.hover, value.control_hover);
         theme::set(&self.selected, value.control_selected);
         theme::set(&self.accent, value.accent);
         theme::set(&self.accent_dark, value.on_accent);

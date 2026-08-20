@@ -6,10 +6,9 @@ use lotus_core::settings::DockSettings;
 use windows::Wdk::System::SystemServices::RtlGetVersion;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{
-    DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
-    DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
-    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
-    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+    DWMSBT_NONE, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_SYSTEMBACKDROP_TYPE,
+    DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    DWMWCP_ROUNDSMALL, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
@@ -21,8 +20,6 @@ use crate::WindowHandle;
 const WINDOW_COMPOSITION_ATTRIBUTE_ACCENT_POLICY: i32 = 19;
 const ACCENT_ENABLE_ACRYLIC_BLUR_BEHIND: i32 = 4;
 const DEFAULT_ACRYLIC_TINT: u32 = 0x8F1A_1411;
-const STRONG_UI_ACRYLIC_ALPHA: u32 = 0xB3;
-const POPUP_ELEVATION_ALPHA: u32 = 0x1F;
 const WINDOWS_11_22H2_BUILD: u32 = 22_621;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -66,8 +63,7 @@ pub(crate) fn apply(hwnd: HWND) {
 
 pub fn apply_dock_settings(window: WindowHandle, settings: &DockSettings) {
     let hwnd = window.raw();
-    apply(hwnd);
-    let _ = apply_explicit_acrylic(hwnd, acrylic_tint(settings));
+    apply_unified_material(hwnd, DWMWCP_ROUNDSMALL, settings);
 }
 
 pub(crate) fn apply_search_popup(hwnd: HWND) {
@@ -76,8 +72,6 @@ pub(crate) fn apply_search_popup(hwnd: HWND) {
 
 pub(crate) fn apply_context_menu(hwnd: HWND) {
     apply_common(hwnd, DWMWCP_ROUND);
-    let tint = (DEFAULT_ACRYLIC_TINT & 0x00FF_FFFF) | (STRONG_UI_ACRYLIC_ALPHA << 24);
-    let _ = apply_explicit_acrylic(hwnd, tint);
 }
 
 pub fn apply_search_settings(window: WindowHandle, settings: &DockSettings) {
@@ -86,11 +80,7 @@ pub fn apply_search_settings(window: WindowHandle, settings: &DockSettings) {
 
 pub fn apply_popup_settings(window: WindowHandle, settings: &DockSettings) {
     let hwnd = window.raw();
-    apply_search_popup(hwnd);
-    let tint = acrylic_tint(settings);
-    let elevated_alpha = (tint >> 24).saturating_add(POPUP_ELEVATION_ALPHA).min(0xF2);
-    let stronger_tint = (tint & 0x00FF_FFFF) | (elevated_alpha << 24);
-    let _ = apply_explicit_acrylic(hwnd, stronger_tint);
+    apply_unified_material(hwnd, DWMWCP_ROUND, settings);
 }
 
 pub(crate) fn apply_settings_window(hwnd: HWND) {
@@ -128,10 +118,7 @@ pub(crate) fn apply_settings_window(hwnd: HWND) {
 
 pub(crate) fn apply_settings_material(hwnd: HWND, settings: &DockSettings) {
     match settings_material() {
-        SettingsMaterial::Acrylic => {
-            apply_system_backdrop(hwnd, DWMWCP_ROUND);
-            let _ = apply_explicit_acrylic(hwnd, acrylic_tint(settings));
-        }
+        SettingsMaterial::Acrylic => apply_unified_material(hwnd, DWMWCP_ROUND, settings),
         SettingsMaterial::Opaque => apply_settings_window(hwnd),
     }
 }
@@ -145,16 +132,26 @@ fn apply_common(
     hwnd: HWND,
     corner: windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE,
 ) {
-    apply_system_backdrop(hwnd, corner);
+    apply_window_backdrop(hwnd, corner, DWMSBT_NONE, Some(DWMWA_COLOR_NONE));
     let _ = apply_explicit_acrylic(hwnd, DEFAULT_ACRYLIC_TINT);
 }
 
-fn apply_system_backdrop(
+fn apply_unified_material(
     hwnd: HWND,
     corner: windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE,
+    settings: &DockSettings,
+) {
+    apply_window_backdrop(hwnd, corner, DWMSBT_NONE, Some(DWMWA_COLOR_NONE));
+    let _ = apply_explicit_acrylic(hwnd, acrylic_tint(settings));
+}
+
+fn apply_window_backdrop(
+    hwnd: HWND,
+    corner: windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE,
+    backdrop: windows::Win32::Graphics::Dwm::DWM_SYSTEMBACKDROP_TYPE,
+    border_color: Option<u32>,
 ) {
     let dark_mode = 1_i32;
-    let backdrop = DWMSBT_TRANSIENTWINDOW;
     let margins = MARGINS {
         cxLeftWidth: -1,
         cxRightWidth: -1,
@@ -181,6 +178,14 @@ fn apply_system_backdrop(
             (&raw const backdrop).cast::<c_void>(),
             value_size_u32(&backdrop),
         );
+        if let Some(border_color) = border_color {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_BORDER_COLOR,
+                (&raw const border_color).cast::<c_void>(),
+                value_size_u32(&border_color),
+            );
+        }
         let _ = DwmExtendFrameIntoClientArea(hwnd, &raw const margins);
     }
 }

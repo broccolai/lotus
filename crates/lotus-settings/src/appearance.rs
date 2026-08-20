@@ -107,10 +107,13 @@ impl AccentPreset {
 }
 
 pub fn theme_for(settings: &DockSettings) -> Theme {
-    Theme::new(
+    let theme = Theme::new(
         &settings.background_color,
         &settings.accent_color,
         &settings.foreground_color,
         settings.corner_radius,
-    )
+    );
+
+    #[allow(clippy::cast_possible_truncation)]
+    theme.with_material_opacity(settings.background_opacity as f32)
 }

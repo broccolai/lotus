@@ -271,6 +271,7 @@ impl SettingsDraft {
             .color()
             .clone_into(&mut self.draft.foreground_color);
     }
+
     pub(super) fn cycle_notification_badge_style(&mut self, reverse: bool) {
         let styles = [
             NotificationBadgeStyle::Off,
@@ -508,6 +509,7 @@ impl SettingsScene {
         self.draft.cycle_foreground_preset(reverse);
         SettingsAction::Changed
     }
+
     pub(super) fn cycle_notification_badge_style(
         &mut self,
         reverse: bool,

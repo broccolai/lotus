@@ -45,7 +45,9 @@ pub(super) struct SwitcherRenderer {
     context: ID2D1DeviceContext,
     target: Option<ID2D1Bitmap1>,
     panel: ID2D1SolidColorBrush,
+    hover: ID2D1SolidColorBrush,
     selected: ID2D1SolidColorBrush,
+    selected_border: ID2D1SolidColorBrush,
     close_hover: ID2D1SolidColorBrush,
     icon: ID2D1SolidColorBrush,
     text: ID2D1SolidColorBrush,
@@ -79,7 +81,9 @@ impl SwitcherRenderer {
             context: context.clone(),
             target: None,
             panel: brush(&context, &theme::d2d(theme.chrome_overlay))?,
+            hover: brush(&context, &theme::d2d(theme.control_hover))?,
             selected: brush(&context, &theme::d2d(theme.control_selected))?,
+            selected_border: brush(&context, &theme::d2d(theme.border_strong))?,
             close_hover: brush(&context, &theme::d2d(theme.control_hover))?,
             icon: brush(&context, &theme::d2d(theme.accent))?,
             text: brush(&context, &theme::d2d(theme.text))?,
@@ -127,7 +131,9 @@ impl SwitcherRenderer {
             self.embedded_bitmaps.clear();
         }
         theme::set(&self.panel, theme.chrome_overlay);
+        theme::set(&self.hover, theme.control_hover);
         theme::set(&self.selected, theme.control_selected);
+        theme::set(&self.selected_border, theme.border_strong);
         theme::set(&self.close_hover, theme.control_hover);
         theme::set(&self.icon, theme.accent);
         theme::set(&self.text, theme.text);
@@ -211,9 +217,35 @@ impl SwitcherRenderer {
         let bounds = rect(item.bounds);
         if item.source_index == scene.selected() {
             let selected = rounded(bounds, scaled(scene, scene.theme().radii.control));
+            let outline_bounds = D2D_RECT_F {
+                left: bounds.left + scaled(scene, 0.5),
+                top: bounds.top + scaled(scene, 0.5),
+                right: bounds.right - scaled(scene, 0.5),
+                bottom: bounds.bottom - scaled(scene, 0.5),
+            };
+            let outline = rounded(
+                outline_bounds,
+                scaled(scene, (scene.theme().radii.control - 0.5).max(1.0)),
+            );
             unsafe {
                 self.context
                     .FillRoundedRectangle(&raw const selected, &self.selected);
+                self.context.DrawRoundedRectangle(
+                    &raw const outline,
+                    &self.selected_border,
+                    scaled(scene, 1.0),
+                    None,
+                );
+            }
+        } else if matches!(
+            scene.hovered(),
+            Some(SwitcherHitTarget::Item(window) | SwitcherHitTarget::Close(window))
+                if window == item.item.window
+        ) {
+            let hovered = rounded(bounds, scaled(scene, scene.theme().radii.control));
+            unsafe {
+                self.context
+                    .FillRoundedRectangle(&raw const hovered, &self.hover);
             }
         }
 

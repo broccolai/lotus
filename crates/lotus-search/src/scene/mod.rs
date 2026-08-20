@@ -3,6 +3,8 @@ use std::num::NonZeroU32;
 use lotus_ui::icon::Icon;
 use lotus_ui::theme::Theme;
 
+use crate::controller::SearchMode;
+
 mod layout;
 
 pub use layout::{LauncherLayout, LauncherSize, PixelRect};
@@ -70,6 +72,7 @@ pub struct LauncherScene<Asset> {
     dpi: NonZeroU32,
     query: String,
     query_cursor: usize,
+    mode: SearchMode,
     results: Vec<LauncherResult<Asset>>,
     selected: Option<usize>,
     hovered: Option<usize>,
@@ -84,6 +87,7 @@ impl<Asset> LauncherScene<Asset> {
     pub fn new(
         dpi: u32,
         query: impl Into<String>,
+        mode: SearchMode,
         mut results: Vec<LauncherResult<Asset>>,
         selected: Option<usize>,
     ) -> Option<Self> {
@@ -97,6 +101,7 @@ impl<Asset> LauncherScene<Asset> {
             dpi,
             query,
             query_cursor,
+            mode,
             results,
             selected,
             hovered: None,
@@ -149,18 +154,53 @@ impl<Asset> LauncherScene<Asset> {
         &self.query[..byte]
     }
 
+    pub fn display_query(&self) -> &str {
+        let Some(prefix) = self.command_prefix_end() else {
+            return &self.query;
+        };
+        &self.query[prefix..]
+    }
+
+    pub fn display_query_before_cursor(&self) -> &str {
+        let cursor_byte = self
+            .query
+            .char_indices()
+            .nth(self.query_cursor)
+            .map_or(self.query.len(), |(index, _)| index);
+        let prefix = self.command_prefix_end().unwrap_or(0).min(cursor_byte);
+        &self.query[prefix..cursor_byte]
+    }
+
+    pub const fn mode(&self) -> SearchMode {
+        self.mode
+    }
+
     pub fn results(&self) -> &[LauncherResult<Asset>] {
         &self.results
     }
 
     pub fn is_command_mode(&self) -> bool {
-        self.query.trim_start().starts_with('>')
+        self.mode == SearchMode::Commands
     }
 
     pub fn is_calculator_mode(&self) -> bool {
-        self.results
-            .first()
-            .is_some_and(|result| result.kind == LauncherResultKind::Calculator)
+        self.mode == SearchMode::Calculator
+    }
+
+    fn command_prefix_end(&self) -> Option<usize> {
+        if self.mode != SearchMode::Commands {
+            return None;
+        }
+        let start = self.query.len() - self.query.trim_start().len();
+        let after_trigger = start
+            + self.query[start..]
+                .char_indices()
+                .nth(1)
+                .map_or(self.query.len() - start, |(index, _)| index);
+        Some(
+            after_trigger + self.query[after_trigger..].len()
+                - self.query[after_trigger..].trim_start().len(),
+        )
     }
 
     pub const fn selected(&self) -> Option<usize> {

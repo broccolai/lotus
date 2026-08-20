@@ -140,6 +140,16 @@ impl Theme {
             },
         }
     }
+
+    #[must_use]
+    pub fn with_material_opacity(mut self, opacity: f32) -> Self {
+        let white = Color::rgb(u8::MAX, u8::MAX, u8::MAX);
+        self.chrome_overlay = self
+            .canvas
+            .blend(white, 0.035)
+            .with_alpha(opacity.clamp(0.08, 0.95));
+        self
+    }
 }
 
 impl Default for Theme {

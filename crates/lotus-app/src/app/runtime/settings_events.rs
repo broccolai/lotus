@@ -407,6 +407,11 @@ fn apply_changed_settings(
     let impact = context
         .dock_model
         .apply_settings(next, context.window_tracker.current_windows())?;
+    context
+        .auxiliary
+        .settings
+        .window
+        .use_material(context.dock_model.settings());
     if restart_after_apply {
         context
             .auxiliary

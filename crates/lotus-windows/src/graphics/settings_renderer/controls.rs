@@ -736,7 +736,7 @@ impl SettingsRenderer {
                 if *selected {
                     self.context.DrawRoundedRectangle(
                         &raw const surface,
-                        &self.accent,
+                        &self.track,
                         scale_f32(scene, 1.0),
                         None,
                     );

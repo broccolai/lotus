@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 
+use lotus_search::controller::SearchMode;
 use lotus_ui::theme::{Color, Theme};
 use thiserror::Error;
 use windows::Win32::Foundation::D2DERR_RECREATE_TARGET;
@@ -70,6 +71,7 @@ pub(super) struct LauncherRenderer {
     footer_label_format: IDWriteTextFormat,
     footer_time_format: IDWriteTextFormat,
     command_format: IDWriteTextFormat,
+    search_mode_format: IDWriteTextFormat,
     assets: SvgAssetCache,
     icon_tint: IconTint,
     embedded_icons: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
@@ -112,6 +114,8 @@ impl LauncherRenderer {
             text_format(&write_factory, 12.5, DWRITE_FONT_WEIGHT_NORMAL)?;
         let command_format =
             text_format(&write_factory, 10.5, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let search_mode_format =
+            text_format(&write_factory, 17.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         unsafe {
             title_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             query_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
@@ -125,6 +129,8 @@ impl LauncherRenderer {
             footer_time_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             command_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
             command_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            search_mode_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            search_mode_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         }
         let mut result = Self {
             _factory: factory,
@@ -150,6 +156,7 @@ impl LauncherRenderer {
             footer_label_format,
             footer_time_format,
             command_format,
+            search_mode_format,
             assets: SvgAssetCache::create()?,
             icon_tint: IconTint::from_color(theme.text),
             embedded_icons: HashMap::new(),
@@ -195,10 +202,14 @@ impl LauncherRenderer {
                 self.ensure_icon(icon, scene.result_icon_size())?;
             }
         }
-        let search_icon = DockIcon::Embedded(SvgAsset::FluentSearch);
-        let search_icon_size = search_icon_size(scene);
-        self.ensure_icon(&search_icon, search_icon_size)?;
-        let search_bitmap = self.icon(&search_icon, search_icon_size)?.clone();
+        let search_bitmap = if scene.mode() == SearchMode::Applications {
+            let search_icon = DockIcon::Embedded(SvgAsset::FluentSearch);
+            let search_icon_size = search_icon_size(scene);
+            self.ensure_icon(&search_icon, search_icon_size)?;
+            Some(self.icon(&search_icon, search_icon_size)?.clone())
+        } else {
+            None
+        };
         let icon_draws = scene
             .results()
             .iter()
@@ -213,7 +224,7 @@ impl LauncherRenderer {
         let result = unsafe {
             self.context.BeginDraw();
             self.context.Clear(Some(&raw const transparent));
-            self.draw_chrome(&chrome, scene, &layout, &search_bitmap);
+            self.draw_chrome(&chrome, scene, &layout, search_bitmap.as_ref());
             self.draw_results(scene, &layout, &icon_draws);
             self.draw_footer(scene, &layout);
             self.context.EndDraw(None, None)
@@ -264,17 +275,19 @@ impl LauncherRenderer {
             query_panel: rounded(query_rect, control_radius),
             query_outline: rounded(inset_all(query_rect, 0.5), control_radius - 0.5),
             search_bounds: search_glyph_rect(query_rect),
-            query_text: utf16(if scene.query().is_empty() {
-                "Search apps or type > for actions"
-            } else {
-                scene.query()
-            }),
+            query_text: utf16(
+                if scene.mode() == SearchMode::Applications && scene.query().is_empty() {
+                    "Search apps or type > for actions"
+                } else {
+                    scene.display_query()
+                },
+            ),
             query_text_bounds,
             caret: caret_rect(
                 &self.write_factory,
                 &self.query_format,
                 query_text_bounds,
-                scene.query_before_cursor(),
+                scene.display_query_before_cursor(),
             )?,
         })
     }
@@ -284,7 +297,7 @@ impl LauncherRenderer {
         chrome: &LauncherChrome,
         scene: &LauncherScene,
         layout: &LauncherLayout,
-        search_bitmap: &ID2D1Bitmap1,
+        search_bitmap: Option<&ID2D1Bitmap1>,
     ) {
         unsafe {
             self.context
@@ -297,15 +310,30 @@ impl LauncherRenderer {
                 1.0,
                 None,
             );
-            self.context.DrawBitmap(
-                search_bitmap,
-                Some(&raw const chrome.search_bounds),
-                scene.theme().text_muted.alpha,
-                windows::Win32::Graphics::Direct2D::D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
-                None,
-                None,
-            );
-            let query_brush = if scene.query().is_empty() {
+            if let Some(search_bitmap) = search_bitmap {
+                self.context.DrawBitmap(
+                    search_bitmap,
+                    Some(&raw const chrome.search_bounds),
+                    scene.theme().text_muted.alpha,
+                    windows::Win32::Graphics::Direct2D::D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                    None,
+                    None,
+                );
+            } else {
+                self.context.DrawText(
+                    &utf16(match scene.mode() {
+                        SearchMode::Commands => ">",
+                        SearchMode::Calculator => "#",
+                        SearchMode::Applications => "",
+                    }),
+                    &self.search_mode_format,
+                    &raw const chrome.search_bounds,
+                    &self.placeholder_text,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+            }
+            let query_brush = if chrome.query_text.is_empty() {
                 &self.placeholder_text
             } else {
                 &self.query_text

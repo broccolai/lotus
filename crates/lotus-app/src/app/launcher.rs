@@ -186,6 +186,7 @@ impl LauncherRuntime {
         let icon_size = LauncherScene::new(
             dpi,
             self.controller.query(),
+            self.controller.mode(),
             iconless_results,
             self.controller.selected_index(),
         )
@@ -196,6 +197,7 @@ impl LauncherRuntime {
         let mut scene = LauncherScene::new(
             dpi,
             self.controller.query(),
+            self.controller.mode(),
             results,
             self.controller.selected_index(),
         )

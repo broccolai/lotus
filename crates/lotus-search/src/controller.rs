@@ -11,6 +11,13 @@ use crate::usage::SearchUsageStore;
 const ANIMATION_MILLISECONDS: u128 = 140;
 const COMPLETE_PROGRESS: u16 = 1_000;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchMode {
+    Applications,
+    Commands,
+    Calculator,
+}
+
 pub struct SearchController {
     model: LauncherModel,
     usage_store: SearchUsageStore,
@@ -115,6 +122,16 @@ impl SearchController {
 
     pub fn query_cursor(&self) -> usize {
         self.model.query_cursor()
+    }
+
+    pub fn mode(&self) -> SearchMode {
+        if self.is_command_mode() {
+            SearchMode::Commands
+        } else if self.is_calculator_mode() {
+            SearchMode::Calculator
+        } else {
+            SearchMode::Applications
+        }
     }
 
     pub fn results(&self) -> &[ApplicationEntry] {

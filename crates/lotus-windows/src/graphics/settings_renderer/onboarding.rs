@@ -195,7 +195,7 @@ impl SettingsRenderer {
         let brush = if enabled {
             &self.selected
         } else if scene.hovered() == Some(SettingsControl::OnboardingModule(module)) {
-            &self.row
+            &self.hover
         } else {
             &self.group
         };

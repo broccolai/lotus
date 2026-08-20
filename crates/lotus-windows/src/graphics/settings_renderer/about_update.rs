@@ -140,7 +140,7 @@ impl SettingsRenderer {
         let fill = match (emphasis, enabled, hovered) {
             (ButtonEmphasis::Primary, true, _) => Some(&self.accent),
             (ButtonEmphasis::Secondary | ButtonEmphasis::Outline, true, true) => {
-                Some(&self.selected)
+                Some(&self.hover)
             }
             (ButtonEmphasis::Secondary, _, _) => Some(&self.row),
             (ButtonEmphasis::Primary | ButtonEmphasis::Outline, _, _) => None,

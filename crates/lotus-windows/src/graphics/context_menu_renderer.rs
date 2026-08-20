@@ -74,7 +74,7 @@ impl ContextMenuRenderer {
             target: None,
             panel: brush(&context, &theme::d2d(theme.chrome_overlay))?,
             highlight: brush(&context, &theme::d2d(theme.control_hover))?,
-            active: brush(&context, &theme::d2d(theme.accent_soft))?,
+            active: brush(&context, &theme::d2d(theme.control_selected))?,
             text: brush(&context, &theme::d2d(theme.text))?,
             write_factory,
             text_formats: HashMap::new(),
@@ -335,7 +335,7 @@ impl ContextMenuRenderer {
     fn apply_theme(&self, value: &Theme) {
         theme::set(&self.panel, value.chrome_overlay);
         theme::set(&self.highlight, value.control_hover);
-        theme::set(&self.active, value.accent_soft);
+        theme::set(&self.active, value.control_selected);
         theme::set(&self.text, value.text);
     }
 
