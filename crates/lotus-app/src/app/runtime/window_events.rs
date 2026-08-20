@@ -77,9 +77,32 @@ pub(super) fn handle_tracker_message(
         return Ok(());
     };
     if event == WindowTrackerEvent::SnapshotRefreshed {
-        context
+        let windows = context.window_tracker.current_windows();
+        let pins_reconciled = context
             .dock_model
-            .rebuild(context.window_tracker.current_windows());
+            .reconcile_unpinned_pins(windows, &context.auxiliary.applications)?;
+        if pins_reconciled {
+            context
+                .auxiliary
+                .settings
+                .scene
+                .reconcile_application_icon_overrides(context.dock_model.settings());
+            context.auxiliary.launcher.apply_settings(
+                context.dock_model.settings(),
+                context.dock,
+                context.graphics,
+            )?;
+            context
+                .auxiliary
+                .context_menu
+                .apply_settings(context.dock_model.settings());
+            context
+                .auxiliary
+                .switcher
+                .apply_settings(context.dock_model.settings());
+            let _changed = context.auxiliary.media.refresh(context.dock_model);
+        }
+        context.dock_model.rebuild(windows);
         context
             .dock_model
             .record_foreground(lotus_windows::activation::foreground_window());

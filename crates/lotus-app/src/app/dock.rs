@@ -14,6 +14,7 @@ use lotus_dock::interaction::DockInteraction;
 use lotus_dock::model::{DockModel, SettingsImpact};
 use lotus_media::MediaSnapshot;
 use lotus_settings::appearance::theme_for;
+use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::scene::{
     DockIcon, DockItem as SceneDockItem, DockMetrics, DockScene, MediaItem, MediaSymbols,
@@ -34,6 +35,7 @@ pub(super) struct DockRuntime {
     model: DockModel,
     scene: DockScene,
     native_icons: NativeIconCache,
+    custom_images: CustomImageCache,
     notifications: Vec<NotificationSource>,
     interaction: DockInteraction,
     pending_items: Option<Vec<SceneDockItem>>,
@@ -61,6 +63,7 @@ impl DockRuntime {
             model: DockModel::new(settings, settings_store, items),
             scene,
             native_icons: NativeIconCache::default(),
+            custom_images: CustomImageCache::default(),
             notifications: Vec::new(),
             interaction: DockInteraction::new(drag_threshold),
             pending_items: None,
@@ -193,6 +196,7 @@ impl DockRuntime {
         let dpi = self.scene.dpi();
         let impact = self.model.apply_settings(next, next_items)?;
         if impact.changed {
+            self.custom_images.clear();
             if let Some(media) = &mut self.media {
                 media.show_metadata = self.model.settings().show_media_metadata;
             }
@@ -272,10 +276,20 @@ impl DockRuntime {
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        self.native_icons
-            .icon(Path::new(&item.icon_source), size)
-            .ok()
-            .flatten()
-            .map(DockIcon::Raster)
+        crate::app::icon_override::resolve_application_icon(
+            self.model.settings(),
+            &mut self.custom_images,
+            item.app_user_model_id.as_deref(),
+            Some(&item.id),
+            Path::new(&item.executable_path),
+        )
+        .map(DockIcon::Raster)
+        .or_else(|| {
+            self.native_icons
+                .icon(Path::new(&item.icon_source), size)
+                .ok()
+                .flatten()
+                .map(DockIcon::Raster)
+        })
     }
 }

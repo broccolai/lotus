@@ -1,5 +1,6 @@
 mod context_menu;
 mod dock;
+mod icon_override;
 mod launcher;
 mod media;
 mod monitors;
@@ -232,8 +233,7 @@ fn create_auxiliary_windows(
     );
     let launcher = LauncherRuntime::new(
         search_window,
-        dock_model.settings().search_result_limit,
-        dock_model.settings().use_24_hour_time,
+        dock_model.settings().clone(),
         &theme_for(dock_model.settings()),
         usage,
         usage_store,
@@ -255,7 +255,11 @@ fn create_auxiliary_windows(
         switcher_window.handle(),
         dock_model.settings(),
     );
-    let switcher = SwitcherRuntime::new(switcher_window, &theme_for(dock_model.settings()));
+    let switcher = SwitcherRuntime::new(
+        switcher_window,
+        dock_model.settings(),
+        &theme_for(dock_model.settings()),
+    );
     let media = MediaRuntime::new(dock_model.settings().show_media_controls);
     let status = StatusRuntime::new(
         [dock.create_status_window()?, dock.create_status_window()?],

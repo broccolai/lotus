@@ -25,6 +25,7 @@ thiserror.workspace = true
 tiny-skia.workspace = true
 windows.workspace = true
 windows-core.workspace = true
+windows-numerics.workspace = true
 windows-registry.workspace = true
 windows-result.workspace = true
 

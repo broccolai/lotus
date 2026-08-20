@@ -3,7 +3,7 @@ use std::path::Path;
 use lotus_core::activation::{ActivationDecision, decide_activation};
 use lotus_core::dock::DockItem;
 use lotus_core::settings::{DockSettings, PinnedApp, SettingsStore, SettingsStoreError};
-use lotus_core::window::{WindowId, WindowInfo};
+use lotus_core::window::{WindowId, WindowInfo, is_reliable_application_identity};
 
 pub fn project_snapshot<F>(
     settings: &DockSettings,
@@ -50,6 +50,12 @@ pub struct PinLaunch {
 pub struct PinUpgrade {
     pub current_id: String,
     pub launch: PinLaunch,
+}
+
+pub struct PinExecutableAlias {
+    pub registered_id: String,
+    pub app_user_model_id: Option<String>,
+    pub executable_name: String,
 }
 
 impl DockModel {
@@ -199,7 +205,7 @@ impl DockModel {
             {
                 return Ok(false);
             }
-            let executable = Path::new(&item.executable_path)
+            let executable: Vec<String> = Path::new(&item.executable_path)
                 .file_name()
                 .and_then(|name| name.to_str())
                 .map(str::to_owned)
@@ -236,7 +242,10 @@ impl DockModel {
                 arguments: launch.arguments,
                 icon_source: launch.icon_source,
                 app_user_model_id: launch.app_user_model_id,
-                match_executables: executable,
+                match_executables: executable
+                    .into_iter()
+                    .filter(|executable| !is_shared_host_executable(executable))
+                    .collect(),
             });
             insert_item_order(&mut settings.item_order, &self.items, source_index);
         } else {
@@ -245,6 +254,7 @@ impl DockModel {
                 .retain(|pin| !pin.id.eq_ignore_ascii_case(&item.id));
         }
 
+        let settings = settings.normalized();
         self.settings_store.save(&settings)?;
         self.settings = settings;
         Ok(true)
@@ -261,6 +271,7 @@ impl DockModel {
         let mut settings = self.settings.clone();
         let mut changed = false;
         for upgrade in upgrades {
+            let launch = upgrade.launch.clone();
             let Some(pin) = settings
                 .pinned_apps
                 .iter_mut()
@@ -268,6 +279,8 @@ impl DockModel {
             else {
                 continue;
             };
+            let previous_id = pin.id.clone();
+            let previous_target = pin.launch_target.clone();
             if pin.id.eq_ignore_ascii_case(&upgrade.launch.id)
                 && pin.name == upgrade.launch.name
                 && pin.launch_target == upgrade.launch.target
@@ -284,16 +297,156 @@ impl DockModel {
             pin.arguments = upgrade.launch.arguments;
             pin.icon_source = upgrade.launch.icon_source;
             pin.app_user_model_id = upgrade.launch.app_user_model_id;
+            migrate_icon_overrides(&mut settings, &previous_id, &previous_target, &launch);
             changed = true;
         }
         if !changed {
             return Ok(false);
         }
 
+        let settings = settings.normalized();
         self.settings_store.save(&settings)?;
         self.settings = settings;
         Ok(true)
     }
+
+    pub fn reconcile_pin_executables(
+        &mut self,
+        aliases: Vec<PinExecutableAlias>,
+    ) -> Result<bool, SettingsStoreError> {
+        if aliases.is_empty() {
+            return Ok(false);
+        }
+
+        let mut settings = self.settings.clone();
+        let mut changed = false;
+        for alias in aliases {
+            if is_shared_host_executable(&alias.executable_name) {
+                continue;
+            }
+            if let Some(pin) = pin_for_registered_application(&mut settings, &alias)
+                && !pin
+                    .match_executables
+                    .iter()
+                    .any(|saved| saved.eq_ignore_ascii_case(&alias.executable_name))
+            {
+                pin.match_executables.push(alias.executable_name.clone());
+                changed = true;
+            }
+            reconcile_icon_override_alias(&mut settings, &alias, &mut changed);
+        }
+        if !changed {
+            return Ok(false);
+        }
+
+        let settings = settings.normalized();
+        self.settings_store.save(&settings)?;
+        self.settings = settings;
+        Ok(true)
+    }
+}
+
+fn reconcile_icon_override_alias(
+    settings: &mut DockSettings,
+    alias: &PinExecutableAlias,
+    changed: &mut bool,
+) {
+    if is_shared_host_executable(&alias.executable_name) {
+        return;
+    }
+    let identity = alias
+        .app_user_model_id
+        .as_deref()
+        .filter(|identity| is_reliable_application_identity(identity))
+        .or_else(|| {
+            is_reliable_application_identity(&alias.registered_id)
+                .then_some(alias.registered_id.as_str())
+        });
+    let Some(identity) = identity else {
+        return;
+    };
+    let Some(override_) =
+        settings
+            .application_icon_overrides
+            .iter_mut()
+            .find(|override_| {
+                override_
+                    .app_user_model_id
+                    .as_deref()
+                    .is_some_and(|saved| saved.eq_ignore_ascii_case(identity))
+                    || override_.id.eq_ignore_ascii_case(identity)
+            })
+    else {
+        return;
+    };
+    if override_
+        .match_executables
+        .iter()
+        .any(|saved| saved.eq_ignore_ascii_case(&alias.executable_name))
+    {
+        return;
+    }
+    override_
+        .match_executables
+        .push(alias.executable_name.clone());
+    *changed = true;
+}
+
+fn migrate_icon_overrides(
+    settings: &mut DockSettings,
+    previous_id: &str,
+    previous_target: &str,
+    launch: &PinLaunch,
+) {
+    let app_user_model_id = launch
+        .app_user_model_id
+        .as_deref()
+        .filter(|identity| is_reliable_application_identity(identity))
+        .map(str::to_owned);
+    let stable_id = app_user_model_id.as_deref().unwrap_or(&launch.id);
+    for override_ in &mut settings.application_icon_overrides {
+        let previous = override_.id.eq_ignore_ascii_case(previous_id)
+            || override_.id.eq_ignore_ascii_case(previous_target);
+        if !previous {
+            continue;
+        }
+        stable_id.clone_into(&mut override_.id);
+        override_.app_user_model_id.clone_from(&app_user_model_id);
+        override_
+            .match_executables
+            .retain(|executable| !is_shared_host_executable(executable));
+    }
+}
+
+fn is_shared_host_executable(executable: &str) -> bool {
+    ["chrome.exe", "msedge.exe", "applicationframehost.exe"]
+        .iter()
+        .any(|host| executable.eq_ignore_ascii_case(host))
+}
+
+fn pin_for_registered_application<'a>(
+    settings: &'a mut DockSettings,
+    alias: &PinExecutableAlias,
+) -> Option<&'a mut PinnedApp> {
+    if is_reliable_application_identity(&alias.registered_id)
+        && let Some(index) = settings
+            .pinned_apps
+            .iter()
+            .position(|pin| pin.id.eq_ignore_ascii_case(&alias.registered_id))
+    {
+        return settings.pinned_apps.get_mut(index);
+    }
+
+    let app_user_model_id = alias.app_user_model_id.as_deref()?;
+    if !is_reliable_application_identity(app_user_model_id) {
+        return None;
+    }
+    let index = settings.pinned_apps.iter().position(|pin| {
+        pin.app_user_model_id
+            .as_deref()
+            .is_some_and(|identity| identity.eq_ignore_ascii_case(app_user_model_id))
+    })?;
+    settings.pinned_apps.get_mut(index)
 }
 
 fn replace_order_identity(order: &mut [String], previous: &str, current: &str) {
@@ -353,4 +506,148 @@ fn insertion_destination(
         target_index,
         insert_after,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use lotus_core::settings::{ApplicationIconOverride, PinnedApp};
+    use lotus_core::window::{WindowId, WindowInfo};
+
+    use super::*;
+
+    #[test]
+    fn reconciliation_absorbs_a_registered_application_with_a_changed_executable()
+    -> Result<(), Box<dyn Error>> {
+        let directory = std::env::temp_dir().join(format!(
+            "lotus-dock-model-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        let store = SettingsStore::new(&directory);
+        let mut settings = DockSettings::default();
+        settings.pinned_apps.push(PinnedApp {
+            id: "com.squirrel.discord.discord".into(),
+            name: "Discord".into(),
+            launch_target: r"C:\ProgramData\Microsoft\Windows\Start Menu\Discord.lnk"
+                .into(),
+            arguments: None,
+            icon_source: None,
+            app_user_model_id: Some("com.squirrel.discord.discord".into()),
+            match_executables: vec!["Discord.exe".into()],
+        });
+        settings.pinned_apps.push(PinnedApp {
+            id: "com.electron.app".into(),
+            name: "Generic Electron App".into(),
+            launch_target: r"C:\Apps\GenericElectron.exe".into(),
+            arguments: None,
+            icon_source: None,
+            app_user_model_id: Some("com.electron.app".into()),
+            match_executables: vec!["GenericElectron.exe".into()],
+        });
+        settings
+            .application_icon_overrides
+            .push(ApplicationIconOverride {
+                id: "com.squirrel.discord.discord".into(),
+                image_path: r"C:\Lotus\assets\app-icons\discord.png".into(),
+                app_user_model_id: Some("com.squirrel.discord.discord".into()),
+                match_executables: vec!["Discord.exe".into()],
+            });
+        let mut model = DockModel::new(settings, store, Vec::new());
+
+        assert!(model.reconcile_pin_executables(vec![
+            PinExecutableAlias {
+                registered_id: "COM.SQUIRREL.DISCORD.DISCORD".into(),
+                app_user_model_id: Some("com.squirrel.discord.discord".into()),
+                executable_name: "DiscordCanary.exe".into(),
+            },
+            PinExecutableAlias {
+                registered_id: "com.electron.app".into(),
+                app_user_model_id: Some("com.electron.app".into()),
+                executable_name: "AnotherElectron.exe".into(),
+            },
+            PinExecutableAlias {
+                registered_id: "COM.SQUIRREL.DISCORD.DISCORD".into(),
+                app_user_model_id: Some("com.squirrel.discord.discord".into()),
+                executable_name: "msedge.exe".into(),
+            },
+        ])?);
+        assert_eq!(
+            model.settings().pinned_apps[0].match_executables,
+            ["Discord.exe", "DiscordCanary.exe"]
+        );
+        assert_eq!(
+            SettingsStore::new(&directory).load()?.settings.pinned_apps[0]
+                .match_executables,
+            ["Discord.exe", "DiscordCanary.exe"]
+        );
+        assert_eq!(
+            model.settings().pinned_apps[1].match_executables,
+            ["GenericElectron.exe"]
+        );
+        assert!(
+            model.upgrade_pins(vec![PinUpgrade {
+                current_id: "com.squirrel.discord.discord".into(),
+                launch: PinLaunch {
+                    id: "vendor.discord.stable".into(),
+                    name: "Discord".into(),
+                    target:
+                        r"C:\ProgramData\Microsoft\Windows\Start Menu\Discord Stable.lnk"
+                            .into(),
+                    arguments: None,
+                    icon_source: None,
+                    app_user_model_id: Some("vendor.discord.stable".into()),
+                },
+            }])?
+        );
+        assert_migrated_icon_override(model.settings());
+        let persisted = SettingsStore::new(&directory).load()?.settings;
+        assert_migrated_icon_override(&persisted);
+
+        let windows = [WindowInfo {
+            id: WindowId::new(1),
+            process_id: 1,
+            title: "Discord".into(),
+            executable_path:
+                r"C:\Users\someone\AppData\Local\DiscordCanary\DiscordCanary.exe".into(),
+            app_user_model_id: None,
+        }];
+        let items = project_snapshot(model.settings(), &windows, |_| None);
+        assert!(items.iter().all(|item| item.is_pinned));
+        assert_eq!(
+            items.iter().filter(|item| item.windows == windows).count(),
+            1
+        );
+
+        let generic_window = [WindowInfo {
+            id: WindowId::new(2),
+            process_id: 2,
+            title: "Another Electron App".into(),
+            executable_path: r"C:\Apps\AnotherElectron.exe".into(),
+            app_user_model_id: Some("com.electron.app".into()),
+        }];
+        assert!(
+            project_snapshot(model.settings(), &generic_window, |_| None)
+                .iter()
+                .any(|item| !item.is_pinned)
+        );
+
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    fn assert_migrated_icon_override(settings: &DockSettings) {
+        let override_ = &settings.application_icon_overrides[0];
+        assert_eq!(override_.id, "vendor.discord.stable");
+        assert_eq!(
+            override_.app_user_model_id.as_deref(),
+            Some("vendor.discord.stable")
+        );
+        assert_eq!(
+            override_.image_path,
+            r"C:\Lotus\assets\app-icons\discord.png"
+        );
+    }
 }

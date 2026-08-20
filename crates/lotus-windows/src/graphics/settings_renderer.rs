@@ -3,6 +3,7 @@ use std::num::NonZeroU32;
 
 use lotus_core::settings::{DockZone, NotificationBadgeStyle};
 use lotus_settings::appearance::{AccentPreset, ForegroundPreset, SurfacePreset};
+use lotus_ui::icon::{RasterIcon, RasterIconId};
 use lotus_ui::theme::{Color, Theme};
 use thiserror::Error;
 use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, E_FAIL};
@@ -28,7 +29,7 @@ use windows::core::{Error as WindowsError, Interface, w};
 
 use super::assets::{AssetError, IconTint, RasterSize, SvgAsset, SvgAssetCache};
 use super::device::GraphicsDevice;
-use super::resources::{target_bitmap_properties, upload_bgra_pixels};
+use super::resources::{raster_key, target_bitmap_properties, upload_bgra_pixels};
 use super::surface::SurfaceSize;
 use super::{
     OnboardingModule, OnboardingStep, SettingsControl, SettingsLayout, SettingsPage,
@@ -97,6 +98,7 @@ pub(super) struct SettingsRenderer {
     material: SettingsMaterial,
     assets: SvgAssetCache,
     embedded: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
+    rasters: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
 
 impl SettingsRenderer {
@@ -185,6 +187,7 @@ impl SettingsRenderer {
             material: backdrop::settings_material(),
             assets: SvgAssetCache::create().map_err(|error| asset_error(&error))?,
             embedded: HashMap::new(),
+            rasters: HashMap::new(),
         };
         renderer.attach_target(swap_chain)?;
         Ok(renderer)
@@ -219,6 +222,7 @@ impl SettingsRenderer {
         debug_assert!(self.target.is_some());
         self.apply_theme(scene);
         let layout = scene.layout();
+        self.ensure_application_rasters(scene)?;
         let welcome_icon_size = if scene.onboarding_step() == Some(OnboardingStep::Welcome)
         {
             let size = NonZeroU32::new(scale(scene, 64))
@@ -232,6 +236,15 @@ impl SettingsRenderer {
         } else {
             None
         };
+        if scene.page() == SettingsPage::Apps {
+            let size = NonZeroU32::new(scale(scene, 18))
+                .expect("the scaled application search icon is nonzero");
+            self.ensure_embedded(
+                SvgAsset::FluentSearch,
+                size,
+                IconTint::from_color(scene.theme().text_muted),
+            )?;
+        }
         let transparent = TRANSPARENT;
         let result = unsafe {
             self.context.BeginDraw();
@@ -356,6 +369,38 @@ impl SettingsRenderer {
                 "uploaded onboarding artwork disappeared from the graphics cache",
             ))
         })
+    }
+
+    fn ensure_application_rasters(
+        &mut self,
+        scene: &SettingsScene,
+    ) -> Result<(), SettingsRendererError> {
+        for application in scene.applications() {
+            if let Some(icon) = &application.icon {
+                self.ensure_raster(icon)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_raster(&mut self, raster: &RasterIcon) -> Result<(), SettingsRendererError> {
+        let key = raster_key(raster);
+        if self.rasters.contains_key(&key) {
+            return Ok(());
+        }
+        let bitmap = upload_bgra_pixels(
+            &self.context,
+            raster.width(),
+            raster.height(),
+            raster.pixels(),
+            raster.stride(),
+        )?;
+        self.rasters.insert(key, bitmap);
+        Ok(())
+    }
+
+    fn raster_bitmap(&self, raster: &RasterIcon) -> Option<&ID2D1Bitmap1> {
+        self.rasters.get(&raster_key(raster))
     }
 
     fn draw_footer(&self, scene: &SettingsScene) {
@@ -585,6 +630,10 @@ fn is_page_content(control: SettingsControl) -> bool {
             | SettingsControl::Slider(_)
             | SettingsControl::ChooseMascotImage
             | SettingsControl::ResetMascotImage
+            | SettingsControl::ApplicationSearch
+            | SettingsControl::ApplicationRow(_)
+            | SettingsControl::ChooseApplicationIcon(_)
+            | SettingsControl::ResetApplicationIcon(_)
             | SettingsControl::ReplaySetup
     )
 }

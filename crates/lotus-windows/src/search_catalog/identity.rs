@@ -17,7 +17,7 @@ pub(super) fn compose_catalog(
     hidden_executables: &[String],
 ) -> SearchCatalog {
     let dock_entry = |item: &DockItem| {
-        ApplicationEntry::new(
+        let entry = ApplicationEntry::new(
             item.display_name.clone(),
             item.launch_target.clone(),
             Some(item.executable_path.clone()),
@@ -26,7 +26,12 @@ pub(super) fn compose_catalog(
             ApplicationSource::Pinned
         } else {
             ApplicationSource::Running
-        })
+        });
+        if let Some(identity) = &item.app_user_model_id {
+            entry.with_app_user_model_id(identity)
+        } else {
+            entry
+        }
     };
     let mut entries = dock_items
         .iter()

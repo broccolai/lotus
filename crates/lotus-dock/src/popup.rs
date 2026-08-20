@@ -47,6 +47,7 @@ pub fn order_picker_windows(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppMenuAction {
     Open,
+    CustomizeIcon,
     TogglePin,
     Close,
 }
@@ -76,6 +77,7 @@ pub enum PopupSymbol {
     Settings,
     Quit,
     Open,
+    Image,
     Pin,
     Unpin,
     Close,
@@ -173,6 +175,11 @@ impl<Asset: Clone> DockPopup<Asset> {
                 PopupSymbol::Pin
             },
         };
+        let customize = AppEntry {
+            action: AppMenuAction::CustomizeIcon,
+            label: "Customize icon",
+            symbol: PopupSymbol::Image,
+        };
         let close = (running_windows != 0).then_some(AppEntry {
             action: AppMenuAction::Close,
             label: if running_windows == 1 {
@@ -186,7 +193,7 @@ impl<Asset: Clone> DockPopup<Asset> {
             scale: DpiScale::new(dpi)?,
             kind: PopupKind::App {
                 source_index,
-                entries: [Some(open), Some(pin), close]
+                entries: [Some(open), Some(customize), Some(pin), close]
                     .into_iter()
                     .flatten()
                     .collect(),

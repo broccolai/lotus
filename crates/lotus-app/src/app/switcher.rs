@@ -5,6 +5,7 @@ use lotus_switcher::model::{RecentOrder, SwitcherSession};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::theme::Theme;
 use lotus_windows::activation::{request_window_close, switch_window};
+use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::scene_adapter::resolve_icon_with_native;
 use lotus_windows::graphics::switcher_surface::SwitcherCompositionSurfaceState;
@@ -44,19 +45,27 @@ pub(super) struct SwitcherRuntime {
     pub(super) scene: Option<SwitcherScene>,
     pub(super) session: Option<SwitcherSession<WindowInfo>>,
     pub(super) native_icons: NativeIconCache,
+    custom_images: CustomImageCache,
+    icon_settings: DockSettings,
     pub(super) name_overrides: std::collections::BTreeMap<String, String>,
     recent_windows: RecentOrder<lotus_core::window::WindowId>,
     theme: Theme,
 }
 
 impl SwitcherRuntime {
-    pub(super) fn new(window: SwitcherWindow, theme: &Theme) -> Self {
+    pub(super) fn new(
+        window: SwitcherWindow,
+        settings: &DockSettings,
+        theme: &Theme,
+    ) -> Self {
         Self {
             window,
             surface: None,
             scene: None,
             session: None,
             native_icons: NativeIconCache::default(),
+            custom_images: CustomImageCache::default(),
+            icon_settings: settings.clone(),
             name_overrides: std::collections::BTreeMap::new(),
             recent_windows: RecentOrder::default(),
             theme: *theme,
@@ -84,6 +93,8 @@ impl SwitcherRuntime {
             return Ok(());
         };
         self.name_overrides = settings.application_name_overrides.clone();
+        self.icon_settings = settings.clone();
+        self.custom_images.clear();
         self.theme = theme_for(settings);
         self.session = Some(session);
         self.rebuild_scene(self.window.dpi())?;
@@ -217,10 +228,19 @@ impl SwitcherRuntime {
                 window: window.id,
                 title: switcher_title(window, &self.name_overrides),
                 icon: resolve_icon_with_native(|| {
-                    self.native_icons
-                        .icon(&window.executable_path, icon_size)
-                        .ok()
-                        .flatten()
+                    crate::app::icon_override::resolve_application_icon(
+                        &self.icon_settings,
+                        &mut self.custom_images,
+                        window.app_user_model_id.as_deref(),
+                        None,
+                        &window.executable_path,
+                    )
+                    .or_else(|| {
+                        self.native_icons
+                            .icon(&window.executable_path, icon_size)
+                            .ok()
+                            .flatten()
+                    })
                 }),
             })
             .collect();
@@ -236,6 +256,8 @@ impl SwitcherRuntime {
 
     pub(super) fn apply_settings(&mut self, settings: &DockSettings) {
         self.theme = theme_for(settings);
+        self.icon_settings = settings.clone();
+        self.custom_images.clear();
         lotus_windows::backdrop::apply_popup_settings(self.window.handle(), settings);
         if let Some(scene) = &mut self.scene {
             let _ = scene.set_theme(self.theme);

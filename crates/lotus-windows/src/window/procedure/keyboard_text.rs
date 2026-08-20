@@ -47,6 +47,17 @@ pub(super) fn dispatch(
             push_search_text_unit(hwnd, wparam);
             Some(LRESULT(0))
         }
+        WM_CHAR if is_settings_window(hwnd) => {
+            if let Some(character) =
+                char::from_u32(u32::try_from(wparam.0).unwrap_or_default())
+            {
+                push_window_event(
+                    hwnd,
+                    WindowEvent::Settings(SettingsEvent::TextInput(character)),
+                );
+            }
+            Some(LRESULT(0))
+        }
         _ => None,
     }
 }
@@ -216,8 +227,12 @@ fn settings_key_for(
     if control_pressed && key == 0x53 {
         return Some(SettingsKey::Save);
     }
+    if control_pressed && key == 0x56 {
+        return Some(SettingsKey::Paste);
+    }
     match key {
         key if key == VK_ESCAPE.0 => Some(SettingsKey::Escape),
+        key if key == VK_BACK.0 => Some(SettingsKey::Backspace),
         key if key == VK_RETURN.0 => Some(SettingsKey::Enter),
         key if key == VK_TAB.0 => Some(SettingsKey::Tab {
             reverse: shift_pressed,

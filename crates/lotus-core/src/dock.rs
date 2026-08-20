@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::settings::PinnedApp;
-use crate::window::WindowInfo;
+use crate::window::{WindowInfo, is_reliable_application_identity};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DockItem {
@@ -12,6 +12,7 @@ pub struct DockItem {
     pub arguments: Option<String>,
     pub executable_path: String,
     pub icon_source: String,
+    pub app_user_model_id: Option<String>,
     pub is_pinned: bool,
     pub windows: Vec<WindowInfo>,
 }
@@ -62,7 +63,7 @@ where
         let resolved_launch = resolve_executable(&pinned.launch_target);
         let mut matches = Vec::new();
         for (index, window) in visible_windows.iter().enumerate() {
-            if matches_pin(pinned, window, resolved_launch.as_deref()) {
+            if unmatched[index] && matches_pin(pinned, window, resolved_launch.as_deref()) {
                 unmatched[index] = false;
                 matches.push((*window).clone());
             }
@@ -85,6 +86,20 @@ where
                 .icon_source
                 .clone()
                 .unwrap_or_else(|| executable_path.clone()),
+            app_user_model_id: pinned
+                .app_user_model_id
+                .as_deref()
+                .filter(|identity| is_reliable_application_identity(identity))
+                .map(str::to_owned)
+                .or_else(|| {
+                    matches.iter().find_map(|window| {
+                        window
+                            .app_user_model_id
+                            .as_deref()
+                            .filter(|identity| is_reliable_application_identity(identity))
+                            .map(str::to_owned)
+                    })
+                }),
             executable_path,
             is_pinned: true,
             windows: matches,
@@ -104,21 +119,41 @@ fn matches_pin(
     window: &WindowInfo,
     resolved_launch: Option<&str>,
 ) -> bool {
-    if pinned.app_user_model_id.as_deref().is_some_and(|pinned| {
-        window
+    if let Some(window_id) = window
+        .app_user_model_id
+        .as_deref()
+        .filter(|identity| is_reliable_application_identity(identity))
+    {
+        if pinned.id.eq_ignore_ascii_case(window_id) {
+            return true;
+        }
+        return pinned
             .app_user_model_id
             .as_deref()
-            .is_some_and(|window| window.eq_ignore_ascii_case(pinned))
-    }) {
-        return true;
+            .is_some_and(|pinned_id| {
+                is_reliable_application_identity(pinned_id)
+                    && pinned_id.eq_ignore_ascii_case(window_id)
+            });
     }
 
     let executable_name = window.executable_name();
-    pinned.match_executables.iter().any(|candidate| {
+    let shared_host = executable_name.is_some_and(is_shared_host_executable);
+    (pinned.match_executables.iter().any(|candidate| {
         executable_name
             .is_some_and(|executable| path_case_eq(Path::new(candidate), executable))
     }) || resolved_launch
-        .is_some_and(|resolved| path_case_eq(Path::new(resolved), &window.executable_path))
+        .is_some_and(|resolved| path_case_eq(Path::new(resolved), &window.executable_path)))
+        && !shared_host
+}
+
+fn is_shared_host_executable(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            ["chrome.exe", "msedge.exe", "applicationframehost.exe"]
+                .iter()
+                .any(|host| name.eq_ignore_ascii_case(host))
+        })
 }
 
 fn append_unpinned(
@@ -150,20 +185,21 @@ fn append_unpinned(
             .then_with(|| left.0.cmp(&right.0))
     });
 
-    items.extend(
-        groups
-            .into_iter()
-            .map(|(executable_path, windows)| DockItem {
-                id: executable_path.clone(),
-                display_name: file_stem(&executable_path),
-                launch_target: executable_path.clone(),
-                arguments: None,
-                icon_source: executable_path.clone(),
-                executable_path,
-                is_pinned: false,
-                windows,
-            }),
-    );
+    items.extend(groups.into_iter().map(|(executable_path, windows)| {
+        DockItem {
+            id: executable_path.clone(),
+            display_name: file_stem(&executable_path),
+            launch_target: executable_path.clone(),
+            arguments: None,
+            icon_source: executable_path.clone(),
+            app_user_model_id: windows
+                .iter()
+                .find_map(|window| window.app_user_model_id.clone()),
+            executable_path,
+            is_pinned: false,
+            windows,
+        }
+    }));
 }
 
 fn apply_saved_order(items: &mut [DockItem], saved_order: &[String]) {

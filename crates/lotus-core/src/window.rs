@@ -27,3 +27,7 @@ impl WindowInfo {
         self.executable_path.file_name().map(Path::new)
     }
 }
+
+pub fn is_reliable_application_identity(identity: &str) -> bool {
+    !identity.trim().is_empty() && !identity.eq_ignore_ascii_case("com.electron.app")
+}

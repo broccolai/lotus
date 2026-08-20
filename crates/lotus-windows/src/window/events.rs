@@ -25,12 +25,14 @@ pub enum SettingsEvent {
     PointerReleased { x: i32, y: i32 },
     Scroll { direction: i32 },
     CloseRequested,
+    TextInput(char),
     KeyPressed(SettingsKey),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettingsKey {
     Escape,
+    Backspace,
     Enter,
     Tab { reverse: bool },
     Left,
@@ -39,6 +41,7 @@ pub enum SettingsKey {
     Down,
     Space,
     Save,
+    Paste,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

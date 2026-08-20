@@ -240,14 +240,21 @@ fn repair_legacy_null_strings(value: &mut Value) {
     replace_null_string(object, "accentColor", "#F5A5A5");
     replace_null_string(object, "foregroundColor", "#F7F8FB");
 
-    let Some(pinned_apps) = object.get_mut("pinnedApps").and_then(Value::as_array_mut)
-    else {
-        return;
-    };
-
-    for app in pinned_apps.iter_mut().filter_map(Value::as_object_mut) {
-        for property in ["id", "name", "launchTarget"] {
-            replace_null_string(app, property, "");
+    if let Some(pinned_apps) = object.get_mut("pinnedApps").and_then(Value::as_array_mut) {
+        for app in pinned_apps.iter_mut().filter_map(Value::as_object_mut) {
+            for property in ["id", "name", "launchTarget"] {
+                replace_null_string(app, property, "");
+            }
+        }
+    }
+    if let Some(overrides) = object
+        .get_mut("applicationIconOverrides")
+        .and_then(Value::as_array_mut)
+    {
+        for override_ in overrides.iter_mut().filter_map(Value::as_object_mut) {
+            for property in ["id", "imagePath"] {
+                replace_null_string(override_, property, "");
+            }
         }
     }
 }
@@ -302,6 +309,7 @@ const COLLECTION_PROPERTIES: &[&str] = &[
     "notificationDisabledApps",
     "itemOrder",
     "pinnedApps",
+    "applicationIconOverrides",
     "matchExecutables",
 ];
 
@@ -362,6 +370,7 @@ const PROPERTY_NAMES: &[&str] = &[
     "notificationDisabledApps",
     "searchResultLimit",
     "applicationNameOverrides",
+    "applicationIconOverrides",
     "hiddenExecutables",
     "itemOrder",
     "pinnedApps",
@@ -370,6 +379,7 @@ const PROPERTY_NAMES: &[&str] = &[
     "launchTarget",
     "arguments",
     "iconSource",
+    "imagePath",
     "appUserModelId",
     "matchExecutables",
 ];

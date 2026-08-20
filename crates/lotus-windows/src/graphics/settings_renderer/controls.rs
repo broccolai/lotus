@@ -1,23 +1,36 @@
+use std::num::NonZeroU32;
+
 use lotus_core::settings::UpdateChannel;
+use windows::Win32::Graphics::Direct2D::D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC;
+use windows_numerics::Matrix3x2;
 
 use super::{
     AccentPreset, ButtonEmphasis, Color, D2D_RECT_F, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
     DockZone, ForegroundPreset, NotificationBadgeStyle, SettingsControl, SettingsLayout,
     SettingsPage, SettingsRect, SettingsRenderer, SettingsScene, SettingsSlider,
-    SettingsToggle, SurfacePreset, as_f32, inset, inset_all, inset_rect, is_page_content,
-    outset_rect, picker_bounds, rect, rounded, scale, scale_f32, slider_label,
-    slider_value_text, theme, toggle_label,
+    SettingsToggle, SurfacePreset, SvgAsset, as_f32, inset, inset_all, inset_rect,
+    is_page_content, outset_rect, picker_bounds, rect, rounded, scale, scale_f32,
+    slider_label, slider_value_text, theme, toggle_label,
 };
 
 impl SettingsRenderer {
     pub(super) fn draw_content(&self, scene: &SettingsScene, layout: &SettingsLayout) {
         let viewport = rect(layout.content_viewport);
+        let mut previous_transform = Matrix3x2::default();
+        let content_transform = Matrix3x2 {
+            M11: 1.0,
+            M22: 1.0,
+            M32: -as_f32(layout.content_scroll_offset),
+            ..Matrix3x2::default()
+        };
         // PushAxisAlignedClip/PopAxisAlignedClip pair below.
         unsafe {
+            self.context.GetTransform(&raw mut previous_transform);
             self.context.PushAxisAlignedClip(
                 &raw const viewport,
                 D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
             );
+            self.context.SetTransform(&raw const content_transform);
         }
         for entry in &layout.sections {
             self.draw_text(
@@ -40,6 +53,7 @@ impl SettingsRenderer {
             self.draw_settings_control(scene, entry.control, entry.bounds);
         }
         unsafe {
+            self.context.SetTransform(&raw const previous_transform);
             self.context.PopAxisAlignedClip();
         }
 
@@ -83,6 +97,18 @@ impl SettingsRenderer {
             SettingsControl::Slider(slider) => self.draw_slider(scene, bounds, slider),
             SettingsControl::ChooseMascotImage => self.draw_mascot_image(scene, bounds),
             SettingsControl::ResetMascotImage => self.draw_reset_mascot(scene, bounds),
+            SettingsControl::ApplicationSearch => {
+                self.draw_application_search(scene, bounds);
+            }
+            SettingsControl::ApplicationRow(index) => {
+                self.draw_application_row(scene, index, bounds);
+            }
+            SettingsControl::ChooseApplicationIcon(index) => {
+                self.draw_application_icon_action(scene, index, bounds, false);
+            }
+            SettingsControl::ResetApplicationIcon(index) => {
+                self.draw_application_icon_action(scene, index, bounds, true);
+            }
             SettingsControl::CheckForUpdates => self.draw_check_for_updates(scene, bounds),
             SettingsControl::ReplaySetup => self.draw_button(
                 scene,
@@ -232,6 +258,195 @@ impl SettingsRenderer {
         }
         theme::set(&self.row, scene.theme().control);
         self.draw_focus(scene, SettingsControl::SurfacePreset, bounds);
+    }
+
+    fn draw_application_row(
+        &self,
+        scene: &SettingsScene,
+        index: usize,
+        bounds: SettingsRect,
+    ) {
+        let Some(application) = scene.applications().get(index) else {
+            return;
+        };
+        let interactive = scene.application_actions_visible(index);
+        if interactive {
+            let surface = rounded(
+                rect(inset_all(bounds, scale(scene, 2))),
+                scale_f32(scene, scene.theme().radii.compact),
+            );
+            unsafe {
+                self.context
+                    .FillRoundedRectangle(&raw const surface, &self.row);
+            }
+        }
+        if let Some(icon) = application
+            .icon
+            .as_ref()
+            .and_then(|icon| self.raster_bitmap(icon))
+        {
+            let size = scale(scene, 28);
+            let destination = rect(SettingsRect {
+                left: bounds.left.saturating_add(scale(scene, 12)),
+                top: bounds
+                    .top
+                    .saturating_add(bounds.height.saturating_sub(size) / 2),
+                width: size,
+                height: size,
+            });
+            unsafe {
+                self.context.DrawBitmap(
+                    icon,
+                    Some(&raw const destination),
+                    1.0,
+                    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                    None,
+                    None,
+                );
+            }
+        }
+        self.draw_text(
+            &application.name,
+            SettingsRect {
+                left: bounds.left.saturating_add(scale(scene, 52)),
+                top: bounds.top,
+                width: bounds.width.saturating_sub(scale(scene, 196)),
+                height: bounds.height,
+            },
+            &self.body_format,
+            &self.text,
+            false,
+        );
+        if application.customized && !interactive {
+            self.draw_text(
+                if application.missing_icon {
+                    "missing"
+                } else {
+                    "custom"
+                },
+                SettingsRect {
+                    left: bounds
+                        .left
+                        .saturating_add(bounds.width.saturating_sub(scale(scene, 92))),
+                    top: bounds.top,
+                    width: scale(scene, 76),
+                    height: bounds.height,
+                },
+                &self.small_format,
+                &self.muted,
+                true,
+            );
+        }
+        if !interactive {
+            let divider = D2D_RECT_F {
+                left: as_f32(bounds.left.saturating_add(scale(scene, 52))),
+                top: as_f32(
+                    bounds
+                        .top
+                        .saturating_add(bounds.height)
+                        .saturating_sub(scale(scene, 1)),
+                ),
+                right: as_f32(
+                    bounds
+                        .left
+                        .saturating_add(bounds.width)
+                        .saturating_sub(scale(scene, 12)),
+                ),
+                bottom: as_f32(bounds.top.saturating_add(bounds.height)),
+            };
+            unsafe {
+                self.context
+                    .FillRectangle(&raw const divider, &self.divider);
+            }
+        }
+        self.draw_focus(scene, SettingsControl::ApplicationRow(index), bounds);
+    }
+
+    fn draw_application_icon_action(
+        &self,
+        scene: &SettingsScene,
+        index: usize,
+        bounds: SettingsRect,
+        reset: bool,
+    ) {
+        let control = if reset {
+            SettingsControl::ResetApplicationIcon(index)
+        } else {
+            SettingsControl::ChooseApplicationIcon(index)
+        };
+        let label = if reset {
+            "Reset"
+        } else if scene
+            .applications()
+            .get(index)
+            .is_some_and(|application| application.customized)
+        {
+            "Change image"
+        } else {
+            "Choose image"
+        };
+        let brush = if scene.hovered() == Some(control) {
+            &self.accent
+        } else {
+            &self.muted
+        };
+        self.draw_text(label, bounds, &self.small_format, brush, true);
+        self.draw_focus(scene, control, bounds);
+    }
+
+    fn draw_application_search(&self, scene: &SettingsScene, bounds: SettingsRect) {
+        let surface = rounded(
+            rect(inset_all(bounds, scale(scene, 2))),
+            scale_f32(scene, scene.theme().radii.compact),
+        );
+        unsafe {
+            self.context
+                .FillRoundedRectangle(&raw const surface, &self.row);
+        }
+        let size = scale(scene, 18);
+        let icon_size = NonZeroU32::new(size).expect("the scaled search icon is nonzero");
+        if let Ok(icon) = self.embedded_bitmap(SvgAsset::FluentSearch, icon_size) {
+            let destination = rect(SettingsRect {
+                left: bounds.left.saturating_add(scale(scene, 16)),
+                top: bounds
+                    .top
+                    .saturating_add(bounds.height.saturating_sub(size) / 2),
+                width: size,
+                height: size,
+            });
+            unsafe {
+                self.context.DrawBitmap(
+                    icon,
+                    Some(&raw const destination),
+                    1.0,
+                    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                    None,
+                    None,
+                );
+            }
+        }
+        let query = scene.application_query();
+        self.draw_text(
+            if query.is_empty() {
+                "Search applications"
+            } else {
+                query
+            },
+            SettingsRect {
+                left: bounds.left.saturating_add(scale(scene, 48)),
+                top: bounds.top,
+                width: bounds.width.saturating_sub(scale(scene, 64)),
+                height: bounds.height,
+            },
+            &self.body_format,
+            if query.is_empty() {
+                &self.muted
+            } else {
+                &self.text
+            },
+            false,
+        );
+        self.draw_focus(scene, SettingsControl::ApplicationSearch, bounds);
     }
 
     pub(super) fn draw_accent_picker(&self, scene: &SettingsScene, bounds: SettingsRect) {

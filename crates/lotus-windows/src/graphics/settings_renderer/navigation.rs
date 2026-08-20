@@ -53,8 +53,7 @@ impl SettingsRenderer {
             );
         }
 
-        let Some(appearance) =
-            layout.bounds(SettingsControl::Navigate(SettingsPage::Appearance))
+        let Some(apps) = layout.bounds(SettingsControl::Navigate(SettingsPage::Apps))
         else {
             return;
         };
@@ -62,22 +61,16 @@ impl SettingsRenderer {
         else {
             return;
         };
-        let top = appearance
+        let top = apps
             .top
-            .saturating_add(appearance.height)
-            .saturating_add(
-                taskbar
-                    .top
-                    .saturating_sub(appearance.top + appearance.height)
-                    / 2,
-            );
+            .saturating_add(apps.height)
+            .saturating_add(taskbar.top.saturating_sub(apps.top + apps.height) / 2);
         let divider = D2D_RECT_F {
-            left: as_f32(appearance.left.saturating_add(scale(scene, 20))),
+            left: as_f32(apps.left.saturating_add(scale(scene, 20))),
             top: as_f32(top),
             right: as_f32(
-                appearance
-                    .left
-                    .saturating_add(appearance.width)
+                apps.left
+                    .saturating_add(apps.width)
                     .saturating_sub(scale(scene, 20)),
             ),
             bottom: as_f32(top.saturating_add(scale(scene, 1))),

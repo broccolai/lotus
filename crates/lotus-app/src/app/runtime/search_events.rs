@@ -30,20 +30,68 @@ pub(super) fn refresh_catalog(
         &auxiliary.applications,
         graphics,
     )?;
-    let pins_changed = dock_model.upgrade_legacy_pins(windows, &auxiliary.applications)?;
+    let pins_upgraded = dock_model.upgrade_legacy_pins(&auxiliary.applications)?;
+    let pins_reconciled =
+        dock_model.reconcile_unpinned_pins(windows, &auxiliary.applications)?;
+    let pins_changed = pins_upgraded || pins_reconciled;
     if !catalog_changed && !pins_changed {
         return Ok(());
     }
     if pins_changed {
+        auxiliary
+            .settings
+            .scene
+            .reconcile_application_icon_overrides(dock_model.settings());
+        auxiliary
+            .launcher
+            .apply_settings(dock_model.settings(), dock, graphics)?;
+        auxiliary.context_menu.apply_settings(dock_model.settings());
+        auxiliary.switcher.apply_settings(dock_model.settings());
+        let _changed = auxiliary.media.refresh(dock_model);
+        dock_model.rebuild(windows);
         resize_dock(dock, graphics, surface, dock_model)?;
         auxiliary
             .status
             .sync(dock, dock_model.settings(), dock_model.media(), graphics)?;
     }
+    refresh_open_application_manager(dock_model, auxiliary, graphics)?;
     let dock_animation = render_surface(graphics, surface, dock_model.scene())?;
     let launcher_animation = auxiliary.launcher.render(graphics)?;
     dock.set_animation_active(dock_animation || launcher_animation)?;
     Ok(())
+}
+
+pub(super) fn refresh_open_application_manager(
+    dock_model: &DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+    graphics: &mut DeviceState,
+) -> Result<(), AppError> {
+    if !auxiliary.settings.visible
+        || auxiliary.settings.scene.page() != lotus_settings::scene::SettingsPage::Apps
+    {
+        return Ok(());
+    }
+    let selected = auxiliary
+        .settings
+        .scene
+        .selected_application()
+        .map(|application| application.id.clone());
+    let settings_draft = auxiliary.settings.scene.draft().clone();
+    let applications = super::settings_events::application_records(
+        &auxiliary.applications,
+        dock_model.items(),
+        &settings_draft,
+    );
+    let _ = auxiliary.settings.scene.set_applications(applications);
+    if let Some(selected) = selected {
+        let _ = auxiliary.settings.scene.open_application_manager(&selected);
+    }
+    super::settings_events::hydrate_application_previews(
+        &auxiliary.applications,
+        dock_model.items(),
+        &mut auxiliary.settings,
+    );
+    auxiliary.settings.render(graphics)
 }
 
 pub(super) fn drain_search_events(
@@ -194,6 +242,7 @@ fn execute_search_command(
     match command {
         CommandId::OpenSettings => {
             auxiliary.settings.open(dock_model.settings(), graphics)?;
+            refresh_open_application_manager(dock_model, auxiliary, graphics)?;
         }
         CommandId::OpenVolumeMixer => {
             if let Err(error) = launch_target("sndvol.exe", None) {

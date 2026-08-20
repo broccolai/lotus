@@ -11,6 +11,7 @@ use lotus_ui::theme::Theme;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::launch_target;
 use lotus_windows::clock::local_time;
+use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
@@ -30,12 +31,14 @@ pub(super) struct LauncherRuntime {
     pub(super) window: SearchWindow,
     pub(super) controller: SearchController,
     pub(super) native_icons: NativeIconCache,
+    custom_images: CustomImageCache,
     pub(super) scene: Option<LauncherScene>,
     pub(super) surface: Option<LauncherCompositionSurfaceState>,
     pub(super) presentation: SearchPresentation,
     pub(super) visible: bool,
     theme: Theme,
     use_24_hour_time: bool,
+    settings: DockSettings,
 }
 
 pub(super) enum LauncherSubmission {
@@ -46,8 +49,7 @@ pub(super) enum LauncherSubmission {
 impl LauncherRuntime {
     pub(super) fn new(
         window: SearchWindow,
-        result_limit: u32,
-        use_24_hour_time: bool,
+        settings: DockSettings,
         theme: &Theme,
         usage: lotus_core::search::SearchUsage,
         usage_store: SearchUsageStore,
@@ -55,17 +57,19 @@ impl LauncherRuntime {
         Self {
             window,
             controller: SearchController::new(
-                usize::try_from(result_limit).unwrap_or(8),
+                usize::try_from(settings.search_result_limit).unwrap_or(8),
                 usage,
                 usage_store,
             ),
             native_icons: NativeIconCache::default(),
+            custom_images: CustomImageCache::default(),
             scene: None,
             surface: None,
             presentation: SearchPresentation::default(),
             visible: false,
             theme: *theme,
-            use_24_hour_time,
+            use_24_hour_time: settings.use_24_hour_time,
+            settings,
         }
     }
 
@@ -240,12 +244,20 @@ impl LauncherRuntime {
             .results()
             .iter()
             .map(|entry| {
-                let icon = self
-                    .native_icons
-                    .icon(Path::new(&entry.icon_source), icon_size)
-                    .ok()
-                    .flatten()
-                    .map(DockIcon::Raster);
+                let icon = crate::app::icon_override::resolve_application_icon(
+                    &self.settings,
+                    &mut self.custom_images,
+                    entry.app_user_model_id.as_deref(),
+                    Some(&entry.launch_target),
+                    Path::new(&entry.icon_source),
+                )
+                .or_else(|| {
+                    self.native_icons
+                        .icon(Path::new(&entry.icon_source), icon_size)
+                        .ok()
+                        .flatten()
+                })
+                .map(DockIcon::Raster);
                 icon.map_or_else(
                     || LauncherResult::new(&entry.name),
                     |icon| LauncherResult::with_icon(&entry.name, icon),
@@ -374,6 +386,8 @@ impl LauncherRuntime {
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         lotus_windows::backdrop::apply_search_settings(self.window.handle(), settings);
+        self.settings = settings.clone();
+        self.custom_images.clear();
         let next_theme = theme_for(settings);
         let theme_changed = self.theme != next_theme;
         self.theme = next_theme;

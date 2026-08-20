@@ -1,9 +1,10 @@
 use std::num::NonZeroU32;
 
 use lotus_core::settings::{
-    CURRENT_ONBOARDING_VERSION, DockSettings, DockZone, NotificationBadgeStyle,
-    UpdateChannel,
+    ApplicationIconOverride, CURRENT_ONBOARDING_VERSION, DockSettings, DockZone,
+    NotificationBadgeStyle, UpdateChannel,
 };
+use lotus_ui::icon::RasterIcon;
 use lotus_ui::theme::Theme;
 
 use crate::appearance::{AccentPreset, ForegroundPreset, SurfacePreset, theme_for};
@@ -43,6 +44,7 @@ const CLOSE_SIZE_DIP: u32 = 40;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettingsPage {
     Appearance,
+    Apps,
     General,
     Taskbar,
     Status,
@@ -68,9 +70,10 @@ impl SettingsSection {
 }
 
 impl SettingsPage {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::General,
         Self::Appearance,
+        Self::Apps,
         Self::Taskbar,
         Self::Status,
         Self::Search,
@@ -80,6 +83,7 @@ impl SettingsPage {
     pub const fn title(self) -> &'static str {
         match self {
             Self::Appearance => "appearance",
+            Self::Apps => "apps",
             Self::General => "general",
             Self::Taskbar => "taskbar",
             Self::Status => "status",
@@ -208,6 +212,10 @@ pub enum SettingsControl {
     Slider(SettingsSlider),
     ChooseMascotImage,
     ResetMascotImage,
+    ApplicationSearch,
+    ApplicationRow(usize),
+    ChooseApplicationIcon(usize),
+    ResetApplicationIcon(usize),
     CheckForUpdates,
     ReplaySetup,
     OnboardingModule(OnboardingModule),
@@ -224,10 +232,14 @@ pub enum SettingsControl {
 pub enum SettingsAction {
     None,
     Changed,
+    Reverted,
+    OpenApplications,
     ChooseBackgroundColor,
     ChooseAccentColor,
     ChooseForegroundColor,
     ChooseMascotImage,
+    ChooseApplicationIcon(String),
+    ResetApplicationIcon(String),
     CheckForUpdates,
     ReplaySetup,
     CompleteOnboarding(Box<DockSettings>),
@@ -286,6 +298,17 @@ pub struct SettingsControlLayout {
     pub bounds: SettingsRect,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettingsApplicationRecord {
+    pub id: String,
+    pub name: String,
+    pub icon: Option<RasterIcon>,
+    pub app_user_model_id: Option<String>,
+    pub match_executables: Vec<String>,
+    pub customized: bool,
+    pub missing_icon: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SettingsSectionLayout {
     pub section: SettingsSection,
@@ -304,6 +327,7 @@ pub struct SettingsLayout {
     pub controls: Vec<SettingsControlLayout>,
     pub sections: Vec<SettingsSectionLayout>,
     pub content_viewport: SettingsRect,
+    pub content_scroll_offset: u32,
     pub scrollbar_thumb: Option<SettingsRect>,
 }
 
@@ -313,9 +337,13 @@ impl SettingsLayout {
             .iter()
             .rev()
             .find(|entry| {
-                entry.bounds.contains(x, y)
-                    && (!is_page_content(entry.control)
-                        || self.content_viewport.contains(x, y))
+                if !is_page_content(entry.control) {
+                    return entry.bounds.contains(x, y);
+                }
+                self.content_viewport.contains(x, y)
+                    && entry
+                        .bounds
+                        .contains(x, y.saturating_add(self.content_scroll_offset))
             })
             .map(|entry| entry.control)
     }
@@ -324,7 +352,16 @@ impl SettingsLayout {
         self.controls
             .iter()
             .find(|entry| entry.control == control)
-            .map(|entry| entry.bounds)
+            .map(|entry| {
+                if is_page_content(control) {
+                    SettingsRect {
+                        top: entry.bounds.top.saturating_sub(self.content_scroll_offset),
+                        ..entry.bounds
+                    }
+                } else {
+                    entry.bounds
+                }
+            })
     }
 }
 
@@ -366,6 +403,9 @@ pub struct SettingsScene {
     update_activity: SettingsUpdateActivity,
     onboarding: OnboardingState,
     scroll_offset_dip: u32,
+    applications: Vec<SettingsApplicationRecord>,
+    application_query: String,
+    selected_application: Option<usize>,
 }
 
 impl SettingsScene {
@@ -383,6 +423,9 @@ impl SettingsScene {
             update_activity: SettingsUpdateActivity::Idle,
             onboarding: OnboardingState::default(),
             scroll_offset_dip: 0,
+            applications: Vec::new(),
+            application_query: String::new(),
+            selected_application: None,
         })
     }
 
@@ -427,6 +470,108 @@ impl SettingsScene {
     }
     pub const fn is_installed(&self) -> bool {
         self.installed
+    }
+
+    pub fn applications(&self) -> &[SettingsApplicationRecord] {
+        &self.applications
+    }
+
+    pub fn selected_application(&self) -> Option<&SettingsApplicationRecord> {
+        self.selected_application
+            .and_then(|index| self.applications.get(index))
+    }
+
+    pub fn application_actions_visible(&self, index: usize) -> bool {
+        matches!(
+            self.hovered,
+            Some(
+                SettingsControl::ApplicationRow(candidate)
+                    | SettingsControl::ChooseApplicationIcon(candidate)
+                    | SettingsControl::ResetApplicationIcon(candidate)
+            ) if candidate == index
+        ) || matches!(
+            self.focused,
+            Some(
+                SettingsControl::ApplicationRow(candidate)
+                    | SettingsControl::ChooseApplicationIcon(candidate)
+                    | SettingsControl::ResetApplicationIcon(candidate)
+            ) if candidate == index
+        )
+    }
+
+    pub fn set_applications(
+        &mut self,
+        applications: Vec<SettingsApplicationRecord>,
+    ) -> bool {
+        if self.applications == applications {
+            return false;
+        }
+        self.applications = applications;
+        self.selected_application = None;
+        self.scroll_offset_dip = 0;
+        true
+    }
+
+    pub fn set_application_query(&mut self, query: &str) -> bool {
+        let query = query.to_owned();
+        if self.application_query == query {
+            return false;
+        }
+        self.application_query = query;
+        self.selected_application = None;
+        self.scroll_offset_dip = 0;
+        true
+    }
+
+    pub fn application_query(&self) -> &str {
+        &self.application_query
+    }
+
+    pub fn merge_application_icon_overrides(
+        &self,
+        current: &DockSettings,
+    ) -> Vec<ApplicationIconOverride> {
+        self.draft.merged_application_icon_overrides(current)
+    }
+
+    pub fn reconcile_application_icon_overrides(&mut self, current: &DockSettings) {
+        self.draft.reconcile_application_icon_overrides(current);
+    }
+
+    pub fn select_application(&mut self, index: usize) -> bool {
+        if index >= self.applications.len() || self.selected_application == Some(index) {
+            return false;
+        }
+        self.selected_application = Some(index);
+        true
+    }
+
+    pub fn set_application_icon(&mut self, id: &str, icon: RasterIcon) -> bool {
+        let Some(application) = self
+            .applications
+            .iter_mut()
+            .find(|application| application.id.eq_ignore_ascii_case(id))
+        else {
+            return false;
+        };
+        if application.icon.as_ref() == Some(&icon) {
+            return false;
+        }
+        application.icon = Some(icon);
+        true
+    }
+
+    pub fn open_application_manager(&mut self, id: &str) -> bool {
+        let Some(index) = self.applications.iter().position(|app| app.id == id) else {
+            return false;
+        };
+        self.page = SettingsPage::Apps;
+        self.application_query.clear();
+        self.selected_application = Some(index);
+        self.scroll_offset_dip = 0;
+        self.focused = Some(SettingsControl::ApplicationRow(index));
+        self.reveal_focused_control();
+        true
     }
 
     pub const fn onboarding_step(&self) -> Option<OnboardingStep> {
@@ -574,6 +719,10 @@ impl SettingsScene {
             | SettingsControl::Toggle(_)
             | SettingsControl::ChooseMascotImage
             | SettingsControl::ResetMascotImage
+            | SettingsControl::ApplicationSearch
+            | SettingsControl::ApplicationRow(_)
+            | SettingsControl::ChooseApplicationIcon(_)
+            | SettingsControl::ResetApplicationIcon(_)
             | SettingsControl::CheckForUpdates
             | SettingsControl::ReplaySetup
             | SettingsControl::OnboardingModule(_)
@@ -632,7 +781,7 @@ impl SettingsScene {
                 | SettingsKey::Down
         ) {
             self.move_focus(matches!(key, SettingsKey::ReverseTab | SettingsKey::Up));
-            return SettingsAction::None;
+            return SettingsAction::Changed;
         }
         let Some(focused) = self.focused else {
             return SettingsAction::None;
@@ -770,6 +919,10 @@ fn is_page_content(control: SettingsControl) -> bool {
             | SettingsControl::Slider(_)
             | SettingsControl::ChooseMascotImage
             | SettingsControl::ResetMascotImage
+            | SettingsControl::ApplicationSearch
+            | SettingsControl::ApplicationRow(_)
+            | SettingsControl::ChooseApplicationIcon(_)
+            | SettingsControl::ResetApplicationIcon(_)
             | SettingsControl::ReplaySetup
     )
 }

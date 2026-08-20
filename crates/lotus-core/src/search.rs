@@ -172,6 +172,10 @@ impl SearchCatalog {
         self.search_with_usage(query, limit, &SearchUsage::default())
     }
 
+    pub fn entries_for_management(&self) -> impl Iterator<Item = &ApplicationEntry> {
+        self.entries.iter().map(|candidate| &candidate.entry)
+    }
+
     pub fn search_with_usage(
         &self,
         query: &str,

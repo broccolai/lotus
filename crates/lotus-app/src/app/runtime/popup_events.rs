@@ -1,4 +1,5 @@
 use lotus_core::window::WindowInfo;
+use lotus_settings::scene::SettingsApplicationRecord;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::{launch_target, request_window_close};
 use lotus_windows::dialog::show_error;
@@ -193,6 +194,9 @@ fn execute_app_menu_action(
         AppMenuAction::Open => context
             .dock_model
             .open_new(source_index, context.dock.handle()),
+        AppMenuAction::CustomizeIcon => {
+            open_application_icon_manager(source_index, context)?;
+        }
         AppMenuAction::TogglePin => {
             let pinned = context
                 .dock_model
@@ -273,6 +277,65 @@ fn execute_app_menu_action(
     Ok(())
 }
 
+fn open_application_icon_manager(
+    source_index: usize,
+    context: &mut PopupActionContext<'_>,
+) -> Result<(), AppError> {
+    let icon = context.dock_model.application_icon_preview(source_index);
+    let Some(item) = context.dock_model.item(source_index) else {
+        return Ok(());
+    };
+    let custom = context.dock_model.settings().application_icon_override(
+        item.app_user_model_id.as_deref(),
+        Some(&item.id),
+        std::path::Path::new(&item.executable_path)
+            .file_name()
+            .and_then(|name| name.to_str()),
+    );
+    let id = custom.map_or_else(|| item.id.clone(), |override_| override_.id.clone());
+    let record = SettingsApplicationRecord {
+        id: id.clone(),
+        name: item.display_name.clone(),
+        icon,
+        app_user_model_id: item.app_user_model_id.clone(),
+        match_executables: std::path::Path::new(&item.executable_path)
+            .file_name()
+            .and_then(|name| name.to_str().map(str::to_owned))
+            .into_iter()
+            .collect(),
+        customized: custom.is_some(),
+        missing_icon: false,
+    };
+    let mut applications = super::settings_events::application_records(
+        &context.auxiliary.applications,
+        context.dock_model.items(),
+        context.dock_model.settings(),
+    );
+    if !applications.iter().any(|application| application.id == id) {
+        applications.push(record);
+    }
+    context
+        .auxiliary
+        .settings
+        .open(context.dock_model.settings(), context.graphics)?;
+    let _ = context
+        .auxiliary
+        .settings
+        .scene
+        .set_applications(applications);
+    let _ = context
+        .auxiliary
+        .settings
+        .scene
+        .open_application_manager(&id);
+    super::settings_events::hydrate_application_previews(
+        &context.auxiliary.applications,
+        context.dock_model.items(),
+        &mut context.auxiliary.settings,
+    );
+    context.auxiliary.settings.render(context.graphics)
+}
+
 fn execute_context_menu_action(
     action: ContextMenuAction,
     graphics: &mut DeviceState,
@@ -282,6 +345,9 @@ fn execute_context_menu_action(
     match action {
         ContextMenuAction::OpenSettings => {
             auxiliary.settings.open(dock_model.settings(), graphics)?;
+            super::search_events::refresh_open_application_manager(
+                dock_model, auxiliary, graphics,
+            )?;
         }
         ContextMenuAction::RequestShutdown => {
             auxiliary.context_menu.open_power(graphics)?;

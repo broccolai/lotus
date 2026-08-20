@@ -47,6 +47,10 @@ impl MediaRuntime {
         changed && dock.replace_media(self.model.snapshot())
     }
 
+    pub(super) fn refresh(&self, dock: &mut DockRuntime) -> bool {
+        dock.replace_media(self.model.snapshot())
+    }
+
     pub(super) fn activate(
         &self,
         target: MediaHitTarget,

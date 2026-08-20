@@ -524,7 +524,7 @@ const fn symbol_asset(symbol: PopupSymbol) -> SvgAsset {
         PopupSymbol::Restart => SvgAsset::FluentRestart,
         PopupSymbol::Settings => SvgAsset::FluentSettings,
         PopupSymbol::Quit | PopupSymbol::Close => SvgAsset::FluentDismiss,
-        PopupSymbol::Open => SvgAsset::FluentOpen,
+        PopupSymbol::Open | PopupSymbol::Image => SvgAsset::FluentOpen,
         PopupSymbol::Pin => SvgAsset::FluentPin,
         PopupSymbol::Unpin => SvgAsset::FluentPinOff,
     }

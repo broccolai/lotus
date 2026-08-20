@@ -1,3 +1,5 @@
+use lotus_core::settings::ApplicationIconOverride;
+
 use super::{
     AccentPreset, CURRENT_ONBOARDING_VERSION, DockSettings, DockZone, ForegroundPreset,
     NotificationBadgeStyle, OnboardingModule, SettingsAction, SettingsControl,
@@ -39,6 +41,23 @@ impl SettingsDraft {
     }
     pub(super) fn normalized(&self) -> DockSettings {
         self.draft.clone().normalized()
+    }
+    pub(super) fn merged_application_icon_overrides(
+        &self,
+        current: &DockSettings,
+    ) -> Vec<ApplicationIconOverride> {
+        lotus_core::settings::merge_application_icon_overrides(
+            &self.baseline.application_icon_overrides,
+            &self.draft.application_icon_overrides,
+            &current.application_icon_overrides,
+        )
+    }
+    pub(super) fn reconcile_application_icon_overrides(&mut self, current: &DockSettings) {
+        self.draft.application_icon_overrides =
+            self.merged_application_icon_overrides(current);
+        self.baseline
+            .application_icon_overrides
+            .clone_from(&current.application_icon_overrides);
     }
     pub(super) fn complete_onboarding(&mut self) -> DockSettings {
         self.draft.onboarding_version = CURRENT_ONBOARDING_VERSION;
@@ -359,7 +378,11 @@ impl SettingsScene {
                 self.page = page;
                 self.scroll_offset_dip = 0;
                 self.focused = Some(SettingsControl::Navigate(page));
-                SettingsAction::Changed
+                if page == crate::scene::SettingsPage::Apps {
+                    SettingsAction::OpenApplications
+                } else {
+                    SettingsAction::Changed
+                }
             }
             SettingsControl::Toggle(toggle) => {
                 self.draft
@@ -370,6 +393,30 @@ impl SettingsScene {
                 SettingsAction::Apply(Box::new(self.draft.normalized()))
             }
             SettingsControl::ChooseMascotImage => SettingsAction::ChooseMascotImage,
+            SettingsControl::ApplicationSearch => {
+                self.focused = Some(SettingsControl::ApplicationSearch);
+                SettingsAction::Changed
+            }
+            SettingsControl::ApplicationRow(index) => {
+                self.selected_application = Some(index);
+                SettingsAction::Changed
+            }
+            SettingsControl::ChooseApplicationIcon(index) => {
+                self.selected_application = Some(index);
+                self.applications
+                    .get(index)
+                    .map_or(SettingsAction::None, |app| {
+                        SettingsAction::ChooseApplicationIcon(app.id.clone())
+                    })
+            }
+            SettingsControl::ResetApplicationIcon(index) => {
+                self.selected_application = Some(index);
+                self.applications
+                    .get(index)
+                    .map_or(SettingsAction::None, |app| {
+                        SettingsAction::ResetApplicationIcon(app.id.clone())
+                    })
+            }
             SettingsControl::CheckForUpdates
                 if self.update_activity == SettingsUpdateActivity::Idle =>
             {
@@ -403,7 +450,7 @@ impl SettingsScene {
             }
             SettingsControl::Revert if self.is_dirty() => {
                 self.draft.revert();
-                SettingsAction::Changed
+                SettingsAction::Reverted
             }
             SettingsControl::SurfacePreset => SettingsAction::ChooseBackgroundColor,
             SettingsControl::AccentPreset => SettingsAction::ChooseAccentColor,
@@ -505,6 +552,25 @@ impl SettingsScene {
     }
     pub fn set_mascot_image_path(&mut self, path: Option<String>) {
         self.draft.set_mascot_image_path(path);
+    }
+    pub fn set_application_icon_override(&mut self, override_: ApplicationIconOverride) {
+        if let Some(existing) = self
+            .draft
+            .draft
+            .application_icon_overrides
+            .iter_mut()
+            .find(|existing| existing.id.eq_ignore_ascii_case(&override_.id))
+        {
+            *existing = override_;
+        } else {
+            self.draft.draft.application_icon_overrides.push(override_);
+        }
+    }
+    pub fn reset_application_icon_override(&mut self, id: &str) {
+        self.draft
+            .draft
+            .application_icon_overrides
+            .retain(|override_| !override_.id.eq_ignore_ascii_case(id));
     }
     pub fn set_background_color(&mut self, color: String) {
         self.draft.set_background_color(color);

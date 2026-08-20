@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -94,6 +94,7 @@ pub struct DockSettings {
     pub notification_disabled_apps: Vec<String>,
     pub search_result_limit: u32,
     pub application_name_overrides: BTreeMap<String, String>,
+    pub application_icon_overrides: Vec<ApplicationIconOverride>,
     pub hidden_executables: Vec<String>,
     pub item_order: Vec<String>,
     pub pinned_apps: Vec<PinnedApp>,
@@ -146,6 +147,7 @@ impl Default for DockSettings {
             notification_disabled_apps: Vec::new(),
             search_result_limit: 5,
             application_name_overrides: BTreeMap::new(),
+            application_icon_overrides: Vec::new(),
             hidden_executables: Vec::new(),
             item_order: Vec::new(),
             pinned_apps: Vec::new(),
@@ -204,7 +206,111 @@ impl DockSettings {
 
         self.pinned_apps.retain(PinnedApp::is_launchable);
         self.pinned_apps.iter_mut().for_each(PinnedApp::normalize);
+
+        self.application_icon_overrides
+            .retain(ApplicationIconOverride::is_valid);
+        self.application_icon_overrides
+            .iter_mut()
+            .for_each(ApplicationIconOverride::normalize);
+        let mut ids = HashSet::new();
+        self.application_icon_overrides
+            .retain(|override_| ids.insert(override_.id.to_ascii_lowercase()));
     }
+
+    #[must_use]
+    pub fn application_icon_override(
+        &self,
+        app_user_model_id: Option<&str>,
+        stable_id: Option<&str>,
+        executable_name: Option<&str>,
+    ) -> Option<&ApplicationIconOverride> {
+        self.application_icon_overrides.iter().find(|override_| {
+            override_.matches(app_user_model_id, stable_id, executable_name)
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ApplicationIconOverride {
+    pub id: String,
+    pub image_path: String,
+    pub app_user_model_id: Option<String>,
+    pub match_executables: Vec<String>,
+}
+
+impl ApplicationIconOverride {
+    #[must_use]
+    pub fn matches(
+        &self,
+        app_user_model_id: Option<&str>,
+        stable_id: Option<&str>,
+        executable_name: Option<&str>,
+    ) -> bool {
+        let reliable_candidate = app_user_model_id
+            .filter(|candidate| crate::window::is_reliable_application_identity(candidate));
+        if let (Some(candidate), Some(saved)) =
+            (reliable_candidate, self.app_user_model_id.as_deref())
+            && crate::window::is_reliable_application_identity(saved)
+        {
+            return candidate.eq_ignore_ascii_case(saved);
+        }
+        if stable_id.is_some_and(|candidate| candidate.eq_ignore_ascii_case(&self.id)) {
+            return true;
+        }
+        if reliable_candidate.is_some() {
+            return false;
+        }
+        if let Some(candidate) = stable_id
+            && is_registered_application_identity(candidate)
+        {
+            return false;
+        }
+        executable_name.is_some_and(|candidate| {
+            !is_shared_host_executable(candidate)
+                && self
+                    .match_executables
+                    .iter()
+                    .any(|saved| saved.eq_ignore_ascii_case(candidate))
+        })
+    }
+
+    fn is_valid(&self) -> bool {
+        !self.id.trim().is_empty() && !self.image_path.trim().is_empty()
+    }
+
+    fn normalize(&mut self) {
+        self.id = self.id.trim().into();
+        self.image_path = self.image_path.trim().into();
+        self.app_user_model_id = self.app_user_model_id.take().and_then(|identity| {
+            let identity = identity.trim();
+            crate::window::is_reliable_application_identity(identity)
+                .then(|| identity.to_owned())
+        });
+        self.match_executables =
+            normalized_unique_strings(std::mem::take(&mut self.match_executables))
+                .into_iter()
+                .filter(|executable| !is_shared_host_executable(executable))
+                .collect();
+    }
+}
+
+fn is_shared_host_executable(executable: &str) -> bool {
+    ["chrome.exe", "msedge.exe", "applicationframehost.exe"]
+        .iter()
+        .any(|host| executable.eq_ignore_ascii_case(host))
+}
+
+fn is_registered_application_identity(value: &str) -> bool {
+    crate::window::is_reliable_application_identity(value)
+        && !value.contains(['\\', '/'])
+        && !value.contains("://")
+        && !std::path::Path::new(value)
+            .extension()
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("exe")
+                    || extension.eq_ignore_ascii_case("lnk")
+            })
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -234,6 +340,11 @@ impl PinnedApp {
         self.app_user_model_id = self.app_user_model_id.take().and_then(|identity| {
             (!identity.trim().is_empty()).then(|| identity.trim().into())
         });
+        self.match_executables =
+            normalized_unique_strings(std::mem::take(&mut self.match_executables))
+                .into_iter()
+                .filter(|executable| !is_shared_host_executable(executable))
+                .collect();
     }
 }
 
@@ -260,4 +371,169 @@ fn normalized_unique_strings(values: Vec<String>) -> Vec<String> {
     }
 
     normalized
+}
+
+#[must_use]
+pub fn merge_application_icon_overrides(
+    baseline: &[ApplicationIconOverride],
+    draft: &[ApplicationIconOverride],
+    current: &[ApplicationIconOverride],
+) -> Vec<ApplicationIconOverride> {
+    let mut merged = draft
+        .iter()
+        .cloned()
+        .map(|mut staged| {
+            let baseline = baseline
+                .iter()
+                .find(|saved| saved.id.eq_ignore_ascii_case(&staged.id));
+            let current = current
+                .iter()
+                .find(|saved| saved.id.eq_ignore_ascii_case(&staged.id));
+            if baseline == Some(&staged) {
+                return current.cloned().unwrap_or(staged);
+            }
+            if let (Some(baseline), Some(current)) = (baseline, current) {
+                for alias in &current.match_executables {
+                    let learned = !baseline
+                        .match_executables
+                        .iter()
+                        .any(|saved| saved.eq_ignore_ascii_case(alias));
+                    let present = staged
+                        .match_executables
+                        .iter()
+                        .any(|saved| saved.eq_ignore_ascii_case(alias));
+                    if learned && !present {
+                        staged.match_executables.push(alias.clone());
+                    }
+                }
+            }
+            staged
+        })
+        .collect::<Vec<_>>();
+    for live in current {
+        let existed_at_start = baseline
+            .iter()
+            .any(|saved| saved.id.eq_ignore_ascii_case(&live.id));
+        let staged = draft
+            .iter()
+            .any(|saved| saved.id.eq_ignore_ascii_case(&live.id));
+        if !existed_at_start && !staged {
+            merged.push(live.clone());
+        }
+    }
+    merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApplicationIconOverride, DockSettings, merge_application_icon_overrides};
+
+    #[test]
+    fn application_icon_overrides_prefer_reliable_identity_then_executable_alias() {
+        let settings = DockSettings {
+            application_icon_overrides: vec![
+                ApplicationIconOverride {
+                    id: "discord".into(),
+                    image_path: "icon.png".into(),
+                    app_user_model_id: Some("com.squirrel.discord.discord".into()),
+                    match_executables: vec!["Discord.exe".into()],
+                },
+                ApplicationIconOverride {
+                    id: "edge-app".into(),
+                    image_path: "edge.png".into(),
+                    app_user_model_id: Some("microsoft.edge.app".into()),
+                    match_executables: vec!["msedge.exe".into()],
+                },
+                ApplicationIconOverride {
+                    id: r"C:\\Start Menu\\App.lnk".into(),
+                    image_path: "app.png".into(),
+                    app_user_model_id: None,
+                    match_executables: vec!["App.exe".into()],
+                },
+            ],
+            ..DockSettings::default()
+        }
+        .normalized();
+
+        assert!(
+            settings
+                .application_icon_override(
+                    Some("COM.SQUIRREL.DISCORD.DISCORD"),
+                    None,
+                    Some("helper.exe"),
+                )
+                .is_some()
+        );
+        assert!(
+            settings
+                .application_icon_override(
+                    Some("vendor.app"),
+                    Some(r"C:\\Start Menu\\App.lnk"),
+                    Some("App.exe"),
+                )
+                .is_some()
+        );
+        assert!(
+            settings
+                .application_icon_override(
+                    Some("com.electron.app"),
+                    None,
+                    Some("discord.exe")
+                )
+                .is_some()
+        );
+        assert!(
+            settings
+                .application_icon_override(
+                    Some("com.electron.app"),
+                    None,
+                    Some("other.exe")
+                )
+                .is_none()
+        );
+        assert!(
+            settings
+                .application_icon_override(Some("other.edge.app"), None, Some("msedge.exe"))
+                .is_none()
+        );
+        assert!(
+            settings
+                .application_icon_override(None, None, Some("discord.exe"))
+                .is_some()
+        );
+        assert!(
+            settings
+                .application_icon_override(
+                    None,
+                    Some(r"C:\\Program Files\\App\\App.exe"),
+                    Some("App.exe"),
+                )
+                .is_some()
+        );
+        assert!(
+            settings
+                .application_icon_override(
+                    None,
+                    Some("registered.app.two"),
+                    Some("Discord.exe"),
+                )
+                .is_none()
+        );
+
+        let mut learned = settings.application_icon_overrides.clone();
+        learned[0]
+            .match_executables
+            .push("DiscordCanary.exe".into());
+        let merged = merge_application_icon_overrides(
+            &settings.application_icon_overrides,
+            &settings.application_icon_overrides,
+            &learned,
+        );
+        assert!(
+            merged[0]
+                .match_executables
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case("DiscordCanary.exe"))
+        );
+    }
 }

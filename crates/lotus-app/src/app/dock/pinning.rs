@@ -1,6 +1,6 @@
 use lotus_core::dock::DockItem;
 use lotus_core::window::WindowInfo;
-use lotus_dock::model::{PinLaunch, PinUpgrade};
+use lotus_dock::model::{PinExecutableAlias, PinLaunch, PinUpgrade};
 
 use super::DockRuntime;
 use super::projection::{projected_items, window_matches_item};
@@ -46,9 +46,35 @@ impl DockRuntime {
         Ok(true)
     }
 
-    pub(in crate::app) fn upgrade_legacy_pins(
+    pub(in crate::app) fn reconcile_unpinned_pins(
         &mut self,
         windows: &[WindowInfo],
+        catalog: &lotus_windows::search_catalog::SearchCatalogCache,
+    ) -> Result<bool, AppError> {
+        let aliases = projected_items(self.model.settings(), windows)
+            .iter()
+            .filter(|item| !item.is_pinned)
+            .flat_map(|item| {
+                item.windows.iter().filter_map(|window| {
+                    let application =
+                        catalog.registered_application(window, &item.display_name)?;
+                    let executable_name = window
+                        .executable_name()
+                        .and_then(|name| name.to_str())?
+                        .to_owned();
+                    Some(PinExecutableAlias {
+                        registered_id: application.id,
+                        app_user_model_id: application.app_user_model_id,
+                        executable_name,
+                    })
+                })
+            })
+            .collect();
+        Ok(self.model.reconcile_pin_executables(aliases)?)
+    }
+
+    pub(in crate::app) fn upgrade_legacy_pins(
+        &mut self,
         catalog: &lotus_windows::search_catalog::SearchCatalogCache,
     ) -> Result<bool, AppError> {
         let upgrades = self
@@ -73,14 +99,7 @@ impl DockRuntime {
                 })
             })
             .collect();
-        if !self.model.upgrade_pins(upgrades)? {
-            return Ok(false);
-        }
-
-        self.model
-            .rebuild(projected_items(self.model.settings(), windows));
-        self.refresh_scene_items();
-        Ok(true)
+        Ok(self.model.upgrade_pins(upgrades)?)
     }
 
     pub(in crate::app) fn merge_transient_unpinned(

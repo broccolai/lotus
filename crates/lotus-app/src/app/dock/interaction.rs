@@ -131,12 +131,22 @@ impl DockRuntime {
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        let icon = self
-            .native_icons
-            .icon(Path::new(&icon_source), size)
-            .ok()
-            .flatten()
-            .map_or(DockIcon::Embedded(SvgAsset::FluentOpen), DockIcon::Raster);
+        let icon = crate::app::icon_override::resolve_application_icon(
+            self.model.settings(),
+            &mut self.custom_images,
+            windows
+                .first()
+                .and_then(|window| window.app_user_model_id.as_deref()),
+            Some(&identity),
+            Path::new(&icon_source),
+        )
+        .or_else(|| {
+            self.native_icons
+                .icon(Path::new(&icon_source), size)
+                .ok()
+                .flatten()
+        })
+        .map_or(DockIcon::Embedded(SvgAsset::FluentOpen), DockIcon::Raster);
         ordered
             .into_iter()
             .map(|window| NativePickerWindow {
@@ -150,6 +160,34 @@ impl DockRuntime {
                 active: Some(window.id) == foreground,
             })
             .collect()
+    }
+
+    pub(in crate::app) fn application_icon_preview(
+        &mut self,
+        source_index: usize,
+    ) -> Option<lotus_ui::icon::RasterIcon> {
+        let item = self.model.items().get(source_index)?;
+        let app_user_model_id = item.app_user_model_id.clone();
+        let id = item.id.clone();
+        let executable_path = item.executable_path.clone();
+        let icon_source = item.icon_source.clone();
+        let size = self
+            .scene
+            .icon_size_pixels()
+            .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
+        crate::app::icon_override::resolve_application_icon(
+            self.model.settings(),
+            &mut self.custom_images,
+            app_user_model_id.as_deref(),
+            Some(&id),
+            Path::new(&executable_path),
+        )
+        .or_else(|| {
+            self.native_icons
+                .icon(Path::new(&icon_source), size)
+                .ok()
+                .flatten()
+        })
     }
 
     pub(in crate::app) fn record_window_activation(

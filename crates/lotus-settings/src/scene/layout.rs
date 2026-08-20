@@ -28,7 +28,7 @@ impl SettingsScene {
             .filter(|page| *page != SettingsPage::About)
             .enumerate()
         {
-            let module_offset = if index >= 2 {
+            let module_offset = if index >= 3 {
                 16
             } else {
                 0
@@ -63,30 +63,7 @@ impl SettingsScene {
         });
         let content_width = WIDTH_DIP - CONTENT_LEFT_DIP - CONTENT_RIGHT_DIP;
         let content = self.page_content_positions();
-        for (section, top) in content.sections {
-            sections.push(SettingsSectionLayout {
-                section,
-                bounds: self.rect(
-                    CONTENT_LEFT_DIP,
-                    CONTENT_TOP_DIP
-                        .saturating_add(top)
-                        .saturating_sub(self.scroll_offset_dip),
-                    content_width,
-                    SECTION_LABEL_HEIGHT_DIP,
-                ),
-            });
-        }
-        for (control, relative_top) in content.controls {
-            let top = if control == SettingsControl::ReplaySetup {
-                HEIGHT_DIP - FOOTER_HEIGHT_DIP - ROW_HEIGHT_DIP - 22
-            } else {
-                CONTENT_TOP_DIP
-                    .saturating_add(relative_top)
-                    .saturating_sub(self.scroll_offset_dip)
-            };
-            let bounds = self.rect(CONTENT_LEFT_DIP, top, content_width, ROW_HEIGHT_DIP);
-            controls.push(SettingsControlLayout { control, bounds });
-        }
+        self.append_page_content(&mut controls, &mut sections, content, content_width);
         if self.page != SettingsPage::About {
             controls.push(SettingsControlLayout {
                 control: SettingsControl::Revert,
@@ -127,7 +104,60 @@ impl SettingsScene {
             controls,
             sections,
             content_viewport,
+            content_scroll_offset: self.scale(self.scroll_offset_dip),
             scrollbar_thumb: self.scrollbar_thumb(),
+        }
+    }
+
+    fn append_page_content(
+        &self,
+        controls: &mut Vec<SettingsControlLayout>,
+        sections: &mut Vec<SettingsSectionLayout>,
+        content: PageContentLayout,
+        content_width: u32,
+    ) {
+        for (section, top) in content.sections {
+            sections.push(SettingsSectionLayout {
+                section,
+                bounds: self.rect(
+                    CONTENT_LEFT_DIP,
+                    CONTENT_TOP_DIP.saturating_add(top),
+                    content_width,
+                    SECTION_LABEL_HEIGHT_DIP,
+                ),
+            });
+        }
+        for (control, relative_top) in content.controls {
+            let top = if control == SettingsControl::ReplaySetup {
+                HEIGHT_DIP - FOOTER_HEIGHT_DIP - ROW_HEIGHT_DIP - 22
+            } else {
+                CONTENT_TOP_DIP.saturating_add(relative_top)
+            };
+            let bounds = self.page_control_bounds(control, top, content_width);
+            controls.push(SettingsControlLayout { control, bounds });
+        }
+    }
+
+    fn page_control_bounds(
+        &self,
+        control: SettingsControl,
+        top: u32,
+        content_width: u32,
+    ) -> SettingsRect {
+        match control {
+            SettingsControl::ChooseApplicationIcon(_) => self.rect(
+                CONTENT_LEFT_DIP + content_width - 116,
+                top,
+                108,
+                ROW_HEIGHT_DIP,
+            ),
+            SettingsControl::ResetApplicationIcon(_) => self.rect(
+                CONTENT_LEFT_DIP + content_width - 184,
+                top,
+                64,
+                ROW_HEIGHT_DIP,
+            ),
+            _ => self.rect(CONTENT_LEFT_DIP, top, content_width, ROW_HEIGHT_DIP),
         }
     }
 
@@ -136,6 +166,7 @@ impl SettingsScene {
             SettingsPage::Appearance | SettingsPage::General | SettingsPage::About => {
                 Vec::new()
             }
+            SettingsPage::Apps => vec![],
             SettingsPage::Taskbar => vec![
                 (
                     SettingsSection::Main,
@@ -228,6 +259,23 @@ impl SettingsScene {
                 }
                 controls
             }
+            SettingsPage::Apps => {
+                let mut controls = vec![SettingsControl::ApplicationSearch];
+                for index in self.filtered_application_indices() {
+                    controls.push(SettingsControl::ApplicationRow(index));
+                    if self.application_actions_visible(index) {
+                        controls.push(SettingsControl::ChooseApplicationIcon(index));
+                        if self
+                            .applications()
+                            .get(index)
+                            .is_some_and(|application| application.customized)
+                        {
+                            controls.push(SettingsControl::ResetApplicationIcon(index));
+                        }
+                    }
+                }
+                controls
+            }
             SettingsPage::About => vec![SettingsControl::ReplaySetup],
             SettingsPage::Taskbar | SettingsPage::Status | SettingsPage::Search => self
                 .page_groups()
@@ -238,6 +286,10 @@ impl SettingsScene {
     }
 
     pub(super) fn page_content_positions(&self) -> PageContentLayout {
+        if self.page == SettingsPage::Apps {
+            return self.application_content_positions();
+        }
+
         let groups = self.page_groups();
         if groups.is_empty() {
             let controls = self
@@ -281,6 +333,44 @@ impl SettingsScene {
             controls,
             height: top,
         }
+    }
+
+    fn application_content_positions(&self) -> PageContentLayout {
+        let mut controls = vec![(SettingsControl::ApplicationSearch, 0)];
+        let mut top = ROW_HEIGHT_DIP + ROW_GAP_DIP;
+
+        for index in self.filtered_application_indices() {
+            controls.push((SettingsControl::ApplicationRow(index), top));
+            if self.application_actions_visible(index) {
+                controls.push((SettingsControl::ChooseApplicationIcon(index), top));
+                if self
+                    .applications()
+                    .get(index)
+                    .is_some_and(|application| application.customized)
+                {
+                    controls.push((SettingsControl::ResetApplicationIcon(index), top));
+                }
+            }
+            top = top.saturating_add(ROW_HEIGHT_DIP + ROW_GAP_DIP);
+        }
+
+        PageContentLayout {
+            sections: Vec::new(),
+            controls,
+            height: top.saturating_sub(ROW_GAP_DIP),
+        }
+    }
+
+    pub(super) fn filtered_application_indices(&self) -> Vec<usize> {
+        let query = self.application_query.trim().to_ascii_lowercase();
+        self.applications
+            .iter()
+            .enumerate()
+            .filter(|(_, application)| {
+                query.is_empty() || application.name.to_ascii_lowercase().contains(&query)
+            })
+            .map(|(index, _)| index)
+            .collect()
     }
 
     pub(super) const fn content_viewport_height_dip() -> u32 {
@@ -422,6 +512,7 @@ impl SettingsScene {
                 width: size.width(),
                 height: size.height(),
             },
+            content_scroll_offset: 0,
             scrollbar_thumb: None,
         }
     }

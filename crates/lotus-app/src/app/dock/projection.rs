@@ -34,12 +34,22 @@ impl DockRuntime {
             return Vec::new();
         }
 
+        let settings = self.model.settings().clone();
         let mut scene_items =
             adapt_dock_items_with_native(self.model.items(), |_, item| {
-                self.native_icons
-                    .icon(Path::new(&item.icon_source), icon_size)
-                    .ok()
-                    .flatten()
+                crate::app::icon_override::resolve_application_icon(
+                    &settings,
+                    &mut self.custom_images,
+                    item.app_user_model_id.as_deref(),
+                    Some(&item.id),
+                    Path::new(&item.executable_path),
+                )
+                .or_else(|| {
+                    self.native_icons
+                        .icon(Path::new(&item.icon_source), icon_size)
+                        .ok()
+                        .flatten()
+                })
             });
         for item in &mut scene_items {
             let Some(source) = self.model.items().get(item.source_index()) else {

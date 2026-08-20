@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -5,7 +6,7 @@ use std::io::{self, Cursor, Write};
 use std::path::{Path, PathBuf};
 
 use atomic_write_file::AtomicWriteFile;
-use image::{DynamicImage, ImageFormat, RgbaImage};
+use image::{DynamicImage, ImageFormat, RgbaImage, imageops};
 use lotus_ui::icon::{RasterIcon, RasterIconError};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -35,6 +36,27 @@ pub fn load_custom_image(path: &Path) -> Result<RasterIcon, CustomImageError> {
     pixels.hash(&mut hasher);
     let identity = format!("{}#{:016x}", path.to_string_lossy(), hasher.finish());
     RasterIcon::new(identity, width, height, pixels).map_err(Into::into)
+}
+
+#[derive(Default)]
+pub struct CustomImageCache {
+    images: HashMap<PathBuf, RasterIcon>,
+}
+
+impl CustomImageCache {
+    pub fn image(&mut self, path: &Path) -> Result<RasterIcon, CustomImageError> {
+        if let Some(image) = self.images.get(path) {
+            return Ok(image.clone());
+        }
+
+        let image = load_custom_image(path)?;
+        self.images.insert(path.to_path_buf(), image.clone());
+        Ok(image)
+    }
+
+    pub fn clear(&mut self) {
+        self.images.clear();
+    }
 }
 
 pub fn import_custom_image(
@@ -81,10 +103,77 @@ pub fn import_custom_image(
     Ok(destination)
 }
 
+pub fn import_application_icon(
+    source: &Path,
+    settings_directory: &Path,
+) -> Result<PathBuf, CustomImageError> {
+    let image = square_image(decode(source)?);
+    let identity = image_identity(&image);
+    let directory = settings_directory.join("assets").join("app-icons");
+    fs::create_dir_all(&directory).map_err(|source| CustomImageError::Store {
+        path: directory.clone(),
+        source,
+    })?;
+    let destination = directory.join(format!("{identity}.png"));
+    if destination.exists() {
+        return Ok(destination);
+    }
+
+    store_png(&image, &destination)?;
+    Ok(destination)
+}
+
 fn decode(path: &Path) -> Result<RgbaImage, image::ImageError> {
     Ok(image::open(path)?
         .thumbnail(MAX_DIMENSION, MAX_DIMENSION)
         .to_rgba8())
+}
+
+fn square_image(image: RgbaImage) -> RgbaImage {
+    let side = image.width().max(image.height()).clamp(1, MAX_DIMENSION);
+    let resized = if image.width() > side || image.height() > side {
+        imageops::thumbnail(&image, side, side)
+    } else {
+        image
+    };
+    let mut canvas = RgbaImage::new(side, side);
+    let left = side.saturating_sub(resized.width()) / 2;
+    let top = side.saturating_sub(resized.height()) / 2;
+    imageops::overlay(&mut canvas, &resized, i64::from(left), i64::from(top));
+    canvas
+}
+
+fn image_identity(image: &RgbaImage) -> String {
+    let mut digest = Sha256::new();
+    digest.update(image.width().to_le_bytes());
+    digest.update(image.height().to_le_bytes());
+    digest.update(image.as_raw());
+    let mut identity = String::with_capacity(64);
+    for byte in digest.finalize() {
+        write!(identity, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    identity
+}
+
+fn store_png(image: &RgbaImage, destination: &Path) -> Result<(), CustomImageError> {
+    let mut encoded = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(image.clone()).write_to(&mut encoded, ImageFormat::Png)?;
+    let mut output =
+        AtomicWriteFile::open(destination).map_err(|source| CustomImageError::Store {
+            path: destination.to_path_buf(),
+            source,
+        })?;
+    output
+        .write_all(encoded.get_ref())
+        .map_err(|source| CustomImageError::Store {
+            path: destination.to_path_buf(),
+            source,
+        })?;
+    output.commit().map_err(|source| CustomImageError::Store {
+        path: destination.to_path_buf(),
+        source,
+    })?;
+    Ok(())
 }
 
 fn premultiply_rgba_to_bgra(pixels: &mut [u8]) {
