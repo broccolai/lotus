@@ -1,3 +1,4 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
@@ -11,7 +12,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::sequence::{Decision, KeyEvent, Sequence, Transition};
 use super::{ALT_TAB_WAKE_MESSAGE, AltTabError, AltTabEvent};
-use crate::NativeError;
+use crate::{NativeError, diagnostics};
 
 const SUPPRESS: LRESULT = LRESULT(1);
 
@@ -104,6 +105,17 @@ unsafe extern "system" fn keyboard_hook(
     message: WPARAM,
     data: LPARAM,
 ) -> LRESULT {
+    if let Ok(result) = catch_unwind(AssertUnwindSafe(|| unsafe {
+        keyboard_hook_inner(code, message, data)
+    })) {
+        result
+    } else {
+        recover_from_hook_panic();
+        call_next(code, message, data)
+    }
+}
+
+unsafe fn keyboard_hook_inner(code: i32, message: WPARAM, data: LPARAM) -> LRESULT {
     if code < 0 || data.0 == 0 {
         return call_next(code, message, data);
     }
@@ -139,6 +151,17 @@ unsafe extern "system" fn keyboard_hook(
             call_next(code, WPARAM(message as usize), data)
         }
     }
+}
+
+fn recover_from_hook_panic() {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if let Some(context) = lock(&ACTIVE_CONTROLLER).as_ref().and_then(Weak::upgrade)
+            && context.cancel()
+        {
+            context.emit(AltTabEvent::Cancel);
+        }
+        diagnostics::record_message("alt_tab.callback", "the custom Alt+Tab hook panicked");
+    }));
 }
 
 fn call_next(code: i32, message: WPARAM, data: LPARAM) -> LRESULT {

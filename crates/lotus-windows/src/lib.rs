@@ -9,6 +9,7 @@ pub mod clock;
 pub mod color_picker;
 pub mod custom_image;
 pub mod desktop;
+pub mod diagnostics;
 pub mod dpi;
 pub mod dwm_thumbnail;
 pub mod exclusive_taskbar;

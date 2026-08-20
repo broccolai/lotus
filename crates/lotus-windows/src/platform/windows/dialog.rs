@@ -5,13 +5,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::HSTRING;
 
-use crate::WindowHandle;
+use crate::{WindowHandle, diagnostics};
 
 pub fn show_error(owner: WindowHandle, title: &str, message: &str) {
+    diagnostics::record_message(title, message);
     show_error_for(owner.raw(), title, message);
 }
 
 pub fn show_unowned_error(title: &str, message: &str) {
+    diagnostics::record_message(title, message);
     show_error_for(HWND::default(), title, message);
 }
 

@@ -6,6 +6,7 @@ compile_error!("Lotus is a native Windows application.");
 mod app;
 
 fn main() {
+    lotus_windows::diagnostics::install_panic_hook();
     match lotus_windows::update::run_helper_if_requested() {
         Ok(true) => return,
         Ok(false) => {}

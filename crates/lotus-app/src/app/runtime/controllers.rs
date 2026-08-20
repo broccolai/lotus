@@ -4,7 +4,7 @@ use lotus_windows::graphics::DeviceState;
 use lotus_windows::window_tracker::WindowTracker;
 
 use crate::app::switcher::SwitcherRuntime;
-use crate::app::{AppError, DockRuntime, RestartError};
+use crate::app::{DockRuntime, RestartError};
 
 pub(crate) fn restart_current_process() -> Result<(), RestartError> {
     let executable = std::env::current_exe()?;
@@ -25,7 +25,13 @@ pub(crate) fn enable_optional_alt_tab(enabled: bool) -> Option<AltTabController>
         return None;
     }
     let mut controller = AltTabController::new();
-    controller.enable().ok().map(|_| controller)
+    match controller.enable() {
+        Ok(_) => Some(controller),
+        Err(error) => {
+            lotus_windows::diagnostics::record_error("alt_tab.enable", &error);
+            None
+        }
+    }
 }
 
 pub(super) fn handle_alt_tab_events(
@@ -34,23 +40,27 @@ pub(super) fn handle_alt_tab_events(
     dock_model: &DockRuntime,
     graphics: &mut DeviceState,
     switcher: &mut SwitcherRuntime,
-) -> Result<(), AppError> {
+) {
     for event in controller.drain_events() {
         match event {
             AltTabEvent::Begin {
                 direction,
                 foreground,
-            } => switcher.begin(
-                direction,
-                foreground,
-                tracker.current_windows(),
-                dock_model.settings(),
-                graphics,
-            )?,
+            } => {
+                if let Err(error) = switcher.begin(
+                    direction,
+                    foreground,
+                    tracker.current_windows(),
+                    dock_model.settings(),
+                    graphics,
+                ) {
+                    lotus_windows::diagnostics::record_error("alt_tab.begin", &error);
+                    switcher.abandon();
+                }
+            }
             AltTabEvent::Cycle(direction) => switcher.cycle(direction),
             AltTabEvent::Commit => switcher.commit(),
             AltTabEvent::Cancel => switcher.hide(),
         }
     }
-    Ok(())
 }

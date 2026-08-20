@@ -160,7 +160,9 @@ impl SwitcherRuntime {
         self.hide();
         if let Some(selected) = selected {
             self.recent_windows.record(selected);
-            let _ = switch_window(selected);
+            if let Err(error) = switch_window(selected) {
+                lotus_windows::diagnostics::record_error("alt_tab.switch_window", &error);
+            }
         }
     }
 
@@ -168,6 +170,14 @@ impl SwitcherRuntime {
         self.window.hide();
         self.scene = None;
         self.session = None;
+    }
+
+    pub(super) fn abandon(&mut self) {
+        self.window.hide();
+        self.surface = None;
+        self.scene = None;
+        self.session = None;
+        self.custom_images.clear();
     }
 
     pub(super) fn drain_events(&mut self) -> Vec<SwitcherEvent> {

@@ -63,7 +63,10 @@ pub(crate) fn flush_frame(
     auxiliary.launcher.render_frame(&mut pass, graphics)?;
     auxiliary.context_menu.render_frame(&mut pass, graphics)?;
     auxiliary.settings.render_frame(&mut pass, graphics)?;
-    auxiliary.switcher.render_frame(&mut pass, graphics)?;
+    if let Err(error) = auxiliary.switcher.render_frame(&mut pass, graphics) {
+        lotus_windows::diagnostics::record_error("alt_tab.render", &error);
+        auxiliary.switcher.abandon();
+    }
     auxiliary.status.render_frame(&mut pass, graphics)?;
     auxiliary.monitors.render_frame(&mut pass, graphics)?;
 
@@ -162,7 +165,7 @@ impl MessageLoop<'_, '_> {
             self.auxiliary,
         )?;
         self.drain_settings_events()?;
-        self.drain_switcher_events()?;
+        self.drain_switcher_events();
         for action in self.auxiliary.monitors.drain_events(self.graphics)? {
             dock_events::handle_monitor_dock_action(
                 action,
@@ -223,7 +226,7 @@ impl MessageLoop<'_, '_> {
                 self.dock_model,
                 self.graphics,
                 &mut self.auxiliary.switcher,
-            )?;
+            );
         }
         if wakes.search_catalog {
             search_events::refresh_catalog(
@@ -261,11 +264,14 @@ impl MessageLoop<'_, '_> {
         Ok(())
     }
 
-    fn drain_switcher_events(&mut self) -> Result<(), AppError> {
+    fn drain_switcher_events(&mut self) {
         for event in self.auxiliary.switcher.drain_events() {
-            self.auxiliary.switcher.handle_window_event(event)?;
+            if let Err(error) = self.auxiliary.switcher.handle_window_event(event) {
+                lotus_windows::diagnostics::record_error("alt_tab.event", &error);
+                self.auxiliary.switcher.abandon();
+                break;
+            }
         }
-        Ok(())
     }
 
     fn flush_frame(&mut self, trigger: FrameTrigger) -> Result<(), AppError> {
