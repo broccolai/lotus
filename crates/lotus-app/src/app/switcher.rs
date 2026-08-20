@@ -85,9 +85,7 @@ impl SwitcherRuntime {
             .filter(|window| !executable_is_hidden(window, &settings.hidden_executables))
             .cloned()
             .collect::<Vec<_>>();
-        if let Some(foreground) = foreground {
-            self.recent_windows.record(foreground);
-        }
+        self.record_foreground(foreground);
         let windows = self.recent_windows.arrange(windows, |window| window.id);
         let Some(session) = SwitcherSession::begin(windows, direction) else {
             return Ok(());
@@ -121,6 +119,15 @@ impl SwitcherRuntime {
         }
         self.ensure_surface(graphics)?;
         self.render(graphics)
+    }
+
+    pub(super) fn record_foreground(
+        &mut self,
+        foreground: Option<lotus_core::window::WindowId>,
+    ) {
+        if let Some(foreground) = foreground {
+            self.recent_windows.record(foreground);
+        }
     }
 
     pub(super) fn cycle(

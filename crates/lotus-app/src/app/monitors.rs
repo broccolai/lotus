@@ -195,26 +195,21 @@ impl MonitorDock {
         event: PointerEvent,
         graphics: &mut DeviceState,
     ) -> Result<Option<MonitorDockAction>, AppError> {
-        let action = match event {
+        let (action, scene_changed) = match event {
             PointerEvent::Moved { x, y } => {
                 let target = hit_test(&self.scene, x, y);
-                let _ = self.scene.set_hovered(target);
-                None
+                (None, self.scene.set_hovered(target))
             }
-            PointerEvent::Left => {
-                let _ = self.scene.set_hovered(None);
-                None
-            }
+            PointerEvent::Left => (None, self.scene.set_hovered(None)),
             PointerEvent::LeftButtonPressed { x, y } => {
                 let target = hit_test(&self.scene, x, y);
-                let _ = self.scene.set_pressed(target);
-                None
+                (None, self.scene.set_pressed(target))
             }
             PointerEvent::LeftButtonReleased { x, y } => {
                 let target = hit_test(&self.scene, x, y);
                 let pressed = self.scene.interaction().pressed;
-                let _ = self.scene.set_pressed(None);
-                if pressed == target {
+                let changed = self.scene.set_pressed(None);
+                let action = if pressed == target {
                     target.map(|target| MonitorDockAction::Activate {
                         target,
                         owner: self.window.handle(),
@@ -222,14 +217,14 @@ impl MonitorDock {
                     })
                 } else {
                     None
-                }
+                };
+                (action, changed)
             }
-            PointerEvent::Cancelled => {
-                let _ = self.scene.set_pressed(None);
-                None
-            }
+            PointerEvent::Cancelled => (None, self.scene.set_pressed(None)),
         };
-        self.render(graphics)?;
+        if scene_changed {
+            self.render(graphics)?;
+        }
         Ok(action)
     }
 

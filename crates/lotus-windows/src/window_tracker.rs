@@ -124,8 +124,9 @@ impl WindowTracker {
             }
             WM_TIMER if self.timer_id == Some(parameter) => {
                 self.cancel_timer();
-                self.refresh()?;
-                Ok(Some(WindowTrackerEvent::SnapshotRefreshed))
+                Ok(self
+                    .refresh_if_changed()?
+                    .then_some(WindowTrackerEvent::SnapshotRefreshed))
             }
             WM_TIMER if self.reconcile_timer_id == parameter => Ok(self
                 .refresh_if_changed()?
@@ -162,7 +163,7 @@ impl WindowTracker {
         let fullscreen_window = foreground::observe_fullscreen_window(self.own_process_id);
         let previous_shell_fullscreen = self.shell_fullscreen_window;
         self.validate_shell_fullscreen();
-        if self.windows == windows
+        if same_window_snapshot(&self.windows, &windows)
             && self.fullscreen_window == fullscreen_window
             && self.shell_fullscreen_window == previous_shell_fullscreen
         {
@@ -181,6 +182,13 @@ impl WindowTracker {
             self.shell_fullscreen_window = None;
         }
     }
+}
+
+fn same_window_snapshot(previous: &[WindowInfo], current: &[WindowInfo]) -> bool {
+    previous.len() == current.len()
+        && previous
+            .iter()
+            .all(|window| current.iter().any(|candidate| candidate == window))
 }
 
 impl Drop for WindowTracker {

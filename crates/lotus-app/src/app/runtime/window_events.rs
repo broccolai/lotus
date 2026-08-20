@@ -25,7 +25,7 @@ pub(super) fn drain_window_events(
             event, dock, graphics, surface, dock_model, auxiliary,
         )?;
     }
-    search_events::drain_search_events(dock, graphics, surface, dock_model, auxiliary)?;
+    search_events::drain_search_events(dock, graphics, dock_model, auxiliary)?;
     for event in auxiliary.context_menu.drain_events() {
         popup_events::handle_context_menu_event(
             event, dock, graphics, surface, windows, dock_model, auxiliary,
@@ -76,7 +76,13 @@ pub(super) fn handle_tracker_message(
     else {
         return Ok(());
     };
+    if event == WindowTrackerEvent::FullscreenRefreshed {
+        let foreground = lotus_windows::activation::foreground_window();
+        context.dock_model.record_foreground(foreground);
+        context.auxiliary.switcher.record_foreground(foreground);
+    }
     if event == WindowTrackerEvent::SnapshotRefreshed {
+        let previous_size = context.dock_model.scene().desired_size();
         let windows = context.window_tracker.current_windows();
         let pins_reconciled = context
             .dock_model
@@ -111,18 +117,22 @@ pub(super) fn handle_tracker_message(
             &mut context.auxiliary.context_menu,
             context.graphics,
         )?;
-        resize_dock(
-            context.dock,
-            context.graphics,
-            context.surface,
-            context.dock_model,
-        )?;
-        context.auxiliary.status.sync(
-            context.dock,
-            context.dock_model.settings(),
-            context.dock_model.media(),
-            context.graphics,
-        )?;
+        if context.dock_model.scene().desired_size() != previous_size {
+            resize_dock(
+                context.dock,
+                context.graphics,
+                context.surface,
+                context.dock_model,
+            )?;
+        }
+        if pins_reconciled {
+            context.auxiliary.status.sync(
+                context.dock,
+                context.dock_model.settings(),
+                context.dock_model.media(),
+                context.graphics,
+            )?;
+        }
         render_and_schedule(
             context.dock,
             context.graphics,

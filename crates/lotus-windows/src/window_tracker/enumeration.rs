@@ -98,10 +98,7 @@ pub(super) fn should_include_window(hwnd: HWND) -> bool {
     {
         return false;
     }
-    if matches!(
-        window_class(hwnd).as_str(),
-        "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
-    ) {
+    if excluded_window_class(&window_class(hwnd)) {
         return false;
     }
     let mut cloaked = 0_u32;
@@ -115,6 +112,17 @@ pub(super) fn should_include_window(hwnd: HWND) -> bool {
     }
     .is_err()
         || cloaked == 0
+}
+
+fn excluded_window_class(class_name: &str) -> bool {
+    matches!(
+        class_name,
+        "Progman"
+            | "WorkerW"
+            | "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "XamlExplorerHostIslandWindow"
+    )
 }
 fn window_title(hwnd: HWND) -> String {
     let length = unsafe { GetWindowTextLengthW(hwnd) };

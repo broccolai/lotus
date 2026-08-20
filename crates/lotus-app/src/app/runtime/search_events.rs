@@ -55,9 +55,13 @@ pub(super) fn refresh_catalog(
             .sync(dock, dock_model.settings(), dock_model.media(), graphics)?;
     }
     refresh_open_application_manager(dock_model, auxiliary, graphics)?;
-    let dock_animation = render_surface(graphics, surface, dock_model.scene())?;
     let launcher_animation = auxiliary.launcher.render(graphics)?;
-    dock.set_animation_active(dock_animation || launcher_animation)?;
+    if pins_changed {
+        let dock_animation = render_surface(graphics, surface, dock_model.scene())?;
+        dock.set_animation_active(dock_animation || launcher_animation)?;
+    } else if launcher_animation {
+        dock.set_animation_active(true)?;
+    }
     Ok(())
 }
 
@@ -97,19 +101,13 @@ pub(super) fn refresh_open_application_manager(
 pub(super) fn drain_search_events(
     dock: &DockWindow,
     graphics: &mut DeviceState,
-    surface: &mut CompositionSurfaceState,
     dock_model: &DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
 ) -> Result<(), AppError> {
     for event in auxiliary.launcher.drain_events() {
-        if let Some(submission) = handle_search_event(
-            event,
-            dock,
-            graphics,
-            surface,
-            dock_model,
-            &mut auxiliary.launcher,
-        )? {
+        if let Some(submission) =
+            handle_search_event(event, dock, graphics, dock_model, &mut auxiliary.launcher)?
+        {
             execute_search_submission(submission, dock, graphics, dock_model, auxiliary)?;
         }
     }
@@ -120,7 +118,6 @@ pub(crate) fn handle_search_event(
     event: SearchEvent,
     dock: &DockWindow,
     graphics: &mut DeviceState,
-    dock_surface: &mut CompositionSurfaceState,
     dock_model: &DockRuntime,
     launcher: &mut LauncherRuntime,
 ) -> Result<Option<LauncherSubmission>, AppError> {
@@ -188,10 +185,10 @@ pub(crate) fn handle_search_event(
 
     if scene_changed && launcher.is_visible() {
         launcher.sync_size(dock, graphics)?;
+        if launcher.render(graphics)? {
+            dock.set_animation_active(true)?;
+        }
     }
-    let dock_animation = render_surface(graphics, dock_surface, dock_model.scene())?;
-    let launcher_animation = launcher.render(graphics)?;
-    dock.set_animation_active(dock_animation || launcher_animation)?;
     Ok(command)
 }
 

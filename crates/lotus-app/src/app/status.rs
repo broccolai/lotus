@@ -164,32 +164,24 @@ impl StatusRuntime {
         let Some(zone) = self.zones.get_mut(zone_index) else {
             return Ok(None);
         };
-        let action = match event {
+        let (action, scene_changed) = match event {
             WindowEvent::Pointer(pointer) => match pointer {
                 PointerEvent::Moved { x, y } => {
                     let target = zone.hit_test(x, y);
-                    let _ = zone.scene.set_hovered(target);
-                    None
+                    (None, zone.scene.set_hovered(target))
                 }
-                PointerEvent::Left => {
-                    let _ = zone.scene.set_hovered(None);
-                    None
-                }
+                PointerEvent::Left => (None, zone.scene.set_hovered(None)),
                 PointerEvent::LeftButtonPressed { x, y } => {
                     let target = zone.hit_test(x, y);
-                    let _ = zone.scene.set_pressed(target);
-                    None
+                    (None, zone.scene.set_pressed(target))
                 }
                 PointerEvent::LeftButtonReleased { x, y } => {
                     let target = zone.hit_test(x, y);
                     let pressed = zone.scene.interaction().pressed;
-                    let _ = zone.scene.set_pressed(None);
-                    (pressed == target).then_some(target).flatten()
+                    let changed = zone.scene.set_pressed(None);
+                    ((pressed == target).then_some(target).flatten(), changed)
                 }
-                PointerEvent::Cancelled => {
-                    let _ = zone.scene.set_pressed(None);
-                    None
-                }
+                PointerEvent::Cancelled => (None, zone.scene.set_pressed(None)),
             },
             WindowEvent::Resized { width, height } => {
                 if let (Some(surface), Some(size)) =
@@ -197,24 +189,22 @@ impl StatusRuntime {
                 {
                     resize_surface(graphics, surface, size)?;
                 }
-                None
+                (None, true)
             }
-            WindowEvent::DpiChanged { dpi } => {
-                let _ = zone.scene.set_dpi(dpi);
-                None
-            }
-            WindowEvent::RenderRequested
-            | WindowEvent::AnimationFrame
-            | WindowEvent::PlacementRefreshRequested
+            WindowEvent::DpiChanged { dpi } => (None, zone.scene.set_dpi(dpi)),
+            WindowEvent::RenderRequested | WindowEvent::AnimationFrame => (None, true),
+            WindowEvent::PlacementRefreshRequested
             | WindowEvent::ContextMenuRequested(_)
             | WindowEvent::Search(_)
             | WindowEvent::Settings(_)
             | WindowEvent::ContextMenu(_)
             | WindowEvent::Switcher(_)
-            | WindowEvent::StatusRefreshRequested => None,
+            | WindowEvent::StatusRefreshRequested => (None, false),
         };
         let anchor = action.and_then(|target| zone.target_anchor(target));
-        zone.render(graphics)?;
+        if scene_changed {
+            zone.render(graphics)?;
+        }
         Ok(action
             .and_then(auxiliary_action)
             .map(|action| (action, zone.window.handle(), anchor)))
