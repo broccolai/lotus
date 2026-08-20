@@ -7,6 +7,7 @@ use lotus_search::command::CommandId;
 use lotus_search::controller::{SearchController, SearchPresentation};
 use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
+use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::theme::Theme;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::launch_target;
@@ -16,6 +17,7 @@ use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
 use lotus_windows::graphics::scene::DockIcon;
+use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{
     DeviceState, LauncherResult, LauncherScene, SurfaceError, SurfaceSize,
 };
@@ -33,7 +35,7 @@ pub(super) struct LauncherRuntime {
     pub(super) native_icons: NativeIconCache,
     custom_images: CustomImageCache,
     pub(super) scene: Option<LauncherScene>,
-    pub(super) surface: Option<LauncherCompositionSurfaceState>,
+    pub(super) surface: Option<ScheduledSurface<LauncherCompositionSurfaceState>>,
     pub(super) presentation: SearchPresentation,
     pub(super) visible: bool,
     theme: Theme,
@@ -77,20 +79,16 @@ impl LauncherRuntime {
         self.visible
     }
 
-    pub(super) const fn needs_animation(&self) -> bool {
-        self.visible && self.presentation.is_animating()
-    }
-
     pub(super) fn toggle(
         &mut self,
         dock: &DockWindow,
         dock_model: &DockRuntime,
         catalog: &SearchCatalogCache,
         graphics: &mut DeviceState,
-    ) -> Result<bool, AppError> {
+    ) -> Result<(), AppError> {
         if self.visible {
             self.hide();
-            return Ok(false);
+            return Ok(());
         }
 
         let _ = catalog.refresh_if_stale(Duration::from_mins(5));
@@ -133,19 +131,20 @@ impl LauncherRuntime {
             .desired_size();
         let size = SurfaceSize::from(desired);
         if let Some(surface) = &mut self.surface {
-            resize_launcher_surface(graphics, surface, size)?;
+            resize_launcher_surface(graphics, surface.value_mut(), size)?;
         } else {
             let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            self.surface = Some(LauncherCompositionSurfaceState::create(
-                device,
-                self.window.handle(),
-                size,
-            )?);
+            self.surface = Some(ScheduledSurface::new(
+                LauncherCompositionSurfaceState::create(
+                    device,
+                    self.window.handle(),
+                    size,
+                )?,
+            ));
         }
         self.visible = true;
-        let needs_animation = self.render(graphics)?;
         self.window.focus();
-        Ok(needs_animation)
+        Ok(())
     }
 
     pub(super) fn refresh_catalog_if_ready(
@@ -179,6 +178,9 @@ impl LauncherRuntime {
         self.window.hide();
         self.visible = false;
         self.presentation.finish();
+        if let Some(surface) = &mut self.surface {
+            surface.stop_animation();
+        }
     }
 
     pub(super) fn rebuild_scene(&mut self, dpi: u32) -> Result<(), AppError> {
@@ -331,9 +333,23 @@ impl LauncherRuntime {
     }
 
     pub(super) fn advance_animation(&mut self) {
+        if !self
+            .surface
+            .as_ref()
+            .is_some_and(ScheduledSurface::is_animating)
+        {
+            return;
+        }
+
         self.presentation.advance();
         if let Some(scene) = &mut self.scene {
             let _ = scene.set_presentation_progress(self.presentation.progress());
+        }
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        if let Some(surface) = &mut self.surface {
+            surface.invalidate();
         }
     }
 
@@ -350,31 +366,50 @@ impl LauncherRuntime {
         self.window
             .show_sized(dock.handle(), desired.width(), desired.height())?;
         if let Some(surface) = &mut self.surface {
-            resize_launcher_surface(graphics, surface, SurfaceSize::from(desired))?;
+            resize_launcher_surface(
+                graphics,
+                surface.value_mut(),
+                SurfaceSize::from(desired),
+            )?;
         }
         Ok(())
     }
 
-    pub(super) fn render(&mut self, graphics: &mut DeviceState) -> Result<bool, AppError> {
+    pub(super) fn render_frame(
+        &mut self,
+        pass: &mut FramePass,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
         if !self.visible {
-            return Ok(false);
+            if let Some(surface) = &mut self.surface {
+                surface.stop_animation();
+            }
+            return Ok(());
         }
         let scene = self.scene.as_ref().ok_or(AppError::InvalidLauncherScene)?;
         let surface = self
             .surface
             .as_mut()
             .ok_or(AppError::InvalidLauncherScene)?;
-        match surface.render_scene(scene) {
-            Ok(frame) => Ok(frame.needs_animation()),
+        pass.render(surface, |surface| match surface.render_scene(scene) {
+            Ok(FrameResult::Presented { needs_animation }) => {
+                Ok(FrameOutcome::complete(needs_animation))
+            }
+            Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
             Err(SurfaceError::DeviceLost(_)) => {
                 let _ = graphics.poll();
                 graphics.recover()?;
                 let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
                 surface.recover(device)?;
-                Ok(surface.render_scene(scene)?.needs_animation())
+                match surface.render_scene(scene)? {
+                    FrameResult::Presented { needs_animation } => {
+                        Ok(FrameOutcome::complete(needs_animation))
+                    }
+                    FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+                }
             }
             Err(error) => Err(error.into()),
-        }
+        })
     }
 
     pub(super) fn drain_events(&mut self) -> Vec<SearchEvent> {
@@ -401,7 +436,9 @@ impl LauncherRuntime {
         {
             self.rebuild_scene(self.window.dpi())?;
             self.sync_size(dock, graphics)?;
-            let _ = self.render(graphics)?;
+            if let Some(surface) = &mut self.surface {
+                surface.invalidate();
+            }
         }
         Ok(())
     }

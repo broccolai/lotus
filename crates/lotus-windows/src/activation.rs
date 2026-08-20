@@ -11,11 +11,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, IsIconic, IsWindow, PostMessageW, SC_CLOSE, SW_MINIMIZE,
     SW_RESTORE, SW_SHOWNORMAL, ShowWindow, SwitchToThisWindow, WM_SYSCOMMAND,
 };
-use windows::core::PCWSTR;
+use windows::core::{BOOL, PCWSTR};
 
 use super::launch::expand_environment_variables;
 use crate::NativeError;
 use crate::interaction::activate_window;
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn EndTask(window: HWND, shutdown: BOOL, force: BOOL) -> BOOL;
+}
 
 #[derive(Debug, Error)]
 pub enum ActivationError {
@@ -23,6 +28,8 @@ pub enum ActivationError {
     InvalidWindowId(WindowId),
     #[error("window {0:?} no longer exists")]
     MissingWindow(WindowId),
+    #[error("Windows refused to force close {0:?}")]
+    ForceCloseDenied(WindowId),
     #[error("Windows denied foreground activation for {0:?}")]
     ForegroundDenied(WindowId),
     #[error("the dock item has an empty launch target")]
@@ -106,6 +113,15 @@ pub fn request_window_close(window: WindowId) -> Result<(), ActivationError> {
         )
     }
     .map_err(|_| ActivationError::MissingWindow(window))
+}
+
+pub fn force_window_close(window: WindowId) -> Result<(), ActivationError> {
+    let hwnd = existing_window(window)?;
+    // `existing_window` established this HWND is a current top-level window identity.
+    unsafe { EndTask(hwnd, BOOL::from(false), BOOL::from(true)) }
+        .as_bool()
+        .then_some(())
+        .ok_or(ActivationError::ForceCloseDenied(window))
 }
 
 fn existing_window(window: WindowId) -> Result<HWND, ActivationError> {

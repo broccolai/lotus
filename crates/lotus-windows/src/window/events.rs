@@ -114,6 +114,7 @@ pub enum SwitcherEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchEdit {
     DeleteBackward,
+    DeletePreviousWord,
     DeleteForward,
     MoveCursor(CursorMove),
     SelectAll,

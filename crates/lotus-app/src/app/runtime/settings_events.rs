@@ -4,6 +4,7 @@ use lotus_core::search::ApplicationEntry;
 use lotus_core::settings::{ApplicationIconOverride, DockSettings};
 use lotus_core::window::is_reliable_application_identity;
 use lotus_settings::scene::{SettingsApplicationRecord, SettingsPointerStyle};
+use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::clipboard::read_text;
 use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::dialog::show_error;
@@ -16,7 +17,7 @@ use lotus_windows::startup as startup_registration;
 use lotus_windows::window::{DockWindow, SettingsEvent, SettingsKey as WindowSettingsKey};
 use lotus_windows::window_tracker::WindowTracker;
 
-use super::presentation::{apply_fullscreen_visibility, render_and_schedule, resize_dock};
+use super::presentation::{apply_fullscreen_visibility, resize_dock};
 use super::{controllers, update_events};
 use crate::app::settings::SettingsRuntime;
 use crate::app::switcher::AuxiliaryWindows;
@@ -25,7 +26,7 @@ use crate::app::{AppError, DockRuntime};
 pub(super) struct SettingsEventContext<'a> {
     pub(super) dock: &'a DockWindow,
     pub(super) graphics: &'a mut DeviceState,
-    pub(super) dock_surface: &'a mut CompositionSurfaceState,
+    pub(super) dock_surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     pub(super) window_tracker: &'a WindowTracker,
     pub(super) dock_model: &'a mut DockRuntime,
     pub(super) auxiliary: &'a mut AuxiliaryWindows,
@@ -45,11 +46,11 @@ pub(super) fn handle_settings_event(
         }
         SettingsEvent::DpiChanged { dpi } => {
             let _ = context.auxiliary.settings.scene.set_dpi(dpi);
-            context.auxiliary.settings.render(context.graphics)?;
+            context.auxiliary.settings.invalidate();
             return Ok(());
         }
         SettingsEvent::RenderRequested => {
-            context.auxiliary.settings.render(context.graphics)?;
+            context.auxiliary.settings.invalidate();
             return Ok(());
         }
         SettingsEvent::PointerMoved { x, y } => {
@@ -74,7 +75,7 @@ pub(super) fn handle_settings_event(
                 return apply_settings_action(action, context);
             }
             if context.auxiliary.settings.scene.pointer_move(x, y) {
-                context.auxiliary.settings.render(context.graphics)?;
+                context.auxiliary.settings.invalidate();
             }
             return Ok(());
         }
@@ -85,7 +86,7 @@ pub(super) fn handle_settings_event(
                 .window
                 .set_pointer_cursor(PointerCursor::Arrow);
             if context.auxiliary.settings.scene.set_hovered(None) {
-                context.auxiliary.settings.render(context.graphics)?;
+                context.auxiliary.settings.invalidate();
             }
             return Ok(());
         }
@@ -137,19 +138,18 @@ pub(super) fn handle_settings_event(
                         &mut context.auxiliary.settings,
                     );
                 }
-                context.auxiliary.settings.render(context.graphics)?;
+                context.auxiliary.settings.invalidate();
             }
             return Ok(());
         }
         SettingsEvent::CloseRequested => SettingsAction::Close,
         SettingsEvent::TextInput(character) => {
-            return append_application_query(character, context);
+            append_application_query(character, context);
+            return Ok(());
         }
         SettingsEvent::KeyPressed(key) => {
-            match key {
-                WindowSettingsKey::Backspace => return remove_application_query(context),
-                WindowSettingsKey::Paste => return paste_application_query(context),
-                _ => {}
+            if edit_application_query(key, context) {
+                return Ok(());
             }
             settings_key_action(&mut context.auxiliary.settings, key)
         }
@@ -158,14 +158,23 @@ pub(super) fn handle_settings_event(
     apply_settings_action(action, context)
 }
 
-fn append_application_query(
-    character: char,
+fn edit_application_query(
+    key: WindowSettingsKey,
     context: &mut SettingsEventContext<'_>,
-) -> Result<(), AppError> {
+) -> bool {
+    match key {
+        WindowSettingsKey::Backspace => remove_application_query(context),
+        WindowSettingsKey::Paste => paste_application_query(context),
+        _ => return false,
+    }
+    true
+}
+
+fn append_application_query(character: char, context: &mut SettingsEventContext<'_>) {
     if context.auxiliary.settings.scene.page() != lotus_settings::scene::SettingsPage::Apps
         || character.is_control()
     {
-        return Ok(());
+        return;
     }
     let mut query = context
         .auxiliary
@@ -174,15 +183,13 @@ fn append_application_query(
         .application_query()
         .to_owned();
     query.push(character);
-    update_application_query(&query, context)
+    update_application_query(&query, context);
 }
 
-fn remove_application_query(
-    context: &mut SettingsEventContext<'_>,
-) -> Result<(), AppError> {
+fn remove_application_query(context: &mut SettingsEventContext<'_>) {
     if context.auxiliary.settings.scene.page() != lotus_settings::scene::SettingsPage::Apps
     {
-        return Ok(());
+        return;
     }
     let mut query = context
         .auxiliary
@@ -191,24 +198,24 @@ fn remove_application_query(
         .application_query()
         .to_owned();
     let _ = query.pop();
-    update_application_query(&query, context)
+    update_application_query(&query, context);
 }
 
-fn paste_application_query(context: &mut SettingsEventContext<'_>) -> Result<(), AppError> {
+fn paste_application_query(context: &mut SettingsEventContext<'_>) {
     if context.auxiliary.settings.scene.page() != lotus_settings::scene::SettingsPage::Apps
     {
-        return Ok(());
+        return;
     }
 
     let Ok(clipboard) = read_text() else {
-        return Ok(());
+        return;
     };
     let pasted = clipboard
         .chars()
         .filter(|character| !character.is_control())
         .collect::<String>();
     if pasted.is_empty() {
-        return Ok(());
+        return;
     }
 
     let query = format!(
@@ -216,13 +223,10 @@ fn paste_application_query(context: &mut SettingsEventContext<'_>) -> Result<(),
         context.auxiliary.settings.scene.application_query(),
         pasted
     );
-    update_application_query(&query, context)
+    update_application_query(&query, context);
 }
 
-fn update_application_query(
-    query: &str,
-    context: &mut SettingsEventContext<'_>,
-) -> Result<(), AppError> {
+fn update_application_query(query: &str, context: &mut SettingsEventContext<'_>) {
     if context
         .auxiliary
         .settings
@@ -234,9 +238,8 @@ fn update_application_query(
             context.dock_model.items(),
             &mut context.auxiliary.settings,
         );
-        context.auxiliary.settings.render(context.graphics)?;
+        context.auxiliary.settings.invalidate();
     }
-    Ok(())
 }
 
 fn settings_pointer_cursor(style: SettingsPointerStyle) -> PointerCursor {
@@ -295,7 +298,8 @@ fn apply_settings_action(
                     &mut context.auxiliary.settings,
                 );
             }
-            context.auxiliary.settings.render(context.graphics)
+            context.auxiliary.settings.invalidate();
+            Ok(())
         }
         SettingsAction::Reverted => {
             if context.auxiliary.settings.scene.page()
@@ -303,55 +307,34 @@ fn apply_settings_action(
             {
                 refresh_application_manager(context);
             }
-            context.auxiliary.settings.render(context.graphics)
+            context.auxiliary.settings.invalidate();
+            Ok(())
         }
         SettingsAction::OpenApplications => {
             refresh_application_manager(context);
-            context.auxiliary.settings.render(context.graphics)
+            context.auxiliary.settings.invalidate();
+            Ok(())
         }
         SettingsAction::ChooseBackgroundColor => {
-            choose_settings_color(context, SettingsColor::Background)
+            choose_settings_color(context, SettingsColor::Background);
+            Ok(())
         }
         SettingsAction::ChooseAccentColor => {
-            choose_settings_color(context, SettingsColor::Accent)
+            choose_settings_color(context, SettingsColor::Accent);
+            Ok(())
         }
         SettingsAction::ChooseForegroundColor => {
-            choose_settings_color(context, SettingsColor::Foreground)
+            choose_settings_color(context, SettingsColor::Foreground);
+            Ok(())
         }
         SettingsAction::ChooseMascotImage => {
-            let owner = context.auxiliary.settings.window.handle();
-            match lotus_windows::image_picker::choose_image(owner) {
-                Ok(Some(path)) => match lotus_windows::custom_image::import_custom_image(
-                    &path,
-                    context.dock_model.settings_directory(),
-                ) {
-                    Ok(stored) => {
-                        context.auxiliary.settings.scene.set_mascot_image_path(Some(
-                            stored.to_string_lossy().into_owned(),
-                        ));
-                        context.auxiliary.settings.render(context.graphics)
-                    }
-                    Err(error) => {
-                        show_error(
-                            owner,
-                            "Lotus Settings",
-                            &format!("Lotus could not use that image.\n\n{error}"),
-                        );
-                        Ok(())
-                    }
-                },
-                Ok(None) => Ok(()),
-                Err(error) => {
-                    show_error(
-                        owner,
-                        "Lotus Settings",
-                        &format!("Lotus could not open the image picker.\n\n{error}"),
-                    );
-                    Ok(())
-                }
-            }
+            choose_mascot_image(context);
+            Ok(())
         }
-        SettingsAction::ChooseApplicationIcon(id) => choose_application_icon(&id, context),
+        SettingsAction::ChooseApplicationIcon(id) => {
+            choose_application_icon(&id, context);
+            Ok(())
+        }
         SettingsAction::ResetApplicationIcon(id) => {
             context
                 .auxiliary
@@ -360,12 +343,13 @@ fn apply_settings_action(
                 .reset_application_icon_override(&id);
             context.auxiliary.settings.custom_images.clear();
             refresh_application_manager(context);
-            context.auxiliary.settings.render(context.graphics)
+            context.auxiliary.settings.invalidate();
+            Ok(())
         }
-        SettingsAction::CheckForUpdates => update_events::start_update_check(
-            &mut context.auxiliary.settings,
-            context.graphics,
-        ),
+        SettingsAction::CheckForUpdates => {
+            update_events::start_update_check(&mut context.auxiliary.settings);
+            Ok(())
+        }
         SettingsAction::ReplaySetup => context.auxiliary.settings.open_onboarding(
             context.dock_model.settings(),
             false,
@@ -388,6 +372,36 @@ fn apply_settings_action(
             }
             Ok(())
         }
+    }
+}
+
+fn choose_mascot_image(context: &mut SettingsEventContext<'_>) {
+    let owner = context.auxiliary.settings.window.handle();
+    match lotus_windows::image_picker::choose_image(owner) {
+        Ok(Some(path)) => match lotus_windows::custom_image::import_custom_image(
+            &path,
+            context.dock_model.settings_directory(),
+        ) {
+            Ok(stored) => {
+                context
+                    .auxiliary
+                    .settings
+                    .scene
+                    .set_mascot_image_path(Some(stored.to_string_lossy().into_owned()));
+                context.auxiliary.settings.invalidate();
+            }
+            Err(error) => show_error(
+                owner,
+                "Lotus Settings",
+                &format!("Lotus could not use that image.\n\n{error}"),
+            ),
+        },
+        Ok(None) => {}
+        Err(error) => show_error(
+            owner,
+            "Lotus Settings",
+            &format!("Lotus could not open the image picker.\n\n{error}"),
+        ),
     }
 }
 
@@ -478,19 +492,14 @@ fn apply_changed_settings(
         context.dock_model.media(),
         context.graphics,
     )?;
-    render_and_schedule(
-        context.dock,
-        context.graphics,
-        context.dock_surface,
-        context.dock_model.scene(),
-        context.auxiliary.launcher.needs_animation(),
-    )?;
+    context.dock_surface.invalidate();
     apply_fullscreen_visibility(
         context.dock,
+        context.dock_surface,
         context.window_tracker,
         context.dock_model,
         &mut context.auxiliary.launcher,
-        &context.auxiliary.status,
+        &mut context.auxiliary.status,
     )?;
     context
         .auxiliary
@@ -502,7 +511,7 @@ fn apply_changed_settings(
     {
         refresh_application_manager(context);
     }
-    context.auxiliary.settings.render(context.graphics)?;
+    context.auxiliary.settings.invalidate();
 
     if impact.restart_required {
         if let Err(error) = controllers::restart_current_process() {
@@ -518,10 +527,7 @@ fn apply_changed_settings(
     Ok(())
 }
 
-fn choose_application_icon(
-    id: &str,
-    context: &mut SettingsEventContext<'_>,
-) -> Result<(), AppError> {
+fn choose_application_icon(id: &str, context: &mut SettingsEventContext<'_>) {
     let owner = context.auxiliary.settings.window.handle();
     let Some(record) = context
         .auxiliary
@@ -532,7 +538,7 @@ fn choose_application_icon(
         .find(|record| record.id.eq_ignore_ascii_case(id))
         .cloned()
     else {
-        return Ok(());
+        return;
     };
     match lotus_windows::image_picker::choose_image(owner) {
         Ok(Some(path)) => match lotus_windows::custom_image::import_application_icon(
@@ -552,7 +558,7 @@ fn choose_application_icon(
                     });
                 context.auxiliary.settings.custom_images.clear();
                 refresh_application_manager(context);
-                context.auxiliary.settings.render(context.graphics)
+                context.auxiliary.settings.invalidate();
             }
             Err(error) => {
                 show_error(
@@ -560,17 +566,15 @@ fn choose_application_icon(
                     "Lotus Settings",
                     &format!("Lotus could not use that image.\n\n{error}"),
                 );
-                Ok(())
             }
         },
-        Ok(None) => Ok(()),
+        Ok(None) => {}
         Err(error) => {
             show_error(
                 owner,
                 "Lotus Settings",
                 &format!("Lotus could not open the image picker.\n\n{error}"),
             );
-            Ok(())
         }
     }
 }
@@ -767,10 +771,7 @@ enum SettingsColor {
     Foreground,
 }
 
-fn choose_settings_color(
-    context: &mut SettingsEventContext<'_>,
-    target: SettingsColor,
-) -> Result<(), AppError> {
+fn choose_settings_color(context: &mut SettingsEventContext<'_>, target: SettingsColor) {
     let owner = context.auxiliary.settings.window.handle();
     let initial = match target {
         SettingsColor::Background => {
@@ -794,16 +795,15 @@ fn choose_settings_color(
                     context.auxiliary.settings.scene.set_foreground_color(color);
                 }
             }
-            context.auxiliary.settings.render(context.graphics)
+            context.auxiliary.settings.invalidate();
         }
-        Ok(None) => Ok(()),
+        Ok(None) => {}
         Err(error) => {
             show_error(
                 owner,
                 "Lotus Settings",
                 &format!("Lotus could not open the color picker.\n\n{error}"),
             );
-            Ok(())
         }
     }
 }

@@ -2,12 +2,14 @@ use lotus_core::settings::DockSettings;
 use lotus_core::window::WindowInfo;
 use lotus_settings::appearance::theme_for;
 use lotus_switcher::model::{RecentOrder, SwitcherSession};
+use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::theme::Theme;
 use lotus_windows::activation::{request_window_close, switch_window};
 use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::scene_adapter::resolve_icon_with_native;
+use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::switcher_surface::SwitcherCompositionSurfaceState;
 use lotus_windows::graphics::{
     DeviceState, SurfaceError, SwitcherHitTarget, SwitcherItem, SwitcherScene,
@@ -39,9 +41,20 @@ pub(super) struct AuxiliaryWindows {
     pub(super) switcher: SwitcherRuntime,
 }
 
+impl AuxiliaryWindows {
+    pub(super) fn invalidate_surfaces(&mut self) {
+        self.launcher.invalidate();
+        self.settings.invalidate();
+        self.context_menu.invalidate();
+        self.switcher.invalidate();
+        self.status.invalidate();
+        self.monitors.invalidate();
+    }
+}
+
 pub(super) struct SwitcherRuntime {
     pub(super) window: SwitcherWindow,
-    pub(super) surface: Option<SwitcherCompositionSurfaceState>,
+    pub(super) surface: Option<ScheduledSurface<SwitcherCompositionSurfaceState>>,
     pub(super) scene: Option<SwitcherScene>,
     pub(super) session: Option<SwitcherSession<WindowInfo>>,
     pub(super) native_icons: NativeIconCache,
@@ -118,7 +131,8 @@ impl SwitcherRuntime {
             let _dpi = self.window.show_centered(foreground, size)?;
         }
         self.ensure_surface(graphics)?;
-        self.render(graphics)
+        self.invalidate();
+        Ok(())
     }
 
     pub(super) fn record_foreground(
@@ -130,19 +144,15 @@ impl SwitcherRuntime {
         }
     }
 
-    pub(super) fn cycle(
-        &mut self,
-        direction: lotus_switcher::model::Direction,
-        graphics: &mut DeviceState,
-    ) -> Result<(), AppError> {
+    pub(super) fn cycle(&mut self, direction: lotus_switcher::model::Direction) {
         let Some(session) = &mut self.session else {
-            return Ok(());
+            return;
         };
         session.cycle(direction);
         if let Some(scene) = &mut self.scene {
             let _changed = scene.set_selected(session.selected_index());
         }
-        self.render(graphics)
+        self.invalidate();
     }
 
     pub(super) fn commit(&mut self) {
@@ -167,7 +177,6 @@ impl SwitcherRuntime {
     pub(super) fn handle_window_event(
         &mut self,
         event: SwitcherEvent,
-        graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         match event {
             SwitcherEvent::CloseRequested => self.hide(),
@@ -184,13 +193,13 @@ impl SwitcherRuntime {
                     },
                 );
                 if scene.pointer_move(x, y) {
-                    self.render(graphics)?;
+                    self.invalidate();
                 }
             }
             SwitcherEvent::PointerLeft => {
                 self.window.set_pointer_cursor(PointerCursor::Arrow);
                 if self.scene.as_mut().is_some_and(SwitcherScene::pointer_left) {
-                    self.render(graphics)?;
+                    self.invalidate();
                 }
             }
             SwitcherEvent::PointerReleased { x, y } => {
@@ -210,13 +219,13 @@ impl SwitcherRuntime {
                 if let Some(size) = NonZeroPhysicalSize::new(width, height)
                     && let Some(surface) = &mut self.surface
                 {
-                    surface.resize(size)?;
+                    surface.value_mut().resize(size)?;
                 }
             }
             SwitcherEvent::DpiChanged { dpi } => {
                 self.rebuild_scene(dpi)?;
             }
-            SwitcherEvent::RenderRequested => self.render(graphics)?,
+            SwitcherEvent::RenderRequested => self.invalidate(),
         }
         Ok(())
     }
@@ -278,33 +287,55 @@ impl SwitcherRuntime {
         let scene = self.scene.as_ref().ok_or(AppError::InvalidSwitcherScene)?;
         let size = scene.desired_size();
         if let Some(surface) = &mut self.surface {
-            surface.resize(size)?;
+            surface.value_mut().resize(size)?;
             return Ok(());
         }
         let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-        self.surface = Some(SwitcherCompositionSurfaceState::create(
-            device,
-            self.window.handle(),
-            size,
-        )?);
+        self.surface = Some(ScheduledSurface::new(
+            SwitcherCompositionSurfaceState::create(device, self.window.handle(), size)?,
+        ));
         Ok(())
     }
 
-    pub(super) fn render(&mut self, graphics: &mut DeviceState) -> Result<(), AppError> {
+    pub(super) fn invalidate(&mut self) {
+        if let Some(surface) = &mut self.surface {
+            surface.invalidate();
+        }
+    }
+
+    pub(super) fn render_frame(
+        &mut self,
+        pass: &mut FramePass,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        if self.session.is_none() {
+            if let Some(surface) = &mut self.surface {
+                surface.stop_animation();
+            }
+            return Ok(());
+        }
         let (Some(scene), Some(surface)) = (&self.scene, &mut self.surface) else {
             return Ok(());
         };
-        match surface.render_scene(scene) {
-            Ok(_) => Ok(()),
+        pass.render(surface, |surface| match surface.render_scene(scene) {
+            Ok(FrameResult::Presented { needs_animation }) => {
+                Ok(FrameOutcome::complete(needs_animation))
+            }
+            Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
             Err(SurfaceError::DeviceLost(_)) => {
+                let _ = graphics.poll();
                 graphics.recover()?;
                 let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
                 surface.recover(device)?;
-                let _frame = surface.render_scene(scene)?;
-                Ok(())
+                match surface.render_scene(scene)? {
+                    FrameResult::Presented { needs_animation } => {
+                        Ok(FrameOutcome::complete(needs_animation))
+                    }
+                    FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+                }
             }
             Err(error) => Err(error.into()),
-        }
+        })
     }
 }
 

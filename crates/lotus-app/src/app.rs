@@ -22,6 +22,7 @@ use lotus_core::settings::{
 };
 use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
+use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::activation::ActivationError;
 use lotus_windows::alt_tab::AltTabController;
 use lotus_windows::appbar::ShellIntegration;
@@ -44,7 +45,7 @@ use media::MediaRuntime;
 use monitors::MonitorDocks;
 use runtime::{
     apply_fullscreen_visibility, enable_optional_alt_tab, enable_optional_windows_key,
-    render_and_schedule, resize_dock, run_message_loop,
+    flush_frame, resize_dock, run_message_loop,
 };
 use settings::SettingsRuntime;
 use status::StatusRuntime;
@@ -127,8 +128,11 @@ pub fn run() -> Result<(), AppError> {
     let (width, height) = dock.client_size()?;
     let surface_size = SurfaceSize::new(width, height).ok_or(AppError::ZeroSizedSurface)?;
     let graphics_device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-    let mut surface =
-        CompositionSurfaceState::create(graphics_device, dock.handle(), surface_size)?;
+    let mut surface = ScheduledSurface::new(CompositionSurfaceState::create(
+        graphics_device,
+        dock.handle(),
+        surface_size,
+    )?);
     let mut window_tracker = WindowTracker::start()?;
     let mut dock_model = DockRuntime::new(
         settings,
@@ -176,13 +180,6 @@ pub fn run() -> Result<(), AppError> {
             .monitors
             .sync(&dock, &mut dock_model, &mut graphics, &window_tracker)?;
     }
-    render_and_schedule(
-        &dock,
-        &mut graphics,
-        &mut surface,
-        dock_model.scene(),
-        false,
-    )?;
     if onboarding_required {
         let _changed = dock.set_visible(false);
         auxiliary.status.set_visible(false);
@@ -192,10 +189,11 @@ pub fn run() -> Result<(), AppError> {
     } else {
         apply_fullscreen_visibility(
             &dock,
+            &mut surface,
             &window_tracker,
             &dock_model,
             &mut auxiliary.launcher,
-            &auxiliary.status,
+            &mut auxiliary.status,
         )?;
     }
     if startup.open_settings && !onboarding_required {
@@ -203,6 +201,14 @@ pub fn run() -> Result<(), AppError> {
             .settings
             .open(dock_model.settings(), &mut graphics)?;
     }
+    flush_frame(
+        &mut dock,
+        &mut graphics,
+        &mut surface,
+        &dock_model,
+        &mut auxiliary,
+        lotus_ui::frame::FrameTrigger::Changes,
+    )?;
     let runtime = RuntimePolicy {
         windows_key: windows_key.as_ref(),
         alt_tab: alt_tab.as_ref(),

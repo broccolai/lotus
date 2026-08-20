@@ -21,6 +21,7 @@ pub enum CursorMove {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QueryEdit {
     DeleteBackward,
+    DeletePreviousWord,
     DeleteForward,
     MoveCursor(CursorMove),
     SelectAll,
@@ -154,6 +155,7 @@ impl LauncherModel {
     pub fn edit_query(&mut self, edit: QueryEdit) -> bool {
         match edit {
             QueryEdit::DeleteBackward => self.delete_backward(),
+            QueryEdit::DeletePreviousWord => self.delete_previous_word(),
             QueryEdit::DeleteForward => self.delete_forward(),
             QueryEdit::MoveCursor(movement) => self.move_cursor(movement),
             QueryEdit::SelectAll => self.select_all(),
@@ -240,6 +242,28 @@ impl LauncherModel {
         true
     }
 
+    fn delete_previous_word(&mut self) -> bool {
+        if let Some(selection) = self.query_selection() {
+            self.replace_query_range(selection, "");
+            return true;
+        }
+
+        let characters = self.query.chars().collect::<Vec<_>>();
+        let mut start = self.cursor;
+        while start != 0 && characters[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        while start != 0 && !characters[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        if start == self.cursor {
+            return false;
+        }
+
+        self.replace_query_range(start..self.cursor, "");
+        true
+    }
+
     fn move_cursor(&mut self, movement: CursorMove) -> bool {
         let previous_cursor = self.cursor;
         let previous_anchor = self.selection_anchor;
@@ -279,4 +303,28 @@ fn character_byte_index(text: &str, character_index: usize) -> usize {
     text.char_indices()
         .nth(character_index)
         .map_or(text.len(), |(index, _)| index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LauncherModel, QueryEdit};
+
+    #[test]
+    fn delete_previous_word_preserves_unicode_boundaries_and_selection_precedence() {
+        let mut launcher = LauncherModel::new(5);
+        assert!(launcher.insert_text("naïve  🌸pet"));
+
+        assert!(launcher.edit_query(QueryEdit::DeletePreviousWord));
+        assert_eq!(launcher.query(), "naïve  ");
+        assert_eq!(launcher.query_cursor(), "naïve  ".chars().count());
+
+        assert!(launcher.edit_query(QueryEdit::DeletePreviousWord));
+        assert_eq!(launcher.query(), "");
+        assert_eq!(launcher.query_cursor(), 0);
+
+        assert!(launcher.insert_text("selected text"));
+        assert!(launcher.edit_query(QueryEdit::SelectAll));
+        assert!(launcher.edit_query(QueryEdit::DeletePreviousWord));
+        assert_eq!(launcher.query(), "");
+    }
 }

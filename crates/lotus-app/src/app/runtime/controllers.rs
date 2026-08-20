@@ -47,7 +47,7 @@ pub(super) fn handle_alt_tab_events(
                 dock_model.settings(),
                 graphics,
             )?,
-            AltTabEvent::Cycle(direction) => switcher.cycle(direction, graphics)?,
+            AltTabEvent::Cycle(direction) => switcher.cycle(direction),
             AltTabEvent::Commit => switcher.commit(),
             AltTabEvent::Cancel => switcher.hide(),
         }

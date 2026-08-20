@@ -87,48 +87,61 @@ impl GraphicsDevice {
     }
 }
 
-pub enum DeviceState {
+enum DeviceStatus {
     Ready(GraphicsDevice),
     Lost(DeviceLost),
 }
 
+pub struct DeviceState {
+    status: DeviceStatus,
+    generation: u64,
+}
+
 impl DeviceState {
     pub fn create() -> Result<Self, GraphicsDeviceError> {
-        GraphicsDevice::create().map(Self::Ready)
+        GraphicsDevice::create().map(|device| Self {
+            status: DeviceStatus::Ready(device),
+            generation: 0,
+        })
     }
 
     pub const fn ready(&self) -> Option<&GraphicsDevice> {
-        match self {
-            Self::Ready(device) => Some(device),
-            Self::Lost(_) => None,
+        match &self.status {
+            DeviceStatus::Ready(device) => Some(device),
+            DeviceStatus::Lost(_) => None,
         }
     }
 
     pub const fn lost(&self) -> Option<DeviceLost> {
-        match self {
-            Self::Ready(_) => None,
-            Self::Lost(loss) => Some(*loss),
+        match &self.status {
+            DeviceStatus::Ready(_) => None,
+            DeviceStatus::Lost(loss) => Some(*loss),
         }
     }
 
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn poll(&mut self) -> bool {
-        let Self::Ready(device) = self else {
+        let DeviceStatus::Ready(device) = &self.status else {
             return false;
         };
         let Some(loss) = device.loss() else {
             return false;
         };
 
-        *self = Self::Lost(loss);
+        self.status = DeviceStatus::Lost(loss);
         true
     }
 
     pub fn recover(&mut self) -> Result<(), GraphicsDeviceError> {
-        if matches!(self, Self::Ready(_)) {
+        if matches!(&self.status, DeviceStatus::Ready(_)) {
             return Ok(());
         }
 
-        *self = Self::create()?;
+        self.status = DeviceStatus::Ready(GraphicsDevice::create()?);
+        self.generation = self.generation.wrapping_add(1);
         Ok(())
     }
 }

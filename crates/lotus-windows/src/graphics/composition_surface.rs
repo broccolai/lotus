@@ -101,7 +101,7 @@ impl CompositionSurfaceCore {
     }
 
     pub(super) fn present(&self) -> Result<(), WindowsError> {
-        unsafe { self.swap_chain.Present(1, DXGI_PRESENT(0)).ok() }
+        unsafe { self.swap_chain.Present(0, DXGI_PRESENT(0)).ok() }
     }
 
     pub(super) fn ensure_device_available(&self) -> Result<(), WindowsError> {

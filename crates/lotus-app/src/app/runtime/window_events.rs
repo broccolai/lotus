@@ -1,10 +1,11 @@
 use lotus_core::window::WindowInfo;
+use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
 use lotus_windows::interaction::NativeMessage;
 use lotus_windows::window::{DockWindow, PointerEvent, WindowEvent};
 use lotus_windows::window_tracker::{WindowTracker, WindowTrackerEvent};
 
-use super::presentation::{apply_fullscreen_visibility, render_and_schedule, resize_dock};
+use super::presentation::{apply_fullscreen_visibility, resize_dock};
 use super::{dock_events, popup_events, search_events};
 use crate::app::context_menu::ContextMenuRuntime;
 use crate::app::status::AuxiliaryZoneAction;
@@ -14,12 +15,15 @@ use crate::app::{AppError, DockRuntime, RuntimePolicy};
 pub(super) fn drain_window_events(
     dock: &mut DockWindow,
     graphics: &mut DeviceState,
-    surface: &mut CompositionSurfaceState,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let events = dock.drain_events().collect::<Vec<_>>();
+    let animation_tick = events
+        .iter()
+        .any(|event| matches!(event, WindowEvent::AnimationFrame));
     for event in events {
         dock_events::handle_window_event(
             event, dock, graphics, surface, dock_model, auxiliary,
@@ -51,14 +55,14 @@ pub(super) fn drain_window_events(
             }
         }
     }
-    Ok(())
+    Ok(animation_tick)
 }
 
 pub(super) struct TrackerEventContext<'a, 'runtime> {
     pub(super) runtime: &'a RuntimePolicy<'runtime>,
     pub(super) dock: &'a DockWindow,
     pub(super) graphics: &'a mut DeviceState,
-    pub(super) surface: &'a mut CompositionSurfaceState,
+    pub(super) surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     pub(super) window_tracker: &'a mut WindowTracker,
     pub(super) dock_model: &'a mut DockRuntime,
     pub(super) auxiliary: &'a mut AuxiliaryWindows,
@@ -133,23 +137,18 @@ pub(super) fn handle_tracker_message(
                 context.graphics,
             )?;
         }
-        render_and_schedule(
-            context.dock,
-            context.graphics,
-            context.surface,
-            context.dock_model.scene(),
-            context.auxiliary.launcher.needs_animation(),
-        )?;
+        context.surface.invalidate();
     }
     if context.runtime.onboarding_required {
         Ok(())
     } else {
         apply_fullscreen_visibility(
             context.dock,
+            context.surface,
             context.window_tracker,
             context.dock_model,
             &mut context.auxiliary.launcher,
-            &context.auxiliary.status,
+            &mut context.auxiliary.status,
         )
     }
 }

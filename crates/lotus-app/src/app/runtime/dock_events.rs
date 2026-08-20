@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::launch_target;
 use lotus_windows::dialog::show_error;
@@ -11,9 +12,7 @@ use lotus_windows::window::{
 };
 use lotus_windows::windows_key::{WindowsKeyController, WindowsKeyEvent};
 
-use super::presentation::{
-    render_and_schedule, render_surface, resize_dock, resize_surface,
-};
+use super::presentation::{resize_dock, resize_surface};
 use crate::app::launcher::LauncherRuntime;
 use crate::app::monitors::MonitorDockAction;
 use crate::app::switcher::AuxiliaryWindows;
@@ -43,9 +42,7 @@ pub(crate) fn handle_windows_key_events(
     for event in controller.drain_events() {
         match event {
             WindowsKeyEvent::ToggleRequested => {
-                let needs_animation =
-                    launcher.toggle(dock, dock_model, catalog, graphics)?;
-                dock.set_animation_active(needs_animation)?;
+                launcher.toggle(dock, dock_model, catalog, graphics)?;
             }
             WindowsKeyEvent::ReplayIncomplete { .. } => {}
         }
@@ -57,21 +54,14 @@ pub(super) fn handle_window_event(
     event: WindowEvent,
     dock: &DockWindow,
     graphics: &mut DeviceState,
-    surface: &mut CompositionSurfaceState,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
 ) -> Result<(), AppError> {
     match event {
         WindowEvent::Resized { width, height } => {
             if let Some(size) = SurfaceSize::new(width, height) {
-                resize_surface(graphics, surface, size)?;
-                render_and_schedule(
-                    dock,
-                    graphics,
-                    surface,
-                    dock_model.scene(),
-                    auxiliary.launcher.needs_animation(),
-                )?;
+                resize_surface(graphics, surface.value_mut(), size)?;
             }
         }
         WindowEvent::DpiChanged { dpi } => {
@@ -84,13 +74,7 @@ pub(super) fn handle_window_event(
                 dock_model.media(),
                 graphics,
             )?;
-            render_and_schedule(
-                dock,
-                graphics,
-                surface,
-                dock_model.scene(),
-                auxiliary.launcher.needs_animation(),
-            )?;
+            surface.invalidate();
         }
         WindowEvent::PlacementRefreshRequested => {
             dock.refresh_placement(dock_model.settings())?;
@@ -120,30 +104,15 @@ pub(super) fn handle_window_event(
             if dock_model.advance_departure(Instant::now()) {
                 resize_dock(dock, graphics, surface, dock_model)?;
             }
-            let dock_animation = render_surface(graphics, surface, dock_model.scene())?;
-            let launcher_animation = auxiliary.launcher.render(graphics)?;
-            dock.set_animation_active(dock_animation || launcher_animation)?;
         }
         WindowEvent::StatusRefreshRequested => {
             if dock_model.refresh_status() {
-                render_and_schedule(
-                    dock,
-                    graphics,
-                    surface,
-                    dock_model.scene(),
-                    auxiliary.launcher.needs_animation(),
-                )?;
+                surface.invalidate();
             }
-            auxiliary.status.refresh(dock_model.settings(), graphics)?;
+            auxiliary.status.refresh(dock_model.settings());
         }
         WindowEvent::RenderRequested => {
-            render_and_schedule(
-                dock,
-                graphics,
-                surface,
-                dock_model.scene(),
-                auxiliary.launcher.needs_animation(),
-            )?;
+            surface.invalidate();
         }
     }
     Ok(())
@@ -153,7 +122,7 @@ fn handle_dock_pointer(
     event: PointerEvent,
     dock: &DockWindow,
     graphics: &mut DeviceState,
-    surface: &mut CompositionSurfaceState,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
 ) -> Result<(), AppError> {
@@ -174,13 +143,7 @@ fn handle_dock_pointer(
     };
     let (changed, activation) = handle_pointer_event(event, dock_model)?;
     if changed {
-        render_and_schedule(
-            dock,
-            graphics,
-            surface,
-            dock_model.scene(),
-            auxiliary.launcher.needs_animation(),
-        )?;
+        surface.invalidate();
     }
     let Some(target) = activation else {
         if matches!(event, PointerEvent::LeftButtonReleased { .. }) {
@@ -208,13 +171,12 @@ fn handle_dock_pointer(
         }
         DockHitTarget::Jirachi => {
             if dock_model.settings().search_enabled {
-                let needs_animation = auxiliary.launcher.toggle(
+                auxiliary.launcher.toggle(
                     dock,
                     dock_model,
                     &auxiliary.applications,
                     graphics,
                 )?;
-                dock.set_animation_active(needs_animation)?;
             }
         }
         DockHitTarget::Media(target) => {
@@ -335,9 +297,9 @@ fn native_panel_or_fallback(
 
 fn handle_context_menu(
     request: DockContextRequest,
-    dock: &DockWindow,
+    _dock: &DockWindow,
     graphics: &mut DeviceState,
-    surface: &mut CompositionSurfaceState,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
 ) -> Result<(), AppError> {
@@ -346,7 +308,7 @@ fn handle_context_menu(
     };
     auxiliary.launcher.hide();
     if dock_model.pointer_cancelled() {
-        render_and_schedule(dock, graphics, surface, dock_model.scene(), false)?;
+        surface.invalidate();
     }
     open_context_target(target, anchor, alignment, graphics, dock_model, auxiliary)
 }
@@ -406,13 +368,12 @@ pub(super) fn handle_monitor_dock_action(
             )?,
             DockHitTarget::Jirachi => {
                 if dock_model.settings().search_enabled {
-                    let needs_animation = auxiliary.launcher.toggle(
+                    auxiliary.launcher.toggle(
                         dock,
                         dock_model,
                         &auxiliary.applications,
                         graphics,
                     )?;
-                    dock.set_animation_active(needs_animation)?;
                 }
             }
             DockHitTarget::Media(target) => {

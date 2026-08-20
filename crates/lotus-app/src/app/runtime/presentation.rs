@@ -1,5 +1,7 @@
+use lotus_ui::frame::{FrameOutcome, ScheduledSurface};
 use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
 use lotus_windows::graphics::scene::DockScene;
+use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{
     CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize,
 };
@@ -14,6 +16,7 @@ use crate::app::{AppError, DockRuntime, RuntimePolicy};
 pub(super) fn sync_monitor_presentation(
     runtime: &RuntimePolicy<'_>,
     dock: &DockWindow,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     graphics: &mut DeviceState,
     window_tracker: &WindowTracker,
     dock_model: &mut DockRuntime,
@@ -27,19 +30,21 @@ pub(super) fn sync_monitor_presentation(
     }
     apply_fullscreen_visibility(
         dock,
+        surface,
         window_tracker,
         dock_model,
         &mut auxiliary.launcher,
-        &auxiliary.status,
+        &mut auxiliary.status,
     )
 }
 
 pub(crate) fn apply_fullscreen_visibility(
     dock: &DockWindow,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     tracker: &WindowTracker,
     model: &DockRuntime,
     launcher: &mut LauncherRuntime,
-    status: &StatusRuntime,
+    status: &mut StatusRuntime,
 ) -> Result<(), AppError> {
     let fullscreen_present = tracker.fullscreen_on_same_monitor(dock.handle());
     let temporarily_revealed = launcher.is_visible();
@@ -49,7 +54,7 @@ pub(crate) fn apply_fullscreen_visibility(
     );
     if occluded {
         launcher.hide();
-        dock.set_animation_active(false)?;
+        surface.stop_animation();
     }
     let _changed = dock.set_fullscreen_occluded(occluded)?;
     status.set_fullscreen_occluded(occluded)?;
@@ -95,39 +100,34 @@ pub(crate) fn render_surface(
     graphics: &mut DeviceState,
     surface: &mut CompositionSurfaceState,
     scene: &DockScene,
-) -> Result<bool, AppError> {
+) -> Result<FrameOutcome, AppError> {
     match surface.render_scene(scene) {
-        Ok(frame) => Ok(frame.needs_animation()),
+        Ok(FrameResult::Presented { needs_animation }) => {
+            Ok(FrameOutcome::complete(needs_animation))
+        }
+        Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
         Err(SurfaceError::DeviceLost(_)) => {
             recover_graphics(graphics, surface)?;
-            Ok(surface.render_scene(scene)?.needs_animation())
+            match surface.render_scene(scene)? {
+                FrameResult::Presented { needs_animation } => {
+                    Ok(FrameOutcome::complete(needs_animation))
+                }
+                FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+            }
         }
         Err(error) => Err(error.into()),
     }
 }
 
-pub(crate) fn render_and_schedule(
-    dock: &DockWindow,
-    graphics: &mut DeviceState,
-    surface: &mut CompositionSurfaceState,
-    scene: &DockScene,
-    launcher_needs_animation: bool,
-) -> Result<(), AppError> {
-    let needs_animation =
-        render_surface(graphics, surface, scene)? || launcher_needs_animation;
-    dock.set_animation_active(needs_animation)?;
-    Ok(())
-}
-
 pub(crate) fn resize_dock(
     dock: &DockWindow,
     graphics: &mut DeviceState,
-    surface: &mut CompositionSurfaceState,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     model: &DockRuntime,
 ) -> Result<(), AppError> {
     let size = model.scene().desired_size();
     dock.resize_content(size.width(), size.height(), model.settings())?;
-    resize_surface(graphics, surface, SurfaceSize::from(size))
+    resize_surface(graphics, surface.value_mut(), SurfaceSize::from(size))
 }
 
 fn recover_graphics(

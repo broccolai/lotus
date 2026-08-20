@@ -1,6 +1,8 @@
+use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_windows::WindowHandle;
 use lotus_windows::graphics::scene::{DockAnchor, DockHitTarget, DockScene};
+use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
 use lotus_windows::window::{
     DockContextRequest, DockWindow, PointerEvent, PopupAlignment, SignedPoint,
@@ -10,7 +12,7 @@ use lotus_windows::window_tracker::WindowTracker;
 
 use crate::app::AppError;
 use crate::app::dock::{DockRuntime, popup_overlap, status_popup_center};
-use crate::app::runtime::{render_surface, resize_surface};
+use crate::app::runtime::resize_surface;
 
 #[derive(Clone, Copy)]
 pub(super) enum MonitorDockAction {
@@ -34,7 +36,7 @@ pub(super) struct MonitorDocks {
 
 struct MonitorDock {
     window: StatusWindow,
-    surface: CompositionSurfaceState,
+    surface: ScheduledSurface<CompositionSurfaceState>,
     scene: DockScene,
 }
 
@@ -74,15 +76,35 @@ impl MonitorDocks {
         self.topology_dirty = true;
     }
 
+    pub(super) fn render_frame(
+        &mut self,
+        pass: &mut FramePass,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        for replica in &mut self.docks {
+            replica.render_frame(pass, graphics)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        for replica in &mut self.docks {
+            replica.surface.invalidate();
+        }
+    }
+
     pub(super) fn sync_visibility(
-        &self,
+        &mut self,
         model: &DockRuntime,
         tracker: &WindowTracker,
     ) -> Result<(), AppError> {
-        for replica in &self.docks {
+        for replica in &mut self.docks {
             let fullscreen = tracker.fullscreen_on_same_monitor(replica.window.handle());
             let occluded = model.settings().hide_when_fullscreen && fullscreen;
             replica.window.set_fullscreen_occluded(occluded)?;
+            if occluded {
+                replica.surface.stop_animation();
+            }
         }
         Ok(())
     }
@@ -98,7 +120,7 @@ impl MonitorDocks {
             for event in events {
                 match event {
                     WindowEvent::Pointer(pointer) => {
-                        if let Some(action) = replica.handle_pointer(pointer, graphics)? {
+                        if let Some(action) = replica.handle_pointer(pointer) {
                             actions.push(action);
                         }
                     }
@@ -115,16 +137,16 @@ impl MonitorDocks {
                     }
                     WindowEvent::Resized { width, height } => {
                         if let Some(size) = SurfaceSize::new(width, height) {
-                            resize_surface(graphics, &mut replica.surface, size)?;
-                            replica.render(graphics)?;
+                            resize_surface(graphics, replica.surface.value_mut(), size)?;
                         }
                     }
                     WindowEvent::DpiChanged { .. }
                     | WindowEvent::PlacementRefreshRequested => refresh = true,
-                    WindowEvent::RenderRequested | WindowEvent::AnimationFrame => {
-                        replica.render(graphics)?;
+                    WindowEvent::RenderRequested => {
+                        replica.surface.invalidate();
                     }
-                    WindowEvent::StatusRefreshRequested
+                    WindowEvent::AnimationFrame
+                    | WindowEvent::StatusRefreshRequested
                     | WindowEvent::Search(_)
                     | WindowEvent::Settings(_)
                     | WindowEvent::ContextMenu(_)
@@ -158,12 +180,11 @@ impl MonitorDocks {
                 window.handle(),
                 SurfaceSize::from(size),
             )?;
-            let mut replica = MonitorDock {
+            let replica = MonitorDock {
                 window,
-                surface,
+                surface: ScheduledSurface::new(surface),
                 scene,
             };
-            replica.render(graphics)?;
             self.docks.push(replica);
         }
         self.topology_dirty = false;
@@ -182,19 +203,18 @@ impl MonitorDocks {
             let physical = NonZeroPhysicalSize::new(size.width(), size.height())
                 .ok_or(AppError::ZeroSizedSurface)?;
             dock.place_secondary_dock_window(&replica.window, physical, model.settings())?;
-            resize_surface(graphics, &mut replica.surface, SurfaceSize::from(size))?;
-            replica.render(graphics)?;
+            resize_surface(
+                graphics,
+                replica.surface.value_mut(),
+                SurfaceSize::from(size),
+            )?;
         }
         Ok(())
     }
 }
 
 impl MonitorDock {
-    fn handle_pointer(
-        &mut self,
-        event: PointerEvent,
-        graphics: &mut DeviceState,
-    ) -> Result<Option<MonitorDockAction>, AppError> {
+    fn handle_pointer(&mut self, event: PointerEvent) -> Option<MonitorDockAction> {
         let (action, scene_changed) = match event {
             PointerEvent::Moved { x, y } => {
                 let target = hit_test(&self.scene, x, y);
@@ -223,9 +243,9 @@ impl MonitorDock {
             PointerEvent::Cancelled => (None, self.scene.set_pressed(None)),
         };
         if scene_changed {
-            self.render(graphics)?;
+            self.surface.invalidate();
         }
-        Ok(action)
+        action
     }
 
     fn activation_anchor(
@@ -302,10 +322,33 @@ impl MonitorDock {
         ))
     }
 
-    fn render(&mut self, graphics: &mut DeviceState) -> Result<(), AppError> {
-        let needs_animation = render_surface(graphics, &mut self.surface, &self.scene)?;
-        self.window.set_animation_active(needs_animation)?;
-        Ok(())
+    fn render_frame(
+        &mut self,
+        pass: &mut FramePass,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        let animation_allowed = !self.window.is_fullscreen_occluded();
+        pass.render(&mut self.surface, |surface| {
+            match surface.render_scene(&self.scene) {
+                Ok(FrameResult::Presented { needs_animation }) => {
+                    Ok(FrameOutcome::complete(needs_animation && animation_allowed))
+                }
+                Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
+                Err(lotus_windows::graphics::SurfaceError::DeviceLost(_)) => {
+                    let _ = graphics.poll();
+                    graphics.recover()?;
+                    let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
+                    surface.recover(device)?;
+                    match surface.render_scene(&self.scene)? {
+                        FrameResult::Presented { needs_animation } => {
+                            Ok(FrameOutcome::complete(needs_animation && animation_allowed))
+                        }
+                        FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+                    }
+                }
+                Err(error) => Err(error.into()),
+            }
+        })
     }
 }
 

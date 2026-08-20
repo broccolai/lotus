@@ -1,9 +1,11 @@
 use lotus_core::settings::{DockSettings, WindowPickerStyle};
 use lotus_settings::appearance::theme_for;
+use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::theme::Theme;
 use lotus_windows::dwm_thumbnail::DwmThumbnailHost;
 use lotus_windows::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
+use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{
     ContextMenuScene, DeviceState, NativePickerWindow, SurfaceError,
 };
@@ -16,7 +18,7 @@ use crate::app::AppError;
 pub(super) struct ContextMenuRuntime {
     pub(super) window: ContextMenuWindow,
     pub(super) scene: ContextMenuScene,
-    pub(super) surface: Option<ContextMenuCompositionSurfaceState>,
+    pub(super) surface: Option<ScheduledSurface<ContextMenuCompositionSurfaceState>>,
     pub(super) visible: bool,
     thumbnails: DwmThumbnailHost,
     theme: Theme,
@@ -139,7 +141,8 @@ impl ContextMenuRuntime {
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.prepare_surface(anchor, graphics)?;
-        self.render(graphics)
+        self.invalidate();
+        Ok(())
     }
 
     fn open_current(
@@ -150,7 +153,7 @@ impl ContextMenuRuntime {
         self.anchor = Some(anchor);
         self.prepare_surface(anchor, graphics)?;
         self.visible = true;
-        self.render(graphics)?;
+        self.invalidate();
         self.window.show();
         Ok(())
     }
@@ -167,14 +170,16 @@ impl ContextMenuRuntime {
             let _dpi = self.window.prepare_at(anchor, self.alignment, desired)?;
         }
         if let Some(surface) = &mut self.surface {
-            surface.resize(desired)?;
+            surface.value_mut().resize(desired)?;
         } else {
             let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            self.surface = Some(ContextMenuCompositionSurfaceState::create(
-                device,
-                self.window.handle(),
-                desired,
-            )?);
+            self.surface = Some(ScheduledSurface::new(
+                ContextMenuCompositionSurfaceState::create(
+                    device,
+                    self.window.handle(),
+                    desired,
+                )?,
+            ));
         }
         Ok(())
     }
@@ -187,32 +192,54 @@ impl ContextMenuRuntime {
             self.anchor = None;
             self.picker_identity = None;
             let _ = self.scene.pointer_left();
+            if let Some(surface) = &mut self.surface {
+                surface.stop_animation();
+            }
         }
     }
 
-    pub(super) fn render(&mut self, graphics: &mut DeviceState) -> Result<(), AppError> {
+    pub(super) fn invalidate(&mut self) {
+        if let Some(surface) = &mut self.surface {
+            surface.invalidate();
+        }
+    }
+
+    pub(super) fn render_frame(
+        &mut self,
+        pass: &mut FramePass,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
         if !self.visible {
+            if let Some(surface) = &mut self.surface {
+                surface.stop_animation();
+            }
             return Ok(());
         }
         let surface = self
             .surface
             .as_mut()
             .ok_or(AppError::InvalidContextMenuScene)?;
-        match surface.render_scene(&self.scene) {
-            Ok(_) => {
+        pass.render(surface, |surface| match surface.render_scene(&self.scene) {
+            Ok(FrameResult::Presented { .. }) => {
                 self.thumbnails.reconcile(&self.scene.picker_previews());
-                Ok(())
+                Ok(FrameOutcome::complete(false))
             }
+            Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
             Err(SurfaceError::DeviceLost(_)) => {
                 let _ = graphics.poll();
                 graphics.recover()?;
                 let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
                 surface.recover(device)?;
-                let _ = surface.render_scene(&self.scene)?;
-                Ok(())
+                match surface.render_scene(&self.scene)? {
+                    FrameResult::Presented { .. } => {
+                        self.thumbnails.reconcile(&self.scene.picker_previews());
+                        Ok(FrameOutcome::complete(false))
+                    }
+                    FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+                }
             }
             Err(error) => Err(error.into()),
-        }
+        })
     }
 
     pub(super) fn resize(&mut self, width: u32, height: u32) -> Result<(), AppError> {
@@ -220,7 +247,7 @@ impl ContextMenuRuntime {
             return Ok(());
         };
         if let Some(surface) = &mut self.surface {
-            surface.resize(size)?;
+            surface.value_mut().resize(size)?;
         }
         Ok(())
     }

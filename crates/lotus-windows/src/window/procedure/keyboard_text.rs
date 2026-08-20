@@ -182,6 +182,9 @@ fn search_key_event_for(key: u16, control_pressed: bool) -> Option<SearchEvent> 
         return match key {
             0x41 => Some(SearchEvent::Edit(SearchEdit::SelectAll)),
             0x56 => Some(SearchEvent::PasteRequested),
+            key if key == VK_BACK.0 => {
+                Some(SearchEvent::Edit(SearchEdit::DeletePreviousWord))
+            }
             _ => None,
         };
     }

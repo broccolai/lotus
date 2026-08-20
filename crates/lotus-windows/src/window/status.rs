@@ -235,10 +235,8 @@ impl StatusWindow {
         Ok(())
     }
 
-    pub fn set_animation_active(&self, active: bool) -> Result<()> {
-        self.window
-            .state()
-            .set_animation_active(self.window.hwnd(), active)
+    pub fn is_fullscreen_occluded(&self) -> bool {
+        self.fullscreen_occluded.get()
     }
 
     pub fn drain_events(&mut self) -> impl Iterator<Item = WindowEvent> + '_ {

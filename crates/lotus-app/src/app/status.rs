@@ -1,11 +1,13 @@
 use lotus_core::settings::{DockSettings, DockZone};
 use lotus_media::MediaHitTarget;
 use lotus_settings::appearance::theme_for;
+use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::scene::{
     DockHitTarget, DockIcon, DockScene, MediaItem, SystemStatusItem, SystemStatusKind,
 };
+use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
 use lotus_windows::window::{
     DockWindow, PointerEvent, SignedPoint, StatusWindow, WindowEvent,
@@ -15,7 +17,7 @@ use crate::app::AppError;
 use crate::app::dock::{
     dock_anchor, metrics, popup_overlap, status_items, status_popup_center,
 };
-use crate::app::runtime::{render_surface, resize_surface};
+use crate::app::runtime::resize_surface;
 
 pub(super) enum AuxiliaryZoneAction {
     Media(MediaHitTarget),
@@ -28,7 +30,7 @@ pub(super) struct StatusRuntime {
 
 struct ZoneSurface {
     window: StatusWindow,
-    surface: Option<CompositionSurfaceState>,
+    surface: Option<ScheduledSurface<CompositionSurfaceState>>,
     scene: DockScene,
     zone: Option<DockZone>,
 }
@@ -86,16 +88,16 @@ impl StatusRuntime {
             );
 
             if let Some(surface) = &mut zone_surface.surface {
-                resize_surface(graphics, surface, SurfaceSize::from(size))?;
+                resize_surface(graphics, surface.value_mut(), SurfaceSize::from(size))?;
             } else {
                 let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-                zone_surface.surface = Some(CompositionSurfaceState::create(
-                    device,
-                    zone_surface.window.handle(),
-                    SurfaceSize::from(size),
-                )?);
+                zone_surface.surface =
+                    Some(ScheduledSurface::new(CompositionSurfaceState::create(
+                        device,
+                        zone_surface.window.handle(),
+                        SurfaceSize::from(size),
+                    )?));
             }
-            zone_surface.render(graphics)?;
             zone_surface.window.set_visible(dock.is_visible());
         }
         Ok(())
@@ -107,20 +109,22 @@ impl StatusRuntime {
         }
     }
 
-    pub(super) fn set_fullscreen_occluded(&self, occluded: bool) -> Result<(), AppError> {
-        for zone in &self.zones {
+    pub(super) fn set_fullscreen_occluded(
+        &mut self,
+        occluded: bool,
+    ) -> Result<(), AppError> {
+        for zone in &mut self.zones {
             if zone.zone.is_some() {
                 zone.window.set_fullscreen_occluded(occluded)?;
+                if occluded && let Some(surface) = &mut zone.surface {
+                    surface.stop_animation();
+                }
             }
         }
         Ok(())
     }
 
-    pub(super) fn refresh(
-        &mut self,
-        settings: &DockSettings,
-        graphics: &mut DeviceState,
-    ) -> Result<(), AppError> {
+    pub(super) fn refresh(&mut self, settings: &DockSettings) {
         for zone in &mut self.zones {
             let Some(active) = zone.zone else {
                 continue;
@@ -132,10 +136,9 @@ impl StatusRuntime {
             };
             if zone.scene.status_items() != next {
                 zone.scene.replace_status_items(next);
-                zone.render(graphics)?;
+                zone.invalidate();
             }
         }
-        Ok(())
     }
 
     pub(super) fn drain_events(&mut self) -> Vec<(usize, WindowEvent)> {
@@ -187,13 +190,14 @@ impl StatusRuntime {
                 if let (Some(surface), Some(size)) =
                     (&mut zone.surface, SurfaceSize::new(width, height))
                 {
-                    resize_surface(graphics, surface, size)?;
+                    resize_surface(graphics, surface.value_mut(), size)?;
                 }
                 (None, true)
             }
             WindowEvent::DpiChanged { dpi } => (None, zone.scene.set_dpi(dpi)),
-            WindowEvent::RenderRequested | WindowEvent::AnimationFrame => (None, true),
-            WindowEvent::PlacementRefreshRequested
+            WindowEvent::RenderRequested => (None, true),
+            WindowEvent::AnimationFrame
+            | WindowEvent::PlacementRefreshRequested
             | WindowEvent::ContextMenuRequested(_)
             | WindowEvent::Search(_)
             | WindowEvent::Settings(_)
@@ -203,11 +207,55 @@ impl StatusRuntime {
         };
         let anchor = action.and_then(|target| zone.target_anchor(target));
         if scene_changed {
-            zone.render(graphics)?;
+            zone.invalidate();
         }
         Ok(action
             .and_then(auxiliary_action)
             .map(|action| (action, zone.window.handle(), anchor)))
+    }
+    pub(super) fn render_frame(
+        &mut self,
+        pass: &mut FramePass,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        for zone in &mut self.zones {
+            if zone.zone.is_none() {
+                if let Some(surface) = &mut zone.surface {
+                    surface.stop_animation();
+                }
+                continue;
+            }
+            let Some(surface) = &mut zone.surface else {
+                continue;
+            };
+            let animation_allowed = !zone.window.is_fullscreen_occluded();
+            pass.render(surface, |surface| match surface.render_scene(&zone.scene) {
+                Ok(FrameResult::Presented { needs_animation }) => Ok::<_, AppError>(
+                    FrameOutcome::complete(needs_animation && animation_allowed),
+                ),
+                Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
+                Err(lotus_windows::graphics::SurfaceError::DeviceLost(_)) => {
+                    let _ = graphics.poll();
+                    graphics.recover()?;
+                    let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
+                    surface.recover(device)?;
+                    match surface.render_scene(&zone.scene)? {
+                        FrameResult::Presented { needs_animation } => {
+                            Ok(FrameOutcome::complete(needs_animation && animation_allowed))
+                        }
+                        FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+                    }
+                }
+                Err(error) => Err(error.into()),
+            })?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        for zone in &mut self.zones {
+            zone.invalidate();
+        }
     }
 }
 
@@ -239,12 +287,10 @@ impl ZoneSurface {
         self.window.client_to_screen(SignedPoint { x, y }).ok()
     }
 
-    fn render(&mut self, graphics: &mut DeviceState) -> Result<(), AppError> {
+    fn invalidate(&mut self) {
         if let Some(surface) = &mut self.surface {
-            let needs_animation = render_surface(graphics, surface, &self.scene)?;
-            self.window.set_animation_active(needs_animation)?;
+            surface.invalidate();
         }
-        Ok(())
     }
 }
 

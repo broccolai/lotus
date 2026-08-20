@@ -1,7 +1,10 @@
 use lotus_core::window::WindowInfo;
 use lotus_settings::scene::SettingsApplicationRecord;
+use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
-use lotus_windows::activation::{launch_target, request_window_close};
+use lotus_windows::activation::{
+    ActivationError, force_window_close, launch_target, request_window_close,
+};
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{
     AppMenuAction, CompositionSurfaceState, ContextMenuAction, DeviceState, PopupAction,
@@ -10,7 +13,7 @@ use lotus_windows::graphics::{
 use lotus_windows::interaction::request_exit;
 use lotus_windows::window::{ContextMenuEvent, DockWindow, SelectionDirection};
 
-use super::presentation::{render_and_schedule, resize_dock};
+use super::presentation::resize_dock;
 use crate::app::switcher::AuxiliaryWindows;
 use crate::app::{AppError, DockRuntime};
 
@@ -18,7 +21,7 @@ pub(super) fn handle_context_menu_event(
     event: ContextMenuEvent,
     dock: &DockWindow,
     graphics: &mut DeviceState,
-    surface: &mut CompositionSurfaceState,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
@@ -26,12 +29,12 @@ pub(super) fn handle_context_menu_event(
     match event {
         ContextMenuEvent::PointerMoved { x, y } => {
             if auxiliary.context_menu.scene.pointer_move(x, y) {
-                auxiliary.context_menu.render(graphics)?;
+                auxiliary.context_menu.invalidate();
             }
         }
         ContextMenuEvent::PointerLeft => {
             if auxiliary.context_menu.scene.pointer_left() {
-                auxiliary.context_menu.render(graphics)?;
+                auxiliary.context_menu.invalidate();
             }
         }
         ContextMenuEvent::PointerReleased { x, y } => {
@@ -73,30 +76,30 @@ pub(super) fn handle_context_menu_event(
         ContextMenuEvent::MoveSelection(direction) => {
             let next = direction == SelectionDirection::Next;
             if auxiliary.context_menu.scene.move_selection(next) {
-                auxiliary.context_menu.render(graphics)?;
+                auxiliary.context_menu.invalidate();
             }
         }
         ContextMenuEvent::Scroll(direction) => {
             let next = direction == SelectionDirection::Next;
             if auxiliary.context_menu.scene.scroll(next) {
-                auxiliary.context_menu.render(graphics)?;
+                auxiliary.context_menu.invalidate();
             }
         }
         ContextMenuEvent::DismissRequested => auxiliary.context_menu.hide(),
         ContextMenuEvent::Resized { width, height } => {
             auxiliary.context_menu.resize(width, height)?;
-            auxiliary.context_menu.render(graphics)?;
+            auxiliary.context_menu.invalidate();
         }
         ContextMenuEvent::DpiChanged { dpi } => {
             if auxiliary.context_menu.scene.set_dpi(dpi) {
                 let desired = auxiliary.context_menu.scene.desired_size();
                 if let Some(surface) = &mut auxiliary.context_menu.surface {
-                    surface.resize(desired)?;
+                    surface.value_mut().resize(desired)?;
                 }
             }
-            auxiliary.context_menu.render(graphics)?;
+            auxiliary.context_menu.invalidate();
         }
-        ContextMenuEvent::RenderRequested => auxiliary.context_menu.render(graphics)?,
+        ContextMenuEvent::RenderRequested => auxiliary.context_menu.invalidate(),
     }
     Ok(())
 }
@@ -104,7 +107,7 @@ pub(super) fn handle_context_menu_event(
 struct PopupActionContext<'a> {
     dock: &'a DockWindow,
     graphics: &'a mut DeviceState,
-    surface: &'a mut CompositionSurfaceState,
+    surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     windows: &'a [WindowInfo],
     dock_model: &'a mut DockRuntime,
     auxiliary: &'a mut AuxiliaryWindows,
@@ -242,13 +245,7 @@ fn execute_app_menu_action(
                     context.dock_model.media(),
                     context.graphics,
                 )?;
-                render_and_schedule(
-                    context.dock,
-                    context.graphics,
-                    context.surface,
-                    context.dock_model.scene(),
-                    context.auxiliary.launcher.needs_animation(),
-                )?;
+                context.surface.invalidate();
             }
         }
         AppMenuAction::Close => {
@@ -270,6 +267,31 @@ fn execute_app_menu_action(
                         &format!("Lotus could not close that window.\n\n{error}"),
                     );
                     break;
+                }
+            }
+        }
+        AppMenuAction::ForceClose => {
+            let window_ids = context
+                .dock_model
+                .item(source_index)
+                .map(|item| {
+                    item.windows
+                        .iter()
+                        .map(|window| window.id)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for window in window_ids {
+                match force_window_close(window) {
+                    Ok(()) | Err(ActivationError::MissingWindow(_)) => {}
+                    Err(error) => {
+                        show_error(
+                            context.dock.handle(),
+                            "Lotus",
+                            &format!("Lotus could not force close that window.\n\n{error}"),
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -333,7 +355,8 @@ fn open_application_icon_manager(
         context.dock_model.items(),
         &mut context.auxiliary.settings,
     );
-    context.auxiliary.settings.render(context.graphics)
+    context.auxiliary.settings.invalidate();
+    Ok(())
 }
 
 fn execute_context_menu_action(
@@ -345,9 +368,7 @@ fn execute_context_menu_action(
     match action {
         ContextMenuAction::OpenSettings => {
             auxiliary.settings.open(dock_model.settings(), graphics)?;
-            super::search_events::refresh_open_application_manager(
-                dock_model, auxiliary, graphics,
-            )?;
+            super::search_events::refresh_open_application_manager(dock_model, auxiliary);
         }
         ContextMenuAction::RequestShutdown => {
             auxiliary.context_menu.open_power(graphics)?;

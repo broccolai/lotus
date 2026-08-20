@@ -102,6 +102,10 @@ impl DockWindow {
         self.window.is_visible()
     }
 
+    pub fn is_fullscreen_occluded(&self) -> bool {
+        self.fullscreen_occluded.get()
+    }
+
     pub fn apply_appbar_layout(
         &self,
         layout: AppBarLayout,

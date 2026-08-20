@@ -1,6 +1,7 @@
 use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit};
 use lotus_core::window::WindowInfo;
 use lotus_search::command::CommandId;
+use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::activation::launch_target;
 use lotus_windows::clipboard::{read_text, write_text};
 use lotus_windows::clock::local_time;
@@ -11,7 +12,7 @@ use lotus_windows::window::{
     CursorMove as WindowCursorMove, DockWindow, SearchEdit, SearchEvent,
 };
 
-use super::presentation::{render_surface, resize_dock, resize_launcher_surface};
+use super::presentation::{resize_dock, resize_launcher_surface};
 use crate::app::launcher::{LauncherRuntime, LauncherSubmission};
 use crate::app::switcher::AuxiliaryWindows;
 use crate::app::{AppError, DockRuntime};
@@ -19,7 +20,7 @@ use crate::app::{AppError, DockRuntime};
 pub(super) fn refresh_catalog(
     dock: &DockWindow,
     graphics: &mut DeviceState,
-    surface: &mut CompositionSurfaceState,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
@@ -50,17 +51,14 @@ pub(super) fn refresh_catalog(
         let _changed = auxiliary.media.refresh(dock_model);
         dock_model.rebuild(windows);
         resize_dock(dock, graphics, surface, dock_model)?;
+        surface.invalidate();
         auxiliary
             .status
             .sync(dock, dock_model.settings(), dock_model.media(), graphics)?;
     }
-    refresh_open_application_manager(dock_model, auxiliary, graphics)?;
-    let launcher_animation = auxiliary.launcher.render(graphics)?;
-    if pins_changed {
-        let dock_animation = render_surface(graphics, surface, dock_model.scene())?;
-        dock.set_animation_active(dock_animation || launcher_animation)?;
-    } else if launcher_animation {
-        dock.set_animation_active(true)?;
+    refresh_open_application_manager(dock_model, auxiliary);
+    if catalog_changed && let Some(surface) = &mut auxiliary.launcher.surface {
+        surface.invalidate();
     }
     Ok(())
 }
@@ -68,12 +66,11 @@ pub(super) fn refresh_catalog(
 pub(super) fn refresh_open_application_manager(
     dock_model: &DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
-    graphics: &mut DeviceState,
-) -> Result<(), AppError> {
+) {
     if !auxiliary.settings.visible
         || auxiliary.settings.scene.page() != lotus_settings::scene::SettingsPage::Apps
     {
-        return Ok(());
+        return;
     }
     let selected = auxiliary
         .settings
@@ -95,7 +92,7 @@ pub(super) fn refresh_open_application_manager(
         dock_model.items(),
         &mut auxiliary.settings,
     );
-    auxiliary.settings.render(graphics)
+    auxiliary.settings.invalidate();
 }
 
 pub(super) fn drain_search_events(
@@ -153,7 +150,7 @@ pub(crate) fn handle_search_event(
             if let (Some(size), Some(surface)) =
                 (SurfaceSize::new(width, height), launcher.surface.as_mut())
             {
-                resize_launcher_surface(graphics, surface, size)?;
+                resize_launcher_surface(graphics, surface.value_mut(), size)?;
                 scene_changed = true;
             }
         }
@@ -185,8 +182,8 @@ pub(crate) fn handle_search_event(
 
     if scene_changed && launcher.is_visible() {
         launcher.sync_size(dock, graphics)?;
-        if launcher.render(graphics)? {
-            dock.set_animation_active(true)?;
+        if let Some(surface) = &mut launcher.surface {
+            surface.invalidate();
         }
     }
     Ok(command)
@@ -195,6 +192,7 @@ pub(crate) fn handle_search_event(
 const fn model_query_edit(edit: SearchEdit) -> QueryEdit {
     match edit {
         SearchEdit::DeleteBackward => QueryEdit::DeleteBackward,
+        SearchEdit::DeletePreviousWord => QueryEdit::DeletePreviousWord,
         SearchEdit::DeleteForward => QueryEdit::DeleteForward,
         SearchEdit::MoveCursor(movement) => QueryEdit::MoveCursor(match movement {
             WindowCursorMove::Home => ModelCursorMove::Home,
@@ -239,7 +237,7 @@ fn execute_search_command(
     match command {
         CommandId::OpenSettings => {
             auxiliary.settings.open(dock_model.settings(), graphics)?;
-            refresh_open_application_manager(dock_model, auxiliary, graphics)?;
+            refresh_open_application_manager(dock_model, auxiliary);
         }
         CommandId::OpenVolumeMixer => {
             if let Err(error) = launch_target("sndvol.exe", None) {

@@ -50,6 +50,7 @@ pub enum AppMenuAction {
     CustomizeIcon,
     TogglePin,
     Close,
+    ForceClose,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -189,11 +190,20 @@ impl<Asset: Clone> DockPopup<Asset> {
             },
             symbol: PopupSymbol::Close,
         });
+        let force_close = (running_windows != 0).then_some(AppEntry {
+            action: AppMenuAction::ForceClose,
+            label: if running_windows == 1 {
+                "Force close window"
+            } else {
+                "Force close all windows"
+            },
+            symbol: PopupSymbol::Close,
+        });
         Some(Self {
             scale: DpiScale::new(dpi)?,
             kind: PopupKind::App {
                 source_index,
-                entries: [Some(open), Some(customize), Some(pin), close]
+                entries: [Some(open), Some(customize), Some(pin), close, force_close]
                     .into_iter()
                     .flatten()
                     .collect(),

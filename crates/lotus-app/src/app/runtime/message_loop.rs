@@ -1,3 +1,4 @@
+use lotus_ui::frame::{FrameOutcome, FramePass, FrameTrigger, ScheduledSurface};
 use lotus_windows::alt_tab::is_alt_tab_wake;
 use lotus_windows::appbar::fullscreen_notification;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
@@ -21,7 +22,7 @@ pub(crate) fn run_message_loop(
     runtime: &RuntimePolicy<'_>,
     dock: &mut DockWindow,
     graphics: &mut DeviceState,
-    surface: &mut CompositionSurfaceState,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     window_tracker: &mut WindowTracker,
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
@@ -38,11 +39,49 @@ pub(crate) fn run_message_loop(
     .run()
 }
 
+pub(crate) fn flush_frame(
+    dock: &mut DockWindow,
+    graphics: &mut DeviceState,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
+    dock_model: &DockRuntime,
+    auxiliary: &mut AuxiliaryWindows,
+    trigger: FrameTrigger,
+) -> Result<(), AppError> {
+    let mut pass = FramePass::new(trigger);
+    let device_generation = graphics.generation();
+    let animation_allowed = !dock.is_fullscreen_occluded();
+    pass.render(surface, |surface| {
+        presentation::render_surface(graphics, surface, dock_model.scene()).map(|outcome| {
+            match outcome {
+                FrameOutcome::Complete {
+                    continues_animation,
+                } => FrameOutcome::complete(continues_animation && animation_allowed),
+                FrameOutcome::Retry => FrameOutcome::Retry,
+            }
+        })
+    })?;
+    auxiliary.launcher.render_frame(&mut pass, graphics)?;
+    auxiliary.context_menu.render_frame(&mut pass, graphics)?;
+    auxiliary.settings.render_frame(&mut pass, graphics)?;
+    auxiliary.switcher.render_frame(&mut pass, graphics)?;
+    auxiliary.status.render_frame(&mut pass, graphics)?;
+    auxiliary.monitors.render_frame(&mut pass, graphics)?;
+
+    if graphics.generation() != device_generation {
+        surface.invalidate();
+        auxiliary.invalidate_surfaces();
+        pass.request_next_frame();
+    }
+
+    dock.set_animation_active(pass.animation_active())?;
+    Ok(())
+}
+
 struct MessageLoop<'a, 'runtime> {
     runtime: &'a RuntimePolicy<'runtime>,
     dock: &'a mut DockWindow,
     graphics: &'a mut DeviceState,
-    surface: &'a mut CompositionSurfaceState,
+    surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     window_tracker: &'a mut WindowTracker,
     dock_model: &'a mut DockRuntime,
     auxiliary: &'a mut AuxiliaryWindows,
@@ -85,29 +124,36 @@ impl MessageLoop<'_, '_> {
         if shell_fullscreen.is_some() && !self.runtime.onboarding_required {
             presentation::apply_fullscreen_visibility(
                 self.dock,
+                self.surface,
                 self.window_tracker,
                 self.dock_model,
                 &mut self.auxiliary.launcher,
-                &self.auxiliary.status,
+                &mut self.auxiliary.status,
             )?;
         }
 
         let wakes = WakeEvents::from_message(self.runtime, message.id());
         message.dispatch();
-        self.drain_events()?;
+        let animation_tick = self.drain_events()?;
         self.process_wakes(wakes)?;
         presentation::sync_monitor_presentation(
             self.runtime,
             self.dock,
+            self.surface,
             self.graphics,
             self.window_tracker,
             self.dock_model,
             self.auxiliary,
-        )
+        )?;
+        self.flush_frame(if animation_tick {
+            FrameTrigger::AnimationTick
+        } else {
+            FrameTrigger::Changes
+        })
     }
 
-    fn drain_events(&mut self) -> Result<(), AppError> {
-        window_events::drain_window_events(
+    fn drain_events(&mut self) -> Result<bool, AppError> {
+        let animation_tick = window_events::drain_window_events(
             self.dock,
             self.graphics,
             self.surface,
@@ -127,22 +173,19 @@ impl MessageLoop<'_, '_> {
             )?;
         }
 
-        Ok(())
+        Ok(animation_tick)
     }
 
     fn process_wakes(&mut self, wakes: WakeEvents) -> Result<(), AppError> {
         if wakes.update {
-            update_events::handle_update_results(
-                &mut self.auxiliary.settings,
-                self.graphics,
-            )?;
+            update_events::handle_update_results(&mut self.auxiliary.settings);
         }
         if wakes.badges
             && let Some(controller) = self.runtime.taskbar_badges
             && let Ok(snapshot) = controller.snapshot()
         {
             self.dock_model.set_notifications(snapshot);
-            self.render_dock()?;
+            self.render_dock();
         }
         if wakes.media && self.auxiliary.media.drain(self.dock_model) {
             presentation::resize_dock(
@@ -157,7 +200,7 @@ impl MessageLoop<'_, '_> {
                 self.dock_model.media(),
                 self.graphics,
             )?;
-            self.render_dock()?;
+            self.render_dock();
         }
         if wakes.windows_key
             && let Some(controller) = self.runtime.windows_key
@@ -196,14 +239,8 @@ impl MessageLoop<'_, '_> {
         Ok(())
     }
 
-    fn render_dock(&mut self) -> Result<(), AppError> {
-        presentation::render_and_schedule(
-            self.dock,
-            self.graphics,
-            self.surface,
-            self.dock_model.scene(),
-            self.auxiliary.launcher.needs_animation(),
-        )
+    fn render_dock(&mut self) {
+        self.surface.invalidate();
     }
 
     fn drain_settings_events(&mut self) -> Result<(), AppError> {
@@ -226,11 +263,20 @@ impl MessageLoop<'_, '_> {
 
     fn drain_switcher_events(&mut self) -> Result<(), AppError> {
         for event in self.auxiliary.switcher.drain_events() {
-            self.auxiliary
-                .switcher
-                .handle_window_event(event, self.graphics)?;
+            self.auxiliary.switcher.handle_window_event(event)?;
         }
         Ok(())
+    }
+
+    fn flush_frame(&mut self, trigger: FrameTrigger) -> Result<(), AppError> {
+        flush_frame(
+            self.dock,
+            self.graphics,
+            self.surface,
+            self.dock_model,
+            self.auxiliary,
+            trigger,
+        )
     }
 }
 

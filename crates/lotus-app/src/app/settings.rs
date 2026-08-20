@@ -1,6 +1,8 @@
 use lotus_core::settings::DockSettings;
+use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::graphics::settings_surface::SettingsCompositionSurfaceState;
+use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{
     DeviceState, SettingsScene, SettingsSize, SettingsSlider, SettingsUpdateActivity,
     SurfaceError,
@@ -15,7 +17,7 @@ use crate::app::AppError;
 pub(super) struct SettingsRuntime {
     pub(super) window: SettingsWindow,
     pub(super) scene: SettingsScene,
-    pub(super) surface: Option<SettingsCompositionSurfaceState>,
+    pub(super) surface: Option<ScheduledSurface<SettingsCompositionSurfaceState>>,
     pub(super) visible: bool,
     pub(super) dragging_slider: Option<SettingsSlider>,
     pub(super) native_icons: NativeIconCache,
@@ -75,18 +77,21 @@ impl SettingsRuntime {
         let size =
             SettingsSize::new(width, height).ok_or(AppError::InvalidSettingsScene)?;
         if let Some(surface) = &mut self.surface {
-            surface.resize(size)?;
+            surface.value_mut().resize(size)?;
         } else {
             let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            self.surface = Some(SettingsCompositionSurfaceState::create(
-                device,
-                self.window.handle(),
-                size,
-            )?);
+            self.surface = Some(ScheduledSurface::new(
+                SettingsCompositionSurfaceState::create(
+                    device,
+                    self.window.handle(),
+                    size,
+                )?,
+            ));
         }
         self.window.show()?;
         self.visible = true;
-        self.render(graphics)
+        self.invalidate();
+        Ok(())
     }
 
     pub(super) fn hide(&mut self) {
@@ -94,6 +99,15 @@ impl SettingsRuntime {
         self.window.set_pointer_cursor(PointerCursor::Arrow);
         self.visible = false;
         self.dragging_slider = None;
+        if let Some(surface) = &mut self.surface {
+            surface.stop_animation();
+        }
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        if let Some(surface) = &mut self.surface {
+            surface.invalidate();
+        }
     }
 
     pub(super) fn drain_events(&mut self) -> Vec<SettingsEvent> {
@@ -129,26 +143,36 @@ impl SettingsRuntime {
         self.update_checker.drain().collect()
     }
 
-    pub(super) fn render(&mut self, graphics: &mut DeviceState) -> Result<(), AppError> {
+    pub(super) fn render_frame(
+        &mut self,
+        pass: &mut FramePass,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
         if !self.visible {
+            if let Some(surface) = &mut self.surface {
+                surface.stop_animation();
+            }
             return Ok(());
         }
         let surface = self
             .surface
             .as_mut()
             .ok_or(AppError::InvalidSettingsScene)?;
-        match surface.render_scene(&self.scene) {
-            Ok(_) => Ok(()),
+        pass.render(surface, |surface| match surface.render_scene(&self.scene) {
+            Ok(FrameResult::Presented { .. }) => Ok(FrameOutcome::complete(false)),
+            Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
             Err(SurfaceError::DeviceLost(_)) => {
                 let _ = graphics.poll();
                 graphics.recover()?;
                 let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
                 surface.recover(device)?;
-                let _ = surface.render_scene(&self.scene)?;
-                Ok(())
+                match surface.render_scene(&self.scene)? {
+                    FrameResult::Presented { .. } => Ok(FrameOutcome::complete(false)),
+                    FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+                }
             }
             Err(error) => Err(error.into()),
-        }
+        })
     }
 
     pub(super) fn resize(
@@ -163,15 +187,19 @@ impl SettingsRuntime {
         let Some(surface) = &mut self.surface else {
             return Ok(());
         };
-        match surface.resize(size) {
-            Ok(()) => self.render(graphics),
+        match surface.value_mut().resize(size) {
+            Ok(()) => {
+                self.invalidate();
+                Ok(())
+            }
             Err(SurfaceError::DeviceLost(_)) => {
                 let _ = graphics.poll();
                 graphics.recover()?;
                 let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-                surface.recover(device)?;
-                surface.resize(size)?;
-                self.render(graphics)
+                surface.value_mut().recover(device)?;
+                surface.value_mut().resize(size)?;
+                self.invalidate();
+                Ok(())
             }
             Err(error) => Err(error.into()),
         }
