@@ -1,25 +1,83 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use lotus_core::application::is_reliable_registered_id;
 use lotus_core::search::ApplicationEntry;
 
 use super::super::application_identity::shortcut_application_id;
 use super::super::launch::{resolve_executable, shortcut_arguments};
 
-pub(super) fn shortcut_entry(name: String, path: &Path) -> ApplicationEntry {
+pub(super) fn shortcut_entry(
+    name: String,
+    path: &Path,
+    identity: Option<&ShortcutIdentity>,
+) -> ApplicationEntry {
     let target = path.to_string_lossy().into_owned();
     let mut entry = ApplicationEntry::new(name, target.clone(), Some(target));
-    if let Some(identity) = shortcut_application_id(path) {
+    if let Some(identity) = identity.and_then(ShortcutIdentity::app_user_model_id) {
         entry = entry.with_app_user_model_id(identity);
     }
     entry
 }
 
-pub(super) fn is_chromium_web_app_shortcut(path: &Path) -> bool {
-    if !path
-        .extension()
+pub(super) struct ShortcutIdentity {
+    app_user_model_id: Option<String>,
+    executable: Option<PathBuf>,
+    arguments: String,
+}
+
+impl ShortcutIdentity {
+    pub(super) fn from_path(path: &Path) -> Option<Self> {
+        is_shortcut(path).then(|| Self {
+            app_user_model_id: shortcut_application_id(path)
+                .filter(|id| is_reliable_registered_id(id)),
+            executable: resolve_executable(&path.to_string_lossy())
+                .as_deref()
+                .map(normalize_path),
+            arguments: shortcut_arguments(path)
+                .map(|arguments| normalize_arguments(&arguments))
+                .unwrap_or_default(),
+        })
+    }
+
+    pub(super) fn equivalent_to(&self, other: &Self) -> bool {
+        match (&self.app_user_model_id, &other.app_user_model_id) {
+            (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+            _ => {
+                self.executable.is_some()
+                    && self.executable == other.executable
+                    && self.arguments == other.arguments
+            }
+        }
+    }
+
+    fn app_user_model_id(&self) -> Option<&str> {
+        self.app_user_model_id.as_deref()
+    }
+}
+
+fn is_shortcut(path: &Path) -> bool {
+    path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
-    {
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    PathBuf::from(
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase(),
+    )
+}
+
+fn normalize_arguments(arguments: &str) -> String {
+    arguments
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub(super) fn is_chromium_web_app_shortcut(path: &Path) -> bool {
+    if !is_shortcut(path) {
         return false;
     }
 

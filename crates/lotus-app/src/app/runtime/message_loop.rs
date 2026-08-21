@@ -1,13 +1,12 @@
 use lotus_ui::frame::{FrameOutcome, FramePass, FrameTrigger, ScheduledSurface};
 use lotus_windows::appbar::fullscreen_notification;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
+use lotus_windows::icon_hydrator::{IconHydrationResult, is_icon_hydration_wake};
 use lotus_windows::input::{UiHeartbeatTimer, is_input_wake};
 use lotus_windows::interaction::{NativeMessage, next_message};
-use lotus_windows::launcher_icons::is_launcher_icon_wake;
 use lotus_windows::media::is_media_wake;
 use lotus_windows::responsiveness::METRICS;
 use lotus_windows::search_catalog::is_search_catalog_wake;
-use lotus_windows::switcher_icons::is_switcher_icon_wake;
 use lotus_windows::taskbar_badges::is_taskbar_badge_wake;
 use lotus_windows::update::is_update_wake;
 use lotus_windows::window::DockWindow;
@@ -241,11 +240,17 @@ impl MessageLoop<'_, '_> {
                 self.auxiliary,
             )?;
         }
-        if wakes.switcher_icons {
-            let _changed = self.auxiliary.switcher.drain_hydrated_icons();
-        }
-        if wakes.launcher_icons {
-            let _changed = self.auxiliary.launcher.drain_hydrated_icons()?;
+        if wakes.icon_hydration {
+            let mut launcher = Vec::new();
+            let mut switcher = Vec::new();
+            for result in self.auxiliary.icon_hydrator.drain() {
+                match result {
+                    IconHydrationResult::Launcher(result) => launcher.push(result),
+                    IconHydrationResult::Switcher(result) => switcher.push(result),
+                }
+            }
+            let _changed = self.auxiliary.launcher.drain_hydrated_icons(launcher)?;
+            let _changed = self.auxiliary.switcher.drain_hydrated_icons(switcher);
         }
 
         Ok(())
@@ -317,8 +322,7 @@ struct WakeEvents {
     update: bool,
     media: bool,
     badges: bool,
-    switcher_icons: bool,
-    launcher_icons: bool,
+    icon_hydration: bool,
 }
 
 impl WakeEvents {
@@ -328,8 +332,7 @@ impl WakeEvents {
             update: is_update_wake(message),
             media: is_media_wake(message),
             badges: runtime.taskbar_badges.is_some() && is_taskbar_badge_wake(message),
-            switcher_icons: is_switcher_icon_wake(message),
-            launcher_icons: is_launcher_icon_wake(message),
+            icon_hydration: is_icon_hydration_wake(message),
         }
     }
 }

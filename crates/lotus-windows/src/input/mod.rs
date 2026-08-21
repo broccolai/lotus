@@ -33,7 +33,7 @@ use crate::messages::{INPUT_REPLAY, INPUT_WAKE};
 use crate::responsiveness::METRICS;
 
 const START_TIMEOUT: Duration = Duration::from_secs(2);
-const UI_HEARTBEAT_STALE_MS: u64 = 275;
+const UI_HEARTBEAT_STALE_MS: u64 = 1_000;
 const LOTUS_INPUT_MARKER: usize = 0x4C4F_5455;
 const SUPPRESS: LRESULT = LRESULT(1);
 const MAILBOX_CAPACITY: usize = 64;
@@ -659,18 +659,15 @@ fn enqueue(state: &HookState, action: InputAction) -> bool {
         METRICS.record_input_wake_coalesced();
         return true;
     }
-    let posted =
-        unsafe { PostThreadMessageW(state.ui_thread, INPUT_WAKE, WPARAM(0), LPARAM(0)) }
-            .is_ok();
-    if posted {
+    if unsafe { PostThreadMessageW(state.ui_thread, INPUT_WAKE, WPARAM(0), LPARAM(0)) }
+        .is_ok()
+    {
         METRICS.record_input_wake_posted();
     } else {
         state.shared.wake_pending.store(false, Ordering::Release);
         METRICS.record_input_wake_failure();
-        METRICS.record_input_action_dropped();
-        request_fail_open(&state.shared);
     }
-    posted
+    true
 }
 
 fn subtract_mailbox_depth(depth: &AtomicU32, count: usize) {

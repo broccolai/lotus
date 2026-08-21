@@ -22,9 +22,7 @@ use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{
     DeviceState, LauncherResult, LauncherScene, SurfaceError, SurfaceSize,
 };
-use lotus_windows::launcher_icons::{
-    LauncherIconHydrator, LauncherIconHydratorError, LauncherIconRequest,
-};
+use lotus_windows::icon_hydrator::{LauncherIconClient, LauncherIconRequest};
 use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::window::{DockWindow, SearchEvent, SearchWindow, SelectionDirection};
 
@@ -37,7 +35,7 @@ const MAX_HYDRATED_ICONS: usize = 64;
 pub(super) struct LauncherRuntime {
     pub(super) window: SearchWindow,
     pub(super) controller: SearchController,
-    icon_hydrator: LauncherIconHydrator,
+    icon_hydrator: LauncherIconClient,
     hydrated_icons: BTreeMap<LauncherIconKey, lotus_ui::icon::RasterIcon>,
     icon_generation: u64,
     icon_settings_revision: u64,
@@ -64,15 +62,16 @@ impl LauncherRuntime {
         theme: &Theme,
         usage: lotus_core::search::SearchUsage,
         usage_store: SearchUsageStore,
-    ) -> Result<Self, LauncherIconHydratorError> {
-        Ok(Self {
+        icon_hydrator: LauncherIconClient,
+    ) -> Self {
+        Self {
             window,
             controller: SearchController::new(
                 usize::try_from(settings.search_result_limit).unwrap_or(8),
                 usage,
                 usage_store,
             ),
-            icon_hydrator: LauncherIconHydrator::start()?,
+            icon_hydrator,
             hydrated_icons: BTreeMap::new(),
             icon_generation: 0,
             icon_settings_revision: 0,
@@ -85,7 +84,7 @@ impl LauncherRuntime {
             theme: *theme,
             use_24_hour_time: settings.use_24_hour_time,
             settings,
-        })
+        }
     }
 
     pub(super) const fn is_visible(&self) -> bool {
@@ -174,9 +173,11 @@ impl LauncherRuntime {
         Ok(true)
     }
 
-    pub(super) fn drain_hydrated_icons(&mut self) -> Result<bool, AppError> {
+    pub(super) fn drain_hydrated_icons(
+        &mut self,
+        results: impl IntoIterator<Item = lotus_windows::icon_hydrator::HydratedLauncherIcon>,
+    ) -> Result<bool, AppError> {
         let Some(dpi) = self.scene.as_ref().map(LauncherScene::dpi) else {
-            let _discarded = self.icon_hydrator.drain();
             return Ok(false);
         };
         let icon_size = launcher_icon_size(dpi);
@@ -189,8 +190,7 @@ impl LauncherRuntime {
             })
             .collect::<Vec<_>>();
         let mut changed = false;
-
-        for result in self.icon_hydrator.drain() {
+        for result in results {
             if result.generation != self.icon_generation
                 || result.pixel_size != icon_size
                 || result.settings_revision != self.icon_settings_revision
@@ -334,10 +334,12 @@ impl LauncherRuntime {
 
     fn request_visible_icons(&mut self) {
         let Some(scene) = &self.scene else {
+            self.icon_hydrator.request_launcher(Vec::new());
             return;
         };
         if self.controller.is_command_mode() || self.controller.is_calculator_mode() {
             self.icon_request_signature = None;
+            self.icon_hydrator.request_launcher(Vec::new());
             return;
         }
         let icon_size = scene.result_icon_size().get();
@@ -375,7 +377,7 @@ impl LauncherRuntime {
                 settings_revision: self.icon_settings_revision,
             })
             .collect();
-        self.icon_hydrator.request(requests);
+        self.icon_hydrator.request_launcher(requests);
     }
 
     pub(super) fn move_selection(

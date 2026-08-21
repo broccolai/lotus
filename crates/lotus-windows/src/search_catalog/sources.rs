@@ -13,7 +13,9 @@ use windows::Win32::UI::Shell::{
 use windows::core::{GUID, PWSTR};
 
 use super::super::launch::{ComApartment, resolve_executable};
-use super::shortcuts::{is_chromium_web_app_shortcut, shortcut_entry};
+use super::shortcuts::{ShortcutIdentity, is_chromium_web_app_shortcut, shortcut_entry};
+
+type CatalogCandidate = (u8, String, usize, String, PathBuf);
 
 pub(super) fn discover_start_menu_entries() -> Vec<ApplicationEntry> {
     let roots = [
@@ -174,9 +176,26 @@ fn discover_entries(roots: impl IntoIterator<Item = PathBuf>) -> Vec<Application
             path_sort_key(&right.4),
         ))
     });
-    candidates
+    let mut retained: Vec<(CatalogCandidate, Option<ShortcutIdentity>)> =
+        Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let identity = ShortcutIdentity::from_path(&candidate.4);
+        let duplicate = identity.as_ref().is_some_and(|identity| {
+            retained
+                .iter()
+                .filter_map(|(_, existing)| existing.as_ref())
+                .any(|existing| identity.equivalent_to(existing))
+        });
+        if !duplicate {
+            retained.push((candidate, identity));
+        }
+    }
+
+    retained
         .into_iter()
-        .map(|(_, _, _, name, path)| shortcut_entry(name, &path))
+        .map(|((_, _, _, name, path), identity)| {
+            shortcut_entry(name, &path, identity.as_ref())
+        })
         .collect()
 }
 

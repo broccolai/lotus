@@ -14,11 +14,9 @@ use lotus_windows::graphics::switcher_surface::SwitcherCompositionSurfaceState;
 use lotus_windows::graphics::{
     DeviceState, SurfaceError, SwitcherHitTarget, SwitcherItem, SwitcherScene,
 };
+use lotus_windows::icon_hydrator::{IconHydrator, SwitcherIconClient, SwitcherIconRequest};
 use lotus_windows::interaction::PointerCursor;
 use lotus_windows::search_catalog::SearchCatalogCache;
-use lotus_windows::switcher_icons::{
-    SwitcherIconHydrator, SwitcherIconHydratorError, SwitcherIconRequest,
-};
 use lotus_windows::window::{SwitcherEvent, SwitcherWindow};
 
 use crate::app::AppError;
@@ -33,6 +31,7 @@ const SWITCHER_ICON_DIP: u32 = 38;
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
 
 pub(super) struct AuxiliaryWindows {
+    pub(super) icon_hydrator: IconHydrator,
     pub(super) applications: SearchCatalogCache,
     pub(super) launcher: LauncherRuntime,
     pub(super) settings: SettingsRuntime,
@@ -59,7 +58,7 @@ pub(super) struct SwitcherRuntime {
     pub(super) surface: Option<ScheduledSurface<SwitcherCompositionSurfaceState>>,
     pub(super) scene: Option<SwitcherScene>,
     pub(super) session: Option<SwitcherSession<WindowInfo>>,
-    icon_hydrator: SwitcherIconHydrator,
+    icon_hydrator: SwitcherIconClient,
     icon_settings: DockSettings,
     icon_generation: u64,
     icon_settings_revision: u64,
@@ -73,20 +72,21 @@ impl SwitcherRuntime {
         window: SwitcherWindow,
         settings: &DockSettings,
         theme: &Theme,
-    ) -> Result<Self, SwitcherIconHydratorError> {
-        Ok(Self {
+        icon_hydrator: SwitcherIconClient,
+    ) -> Self {
+        Self {
             window,
             surface: None,
             scene: None,
             session: None,
-            icon_hydrator: SwitcherIconHydrator::start()?,
+            icon_hydrator,
             icon_settings: settings.clone(),
             icon_generation: 0,
             icon_settings_revision: 0,
             name_overrides: std::collections::BTreeMap::new(),
             recent_windows: RecentOrder::default(),
             theme: *theme,
-        })
+        }
     }
 
     pub(super) fn begin(
@@ -280,16 +280,18 @@ impl SwitcherRuntime {
         self.request_visible_icons();
     }
 
-    pub(super) fn drain_hydrated_icons(&mut self) -> bool {
+    pub(super) fn drain_hydrated_icons(
+        &mut self,
+        results: impl IntoIterator<Item = lotus_windows::icon_hydrator::HydratedSwitcherIcon>,
+    ) -> bool {
         let Some(scene) = &mut self.scene else {
-            let _discarded = self.icon_hydrator.drain();
             return false;
         };
         let dpi = scene.dpi();
         let icon_size = sampled_icon_size(dpi);
         let mut changed = false;
 
-        for result in self.icon_hydrator.drain() {
+        for result in results {
             if result.generation != self.icon_generation
                 || result.settings_revision != self.icon_settings_revision
                 || result.pixel_size != icon_size
@@ -366,6 +368,7 @@ impl SwitcherRuntime {
 impl SwitcherRuntime {
     fn request_visible_icons(&self) {
         let (Some(session), Some(scene)) = (&self.session, &self.scene) else {
+            self.icon_hydrator.request_switcher(Vec::new());
             return;
         };
         let pixel_size = sampled_icon_size(scene.dpi());
@@ -388,7 +391,7 @@ impl SwitcherRuntime {
                 })
             })
             .collect();
-        self.icon_hydrator.request(requests);
+        self.icon_hydrator.request_switcher(requests);
     }
 }
 

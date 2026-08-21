@@ -29,6 +29,7 @@ use lotus_windows::dpi::enable_per_monitor_v2;
 use lotus_windows::graphics::{
     CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize,
 };
+use lotus_windows::icon_hydrator::IconHydrator;
 use lotus_windows::input::{InputConfig, InputController};
 use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::single_instance::SingleInstance;
@@ -66,9 +67,7 @@ pub enum AppError {
     #[error("the application switcher could not produce a valid render scene")]
     InvalidSwitcherScene,
     #[error(transparent)]
-    SwitcherIcons(#[from] lotus_windows::switcher_icons::SwitcherIconHydratorError),
-    #[error(transparent)]
-    LauncherIcons(#[from] lotus_windows::launcher_icons::LauncherIconHydratorError),
+    IconHydrator(#[from] lotus_windows::icon_hydrator::IconHydratorError),
     #[error("the native launcher could not produce a valid render scene")]
     InvalidLauncherScene,
     #[error("the native settings window could not produce a valid render scene")]
@@ -229,6 +228,7 @@ fn create_auxiliary_windows(
     usage_store: SearchUsageStore,
 ) -> Result<AuxiliaryWindows, AppError> {
     let search_window = dock.create_search_window()?;
+    let icon_hydrator = IconHydrator::start()?;
     lotus_windows::backdrop::apply_search_settings(
         search_window.handle(),
         dock_model.settings(),
@@ -239,7 +239,8 @@ fn create_auxiliary_windows(
         &theme_for(dock_model.settings()),
         usage,
         usage_store,
-    )?;
+        icon_hydrator.launcher_client(),
+    );
     let settings = SettingsRuntime::new(
         dock.create_settings_window()?,
         dock_model.settings().clone(),
@@ -261,7 +262,8 @@ fn create_auxiliary_windows(
         switcher_window,
         dock_model.settings(),
         &theme_for(dock_model.settings()),
-    )?;
+        icon_hydrator.switcher_client(),
+    );
     let media = MediaRuntime::new(dock_model.settings().show_media_controls);
     let status = StatusRuntime::new(
         [dock.create_status_window()?, dock.create_status_window()?],
@@ -269,6 +271,7 @@ fn create_auxiliary_windows(
     )?;
 
     Ok(AuxiliaryWindows {
+        icon_hydrator,
         applications: SearchCatalogCache::new(),
         launcher,
         settings,
