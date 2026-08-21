@@ -9,7 +9,7 @@ use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 
-use super::identity::compose_catalog;
+use super::identity::{application_entry_identity, compose_catalog};
 use super::sources::discover_start_menu_entries;
 use crate::launch::resolve_executable;
 use crate::messages::SEARCH_CATALOG_WAKE as SEARCH_CATALOG_WAKE_MESSAGE;
@@ -219,16 +219,6 @@ impl SearchCatalogCache {
         let _ = cache.refresh_if_stale(Duration::ZERO);
         cache
     }
-}
-
-fn application_entry_identity(entry: &ApplicationEntry) -> ApplicationIdentity {
-    let executable = resolve_executable(&entry.launch_target);
-    ApplicationIdentity::from_path(
-        entry.app_user_model_id.as_deref(),
-        Some(&entry.launch_target),
-        executable.as_deref(),
-        std::iter::empty(),
-    )
 }
 
 struct RefreshCompletion {
