@@ -14,7 +14,7 @@ use lotus_windows::window::{
 
 use super::presentation::{resize_dock, resize_launcher_surface};
 use crate::app::launcher::{LauncherRuntime, LauncherSubmission};
-use crate::app::switcher::AuxiliaryWindows;
+use crate::app::modules::ModuleHost;
 use crate::app::{AppError, DockRuntime};
 
 pub(super) fn refresh_catalog(
@@ -23,7 +23,7 @@ pub(super) fn refresh_catalog(
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
     windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     let catalog_changed = auxiliary.launcher.refresh_catalog_if_ready(
         dock,
@@ -65,7 +65,7 @@ pub(super) fn refresh_catalog(
 
 pub(super) fn refresh_open_application_manager(
     dock_model: &DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) {
     if !auxiliary.settings.visible
         || auxiliary.settings.scene.page() != lotus_settings::scene::SettingsPage::Apps
@@ -99,7 +99,7 @@ pub(super) fn drain_search_events(
     dock: &DockWindow,
     graphics: &mut DeviceState,
     dock_model: &DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     for event in auxiliary.launcher.drain_events() {
         if let Some(submission) =
@@ -208,7 +208,7 @@ fn execute_search_submission(
     dock: &DockWindow,
     graphics: &mut DeviceState,
     dock_model: &DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     match submission {
         LauncherSubmission::Command(command) => {
@@ -232,7 +232,7 @@ fn execute_search_command(
     dock: &DockWindow,
     graphics: &mut DeviceState,
     dock_model: &DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     match command {
         CommandId::OpenSettings => {

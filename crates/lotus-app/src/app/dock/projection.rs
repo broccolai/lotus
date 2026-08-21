@@ -9,14 +9,31 @@ use lotus_core::window::WindowInfo;
 use lotus_dock::model::project_snapshot;
 use lotus_windows::clock::{local_date, local_time};
 use lotus_windows::graphics::assets::SvgAsset;
-use lotus_windows::graphics::scene::{
-    DockAnchor, DockBadge, DockIcon, DockMetrics, SystemStatusItem, SystemStatusKind,
-};
-use lotus_windows::graphics::scene_adapter::adapt_dock_items_with_native;
 use lotus_windows::launch::resolve_executable;
 
 use super::{DockRuntime, NATIVE_ICON_SAMPLE_SCALE, SceneDockItem};
 use crate::app::AppError;
+use crate::app::visuals::{
+    DockAnchor, DockBadge, DockIcon, DockMetrics, SystemStatusItem, SystemStatusKind,
+};
+
+fn adapt_dock_items_with_native<F>(
+    items: &[DockItem],
+    mut native_icon: F,
+) -> Vec<SceneDockItem>
+where
+    F: FnMut(usize, &DockItem) -> Option<lotus_ui::icon::RasterIcon>,
+{
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(source_index, item)| {
+            native_icon(source_index, item).map(|icon| {
+                SceneDockItem::with_source_index(source_index, DockIcon::Raster(icon))
+            })
+        })
+        .collect()
+}
 
 impl DockRuntime {
     pub(in crate::app) fn scene_items(&mut self) -> Vec<SceneDockItem> {

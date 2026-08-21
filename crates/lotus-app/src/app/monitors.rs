@@ -1,7 +1,7 @@
+use lotus_dock::scene::DockPresenter;
 use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_windows::WindowHandle;
-use lotus_windows::graphics::scene::{DockAnchor, DockHitTarget, DockScene};
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
 use lotus_windows::window::{
@@ -13,6 +13,7 @@ use lotus_windows::window_tracker::WindowTracker;
 use crate::app::AppError;
 use crate::app::dock::{DockRuntime, popup_overlap, status_popup_center};
 use crate::app::runtime::resize_surface;
+use crate::app::visuals::{DockAnchor, DockHitTarget, DockScene, surface_size};
 
 #[derive(Clone, Copy)]
 pub(super) enum MonitorDockAction {
@@ -38,6 +39,7 @@ struct MonitorDock {
     window: StatusWindow,
     surface: ScheduledSurface<CompositionSurfaceState>,
     scene: DockScene,
+    presenter: DockPresenter,
 }
 
 impl MonitorDocks {
@@ -178,12 +180,13 @@ impl MonitorDocks {
             let surface = CompositionSurfaceState::create(
                 device,
                 window.handle(),
-                SurfaceSize::from(size),
+                surface_size(size),
             )?;
             let replica = MonitorDock {
                 window,
                 surface: ScheduledSurface::new(surface),
                 scene,
+                presenter: DockPresenter::default(),
             };
             self.docks.push(replica);
         }
@@ -207,11 +210,7 @@ impl MonitorDocks {
                 replica.window.handle(),
                 model.settings(),
             );
-            resize_surface(
-                graphics,
-                replica.surface.value_mut(),
-                SurfaceSize::from(size),
-            )?;
+            resize_surface(graphics, replica.surface.value_mut(), surface_size(size))?;
         }
         Ok(())
     }
@@ -332,26 +331,31 @@ impl MonitorDock {
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         let animation_allowed = !self.window.is_fullscreen_occluded();
-        pass.render(&mut self.surface, |surface| {
-            match surface.render_scene(&self.scene) {
-                Ok(FrameResult::Presented { needs_animation }) => {
-                    Ok(FrameOutcome::complete(needs_animation && animation_allowed))
-                }
-                Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-                Err(lotus_windows::graphics::SurfaceError::DeviceLost(_)) => {
-                    let _ = graphics.poll();
-                    graphics.recover()?;
-                    let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-                    surface.recover(device)?;
-                    match surface.render_scene(&self.scene)? {
-                        FrameResult::Presented { needs_animation } => {
-                            Ok(FrameOutcome::complete(needs_animation && animation_allowed))
-                        }
-                        FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
-                    }
-                }
-                Err(error) => Err(error.into()),
+        let size = self.scene.desired_size();
+        let (presentation, animating) =
+            self.presenter
+                .present(&self.scene, size.width(), size.height());
+        let render = |surface: &mut CompositionSurfaceState| {
+            surface.render_scene(&presentation, animating)
+        };
+        pass.render(&mut self.surface, |surface| match render(surface) {
+            Ok(FrameResult::Presented { needs_animation }) => {
+                Ok(FrameOutcome::complete(needs_animation && animation_allowed))
             }
+            Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
+            Err(lotus_windows::graphics::SurfaceError::DeviceLost(_)) => {
+                let _ = graphics.poll();
+                graphics.recover()?;
+                let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
+                surface.recover(device)?;
+                match render(surface)? {
+                    FrameResult::Presented { needs_animation } => {
+                        Ok(FrameOutcome::complete(needs_animation && animation_allowed))
+                    }
+                    FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+                }
+            }
+            Err(error) => Err(error.into()),
         })
     }
 }

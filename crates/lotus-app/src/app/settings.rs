@@ -1,12 +1,13 @@
 use lotus_core::settings::DockSettings;
+use lotus_settings::scene::{
+    SettingsAssets, SettingsScene, SettingsSize, SettingsSlider, SettingsUpdateActivity,
+};
 use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_windows::custom_image::CustomImageCache;
+use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::settings_surface::SettingsCompositionSurfaceState;
 use lotus_windows::graphics::surface::FrameResult;
-use lotus_windows::graphics::{
-    DeviceState, SettingsScene, SettingsSize, SettingsSlider, SettingsUpdateActivity,
-    SurfaceError,
-};
+use lotus_windows::graphics::{DeviceState, SurfaceError, SurfaceSize};
 use lotus_windows::interaction::PointerCursor;
 use lotus_windows::native_icon::NativeIconCache;
 use lotus_windows::update::{Release, UpdateChecker, UpdateResult, UpdateStartError};
@@ -76,15 +77,17 @@ impl SettingsRuntime {
         let (width, height) = self.window.client_size()?;
         let size =
             SettingsSize::new(width, height).ok_or(AppError::InvalidSettingsScene)?;
+        let surface_size = SurfaceSize::new(size.width(), size.height())
+            .ok_or(AppError::ZeroSizedSurface)?;
         if let Some(surface) = &mut self.surface {
-            surface.value_mut().resize(size)?;
+            surface.value_mut().resize(surface_size)?;
         } else {
             let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
             self.surface = Some(ScheduledSurface::new(
                 SettingsCompositionSurfaceState::create(
                     device,
                     self.window.handle(),
-                    size,
+                    surface_size,
                 )?,
             ));
         }
@@ -158,7 +161,14 @@ impl SettingsRuntime {
             .surface
             .as_mut()
             .ok_or(AppError::InvalidSettingsScene)?;
-        pass.render(surface, |surface| match surface.render_scene(&self.scene) {
+        let presentation = self.scene.presentation(&SettingsAssets {
+            lotus: SvgAsset::LotusPixel,
+            search: SvgAsset::FluentSearch,
+        });
+        let render = |surface: &mut SettingsCompositionSurfaceState| {
+            surface.render_scene(&presentation)
+        };
+        pass.render(surface, |surface| match render(surface) {
             Ok(FrameResult::Presented { .. }) => Ok(FrameOutcome::complete(false)),
             Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
             Err(SurfaceError::DeviceLost(_)) => {
@@ -166,7 +176,7 @@ impl SettingsRuntime {
                 graphics.recover()?;
                 let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
                 surface.recover(device)?;
-                match surface.render_scene(&self.scene)? {
+                match render(surface)? {
                     FrameResult::Presented { .. } => Ok(FrameOutcome::complete(false)),
                     FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
                 }
@@ -187,6 +197,8 @@ impl SettingsRuntime {
         let Some(surface) = &mut self.surface else {
             return Ok(());
         };
+        let size = SurfaceSize::new(size.width(), size.height())
+            .ok_or(AppError::ZeroSizedSurface)?;
         match surface.value_mut().resize(size) {
             Ok(()) => {
                 self.invalidate();

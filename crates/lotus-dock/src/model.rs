@@ -534,9 +534,6 @@ fn insert_item_order(order: &mut Vec<String>, items: &[DockItem], source_index: 
 fn restart_required(previous: &DockSettings, current: &DockSettings) -> bool {
     previous.replace_windows_taskbar != current.replace_windows_taskbar
         || previous.exclusive_taskbar_replacement != current.exclusive_taskbar_replacement
-        || previous.search_enabled != current.search_enabled
-        || previous.search_open_with_windows_key != current.search_open_with_windows_key
-        || previous.alt_tab_enabled != current.alt_tab_enabled
         || previous.notification_badge_style != current.notification_badge_style
         || (current.replace_windows_taskbar
             && (previous.icon_size != current.icon_size

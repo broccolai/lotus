@@ -7,14 +7,13 @@ use lotus_dock::popup::order_picker_windows;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::{ActivationError, execute_activation, foreground_window};
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::NativePickerWindow;
 use lotus_windows::graphics::assets::SvgAsset;
-use lotus_windows::graphics::scene::{DockAnchor, DockHitTarget, DockIcon};
 use lotus_windows::window::{DockContextRequest, PopupAlignment, SignedPoint};
 
 use super::projection::{media_source_matches_item, popup_overlap, status_popup_center};
 use super::{DockRuntime, NATIVE_ICON_SAMPLE_SCALE};
 use crate::app::AppError;
+use crate::app::visuals::{DockAnchor, DockHitTarget, DockIcon, NativePickerWindow};
 
 impl DockRuntime {
     pub(in crate::app) fn hit_test(&self, x: i32, y: i32) -> Option<DockHitTarget> {

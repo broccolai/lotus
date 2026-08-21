@@ -8,50 +8,19 @@ use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::theme::Theme;
 use lotus_windows::activation::{request_window_close, switch_window};
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::scene::DockIcon;
+use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::switcher_surface::SwitcherCompositionSurfaceState;
-use lotus_windows::graphics::{
-    DeviceState, SurfaceError, SwitcherHitTarget, SwitcherItem, SwitcherScene,
-};
-use lotus_windows::icon_hydrator::{IconHydrator, SwitcherIconClient, SwitcherIconRequest};
+use lotus_windows::graphics::{DeviceState, SurfaceError};
+use lotus_windows::icon_hydrator::{SwitcherIconClient, SwitcherIconRequest};
 use lotus_windows::interaction::PointerCursor;
-use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::window::{SwitcherEvent, SwitcherWindow};
 
 use crate::app::AppError;
-use crate::app::context_menu::ContextMenuRuntime;
-use crate::app::launcher::LauncherRuntime;
-use crate::app::media::MediaRuntime;
-use crate::app::monitors::MonitorDocks;
-use crate::app::settings::SettingsRuntime;
-use crate::app::status::StatusRuntime;
+use crate::app::visuals::{DockIcon, SwitcherHitTarget, SwitcherItem, SwitcherScene};
 
 const SWITCHER_ICON_DIP: u32 = 38;
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
-
-pub(super) struct AuxiliaryWindows {
-    pub(super) icon_hydrator: IconHydrator,
-    pub(super) applications: SearchCatalogCache,
-    pub(super) launcher: LauncherRuntime,
-    pub(super) settings: SettingsRuntime,
-    pub(super) context_menu: ContextMenuRuntime,
-    pub(super) media: MediaRuntime,
-    pub(super) status: StatusRuntime,
-    pub(super) monitors: MonitorDocks,
-    pub(super) switcher: SwitcherRuntime,
-}
-
-impl AuxiliaryWindows {
-    pub(super) fn invalidate_surfaces(&mut self) {
-        self.launcher.invalidate();
-        self.settings.invalidate();
-        self.context_menu.invalidate();
-        self.switcher.invalidate();
-        self.status.invalidate();
-        self.monitors.invalidate();
-    }
-}
 
 pub(super) struct SwitcherRuntime {
     pub(super) window: SwitcherWindow,
@@ -343,24 +312,27 @@ impl SwitcherRuntime {
         let (Some(scene), Some(surface)) = (&self.scene, &mut self.surface) else {
             return Ok(());
         };
-        pass.render(surface, |surface| match surface.render_scene(scene) {
-            Ok(FrameResult::Presented { needs_animation }) => {
-                Ok(FrameOutcome::complete(needs_animation))
-            }
-            Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-            Err(SurfaceError::DeviceLost(_)) => {
-                let _ = graphics.poll();
-                graphics.recover()?;
-                let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-                surface.recover(device)?;
-                match surface.render_scene(scene)? {
-                    FrameResult::Presented { needs_animation } => {
-                        Ok(FrameOutcome::complete(needs_animation))
-                    }
-                    FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+        let presentation = scene.presentation(SvgAsset::FluentDismiss);
+        pass.render(surface, |surface| {
+            match surface.render_scene(&presentation) {
+                Ok(FrameResult::Presented { needs_animation }) => {
+                    Ok(FrameOutcome::complete(needs_animation))
                 }
+                Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
+                Err(SurfaceError::DeviceLost(_)) => {
+                    let _ = graphics.poll();
+                    graphics.recover()?;
+                    let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
+                    surface.recover(device)?;
+                    match surface.render_scene(&presentation)? {
+                        FrameResult::Presented { needs_animation } => {
+                            Ok(FrameOutcome::complete(needs_animation))
+                        }
+                        FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+                    }
+                }
+                Err(error) => Err(error.into()),
             }
-            Err(error) => Err(error.into()),
         })
     }
 }

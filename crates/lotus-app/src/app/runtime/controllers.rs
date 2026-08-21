@@ -1,6 +1,6 @@
 use lotus_windows::activation::launch_target;
 use lotus_windows::graphics::DeviceState;
-use lotus_windows::input::{InputAction, InputConfig, InputController, capture_age};
+use lotus_windows::input::{InputAction, InputController, capture_age};
 use lotus_windows::responsiveness::METRICS;
 use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::window::DockWindow;
@@ -15,23 +15,6 @@ pub(crate) fn restart_current_process() -> Result<(), RestartError> {
     let arguments = format!("--restart-after {} --open-settings", std::process::id());
     launch_target(&executable.to_string_lossy(), Some(&arguments))?;
     Ok(())
-}
-
-pub(crate) fn enable_optional_input(
-    enabled: bool,
-    config: InputConfig,
-) -> Option<InputController> {
-    if !enabled || (!config.windows_key_search && !config.custom_alt_tab) {
-        return None;
-    }
-
-    match InputController::start(config) {
-        Ok(controller) => Some(controller),
-        Err(error) => {
-            lotus_windows::diagnostics::record_error("input.enable", &error);
-            None
-        }
-    }
 }
 
 pub(super) struct InputEventContext<'a> {

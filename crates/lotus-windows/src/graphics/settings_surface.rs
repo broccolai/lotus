@@ -1,18 +1,18 @@
 use windows::Win32::Foundation::HWND;
 use windows::core::Error as WindowsError;
 
+use super::assets::SvgAsset;
 use super::composition_surface::{CompositionSurfaceCore, RecoverableSurface};
 use super::device::{DeviceLost, GraphicsDevice};
-use super::settings_renderer::{
-    SettingsDrawResult, SettingsRenderer, SettingsRendererError,
+use super::presentation_renderer::{
+    PresentationDrawResult, PresentationRenderer, PresentationRendererError,
 };
 use super::surface::{FrameResult, SurfaceError, SurfaceSize};
-use super::{SettingsScene, SettingsSize};
 use crate::WindowHandle;
 
 pub struct SettingsCompositionSurface {
     core: CompositionSurfaceCore,
-    renderer: SettingsRenderer,
+    renderer: PresentationRenderer,
 }
 
 impl SettingsCompositionSurface {
@@ -22,7 +22,7 @@ impl SettingsCompositionSurface {
         size: SurfaceSize,
     ) -> Result<Self, SurfaceError> {
         let core = CompositionSurfaceCore::create(graphics, hwnd, size)?;
-        let renderer = SettingsRenderer::create(graphics, core.swap_chain())?;
+        let renderer = PresentationRenderer::create(graphics, core.swap_chain())?;
         Ok(Self { core, renderer })
     }
 
@@ -37,16 +37,16 @@ impl SettingsCompositionSurface {
 
     fn render(
         &mut self,
-        scene: &SettingsScene,
-    ) -> Result<FrameResult, SettingsRendererError> {
-        match self.renderer.draw(self.core.size(), scene)? {
-            SettingsDrawResult::Complete => {
+        presentation: &Presentation<SvgAsset>,
+    ) -> Result<FrameResult, PresentationRendererError> {
+        match self.renderer.draw(presentation)? {
+            PresentationDrawResult::Complete => {
                 self.core.present()?;
                 Ok(FrameResult::Presented {
                     needs_animation: false,
                 })
             }
-            SettingsDrawResult::RecreateTarget => {
+            PresentationDrawResult::RecreateTarget => {
                 self.core.ensure_device_available()?;
                 self.renderer.attach_target(self.core.swap_chain())?;
                 Ok(FrameResult::TargetRecreated)
@@ -65,15 +65,14 @@ impl SettingsCompositionSurfaceState {
     pub fn create(
         graphics: &GraphicsDevice,
         window: WindowHandle,
-        size: SettingsSize,
+        size: SurfaceSize,
     ) -> Result<Self, SurfaceError> {
         let hwnd = window.raw();
-        SettingsCompositionSurface::create(graphics, hwnd, surface_size(size))
+        SettingsCompositionSurface::create(graphics, hwnd, size)
             .map(|surface| Self(RecoverableSurface::ready(surface)))
     }
 
-    pub fn resize(&mut self, size: SettingsSize) -> Result<(), SurfaceError> {
-        let size = surface_size(size);
+    pub fn resize(&mut self, size: SurfaceSize) -> Result<(), SurfaceError> {
         if self.0.remember_resize(size) {
             return Ok(());
         }
@@ -87,7 +86,7 @@ impl SettingsCompositionSurfaceState {
 
     pub fn render_scene(
         &mut self,
-        scene: &SettingsScene,
+        presentation: &Presentation<SvgAsset>,
     ) -> Result<FrameResult, SurfaceError> {
         let Some(surface) = self.0.get_mut() else {
             return Err(SurfaceError::DeviceLost(
@@ -96,9 +95,12 @@ impl SettingsCompositionSurfaceState {
         };
         let hwnd = surface.core.hwnd();
         let size = surface.core.size();
-        match surface.render(scene) {
+        match surface.render(presentation) {
             Ok(frame) => Ok(frame),
-            Err(SettingsRendererError::Windows(error)) => self.0.fail(hwnd, size, error),
+            Err(PresentationRendererError::Windows(error)) => {
+                self.0.fail(hwnd, size, error)
+            }
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -117,15 +119,4 @@ impl SettingsCompositionSurfaceState {
     }
 }
 
-impl From<SettingsRendererError> for SurfaceError {
-    fn from(error: SettingsRendererError) -> Self {
-        match error {
-            SettingsRendererError::Windows(error) => Self::from(error),
-        }
-    }
-}
-
-fn surface_size(size: SettingsSize) -> SurfaceSize {
-    SurfaceSize::new(size.width(), size.height())
-        .expect("settings size is guaranteed nonzero")
-}
+use lotus_ui::presentation::Presentation;

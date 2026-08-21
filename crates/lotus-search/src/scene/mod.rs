@@ -6,6 +6,7 @@ use lotus_ui::theme::Theme;
 use crate::controller::SearchMode;
 
 mod layout;
+mod presentation;
 
 pub use layout::{LauncherLayout, LauncherSize, PixelRect};
 

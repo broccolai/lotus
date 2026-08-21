@@ -8,7 +8,6 @@ mod settings_events;
 mod update_events;
 mod window_events;
 
-pub(super) use controllers::enable_optional_input;
 pub(super) use message_loop::{flush_frame, run_message_loop};
 pub(super) use presentation::{
     apply_fullscreen_visibility, resize_dock, resize_launcher_surface, resize_surface,

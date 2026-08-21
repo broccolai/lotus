@@ -1,5 +1,6 @@
 use std::num::NonZeroU32;
 
+use lotus_ui::presentation::Presentation;
 use thiserror::Error;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dxgi::Common::{
@@ -12,12 +13,12 @@ use windows::Win32::Graphics::Dxgi::{
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::core::Error as WindowsError;
 
-use super::LauncherSize;
-use super::assets::AssetError;
+use super::assets::{AssetError, SvgAsset};
 use super::composition_surface::{CompositionSurfaceCore, RecoverableSurface};
 use super::device::{DeviceLost, GraphicsDevice};
-use super::renderer::{Direct2DRenderer, DrawResult, RendererError};
-use super::scene::{DockScene, DockSize};
+use super::presentation_renderer::{
+    PresentationDrawResult, PresentationRenderer, PresentationRendererError,
+};
 use crate::{NativeError, WindowHandle};
 
 const BUFFER_COUNT: u32 = 2;
@@ -48,21 +49,9 @@ impl SurfaceSize {
     }
 }
 
-impl From<DockSize> for SurfaceSize {
-    fn from(size: DockSize) -> Self {
-        Self::new(size.width(), size.height()).expect("DockSize dimensions are nonzero")
-    }
-}
-
-impl From<LauncherSize> for SurfaceSize {
-    fn from(size: LauncherSize) -> Self {
-        Self::new(size.width(), size.height()).expect("launcher size is guaranteed nonzero")
-    }
-}
-
 pub struct CompositionSurface {
     core: CompositionSurfaceCore,
-    renderer: Direct2DRenderer,
+    renderer: PresentationRenderer,
 }
 
 impl CompositionSurface {
@@ -72,7 +61,7 @@ impl CompositionSurface {
         size: SurfaceSize,
     ) -> Result<Self, SurfaceError> {
         let core = CompositionSurfaceCore::create(graphics, hwnd, size)?;
-        let renderer = Direct2DRenderer::create(graphics, core.swap_chain())?;
+        let renderer = PresentationRenderer::create(graphics, core.swap_chain())?;
         Ok(Self { core, renderer })
     }
 
@@ -98,16 +87,20 @@ impl CompositionSurface {
         self.renderer.is_target_attached()
     }
 
-    fn render(&mut self, scene: &DockScene) -> Result<FrameResult, RendererError> {
+    fn render(
+        &mut self,
+        presentation: &Presentation<SvgAsset>,
+        needs_animation: bool,
+    ) -> Result<FrameResult, PresentationRendererError> {
         if !self.renderer.is_target_attached() {
             self.renderer.attach_target(self.core.swap_chain())?;
         }
-        match self.renderer.draw(self.core.size(), scene)? {
-            DrawResult::Complete { needs_animation } => {
+        match self.renderer.draw(presentation)? {
+            PresentationDrawResult::Complete => {
                 self.present()?;
                 Ok(FrameResult::Presented { needs_animation })
             }
-            DrawResult::RecreateTarget => {
+            PresentationDrawResult::RecreateTarget => {
                 self.ensure_device_available()?;
                 self.renderer.attach_target(self.core.swap_chain())?;
                 Ok(FrameResult::TargetRecreated)
@@ -185,17 +178,11 @@ impl CompositionSurfaceState {
         Ok(())
     }
 
-    pub fn render(&mut self) -> Result<FrameResult, SurfaceError> {
-        if let Some(reason) = self.loss() {
-            return Err(SurfaceError::DeviceLost(reason));
-        }
-        let scene =
-            DockScene::initial(self.window_dpi()?, super::assets::SvgAsset::LotusPixel)
-                .ok_or(SurfaceError::InvalidWindowDpi)?;
-        self.render_scene(&scene)
-    }
-
-    pub fn render_scene(&mut self, scene: &DockScene) -> Result<FrameResult, SurfaceError> {
+    pub fn render_scene(
+        &mut self,
+        presentation: &Presentation<SvgAsset>,
+        needs_animation: bool,
+    ) -> Result<FrameResult, SurfaceError> {
         let Some(surface) = self.0.get_mut() else {
             return Err(SurfaceError::DeviceLost(
                 self.loss().expect("the surface is known to be lost"),
@@ -204,9 +191,11 @@ impl CompositionSurfaceState {
 
         let hwnd = surface.core.hwnd();
         let size = surface.core.size();
-        match surface.render(scene) {
+        match surface.render(presentation, needs_animation) {
             Ok(result) => Ok(result),
-            Err(RendererError::Windows(error)) => self.0.fail(hwnd, size, error),
+            Err(PresentationRendererError::Windows(error)) => {
+                self.0.fail(hwnd, size, error)
+            }
             Err(error) => Err(SurfaceError::from(error)),
         }
     }
@@ -265,16 +254,6 @@ pub enum SurfaceError {
     InvalidWindowDpi,
     #[error("native graphics surface operation failed: {0}")]
     Native(NativeError),
-}
-
-impl From<RendererError> for SurfaceError {
-    fn from(error: RendererError) -> Self {
-        match error {
-            RendererError::Asset(error) => Self::Asset(error),
-            RendererError::BitmapCacheInvariant => Self::BitmapCacheInvariant,
-            RendererError::Windows(error) => Self::from(error),
-        }
-    }
 }
 
 impl From<WindowsError> for SurfaceError {

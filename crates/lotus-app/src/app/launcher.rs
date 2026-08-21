@@ -17,11 +17,8 @@ use lotus_windows::clock::local_time;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
-use lotus_windows::graphics::scene::DockIcon;
 use lotus_windows::graphics::surface::FrameResult;
-use lotus_windows::graphics::{
-    DeviceState, LauncherResult, LauncherScene, SurfaceError, SurfaceSize,
-};
+use lotus_windows::graphics::{DeviceState, SurfaceError, SurfaceSize};
 use lotus_windows::icon_hydrator::{LauncherIconClient, LauncherIconRequest};
 use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::window::{DockWindow, SearchEvent, SearchWindow, SelectionDirection};
@@ -31,6 +28,10 @@ use crate::app::dock::DockRuntime;
 use crate::app::runtime::resize_launcher_surface;
 
 const MAX_HYDRATED_ICONS: usize = 64;
+
+type DockIcon = lotus_ui::icon::Icon<SvgAsset>;
+type LauncherResult = lotus_search::scene::LauncherResult<SvgAsset>;
+type LauncherScene = lotus_search::scene::LauncherScene<SvgAsset>;
 
 pub(super) struct LauncherRuntime {
     pub(super) window: SearchWindow,
@@ -128,7 +129,8 @@ impl LauncherRuntime {
             .as_ref()
             .ok_or(AppError::InvalidLauncherScene)?
             .desired_size();
-        let size = SurfaceSize::from(desired);
+        let size = SurfaceSize::new(desired.width(), desired.height())
+            .ok_or(AppError::ZeroSizedSurface)?;
         if let Some(surface) = &mut self.surface {
             resize_launcher_surface(graphics, surface.value_mut(), size)?;
         } else {
@@ -479,7 +481,8 @@ impl LauncherRuntime {
             resize_launcher_surface(
                 graphics,
                 surface.value_mut(),
-                SurfaceSize::from(desired),
+                SurfaceSize::new(desired.width(), desired.height())
+                    .ok_or(AppError::ZeroSizedSurface)?,
             )?;
         }
         Ok(())
@@ -501,7 +504,17 @@ impl LauncherRuntime {
             .surface
             .as_mut()
             .ok_or(AppError::InvalidLauncherScene)?;
-        pass.render(surface, |surface| match surface.render_scene(scene) {
+        let content = scene.render_presentation(SvgAsset::FluentSearch);
+        let motion = scene.presentation();
+        let render = |surface: &mut LauncherCompositionSurfaceState| {
+            surface.render_scene(
+                &content,
+                motion.scale,
+                motion.opacity,
+                scene.needs_animation(),
+            )
+        };
+        pass.render(surface, |surface| match render(surface) {
             Ok(FrameResult::Presented { needs_animation }) => {
                 Ok(FrameOutcome::complete(needs_animation))
             }
@@ -511,7 +524,7 @@ impl LauncherRuntime {
                 graphics.recover()?;
                 let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
                 surface.recover(device)?;
-                match surface.render_scene(scene)? {
+                match render(surface)? {
                     FrameResult::Presented { needs_animation } => {
                         Ok(FrameOutcome::complete(needs_animation))
                     }

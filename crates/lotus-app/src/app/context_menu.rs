@@ -1,19 +1,20 @@
 use lotus_core::settings::{DockSettings, WindowPickerStyle};
+use lotus_dock::popup::PopupSymbol;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::theme::Theme;
 use lotus_windows::dwm_thumbnail::DwmThumbnailHost;
+use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
 use lotus_windows::graphics::surface::FrameResult;
-use lotus_windows::graphics::{
-    ContextMenuScene, DeviceState, NativePickerWindow, SurfaceError,
-};
+use lotus_windows::graphics::{DeviceState, SurfaceError};
 use lotus_windows::window::{
     ContextMenuEvent, ContextMenuWindow, PopupAlignment, SignedPoint,
 };
 
 use crate::app::AppError;
+use crate::app::visuals::{ContextMenuScene, NativePickerWindow};
 
 pub(super) struct ContextMenuRuntime {
     pub(super) window: ContextMenuWindow,
@@ -219,26 +220,29 @@ impl ContextMenuRuntime {
             .surface
             .as_mut()
             .ok_or(AppError::InvalidContextMenuScene)?;
-        pass.render(surface, |surface| match surface.render_scene(&self.scene) {
-            Ok(FrameResult::Presented { .. }) => {
-                self.thumbnails.reconcile(&self.scene.picker_previews());
-                Ok(FrameOutcome::complete(false))
-            }
-            Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-            Err(SurfaceError::DeviceLost(_)) => {
-                let _ = graphics.poll();
-                graphics.recover()?;
-                let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-                surface.recover(device)?;
-                match surface.render_scene(&self.scene)? {
-                    FrameResult::Presented { .. } => {
-                        self.thumbnails.reconcile(&self.scene.picker_previews());
-                        Ok(FrameOutcome::complete(false))
-                    }
-                    FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+        let presentation = self.scene.presentation(popup_asset);
+        pass.render(surface, |surface| {
+            match surface.render_scene(&presentation) {
+                Ok(FrameResult::Presented { .. }) => {
+                    self.thumbnails.reconcile(&self.scene.picker_previews());
+                    Ok(FrameOutcome::complete(false))
                 }
+                Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
+                Err(SurfaceError::DeviceLost(_)) => {
+                    let _ = graphics.poll();
+                    graphics.recover()?;
+                    let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
+                    surface.recover(device)?;
+                    match surface.render_scene(&presentation)? {
+                        FrameResult::Presented { .. } => {
+                            self.thumbnails.reconcile(&self.scene.picker_previews());
+                            Ok(FrameOutcome::complete(false))
+                        }
+                        FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
+                    }
+                }
+                Err(error) => Err(error.into()),
             }
-            Err(error) => Err(error.into()),
         })
     }
 
@@ -254,5 +258,20 @@ impl ContextMenuRuntime {
 
     pub(super) fn drain_events(&mut self) -> Vec<ContextMenuEvent> {
         self.window.drain_events().collect()
+    }
+}
+
+const fn popup_asset(symbol: PopupSymbol) -> SvgAsset {
+    match symbol {
+        PopupSymbol::Power => SvgAsset::FluentPower,
+        PopupSymbol::Lock => SvgAsset::FluentLock,
+        PopupSymbol::Restart => SvgAsset::FluentRestart,
+        PopupSymbol::Settings => SvgAsset::FluentSettings,
+        PopupSymbol::Quit | PopupSymbol::Close => SvgAsset::FluentDismiss,
+        PopupSymbol::Open | PopupSymbol::Image => SvgAsset::FluentOpen,
+        PopupSymbol::Pin => SvgAsset::FluentPin,
+        PopupSymbol::Unpin => SvgAsset::FluentPinOff,
+        PopupSymbol::Previous => SvgAsset::FluentPrevious,
+        PopupSymbol::Next => SvgAsset::FluentNext,
     }
 }

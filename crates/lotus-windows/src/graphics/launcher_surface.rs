@@ -1,21 +1,22 @@
+use lotus_ui::presentation::Presentation;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::DirectComposition::{
     IDCompositionEffectGroup, IDCompositionScaleTransform,
 };
 use windows::core::Error as WindowsError;
 
-use super::LauncherScene;
+use super::assets::SvgAsset;
 use super::composition_surface::{CompositionSurfaceCore, RecoverableSurface};
 use super::device::{DeviceLost, GraphicsDevice};
-use super::launcher_renderer::{
-    LauncherDrawResult, LauncherRenderer, LauncherRendererError,
+use super::presentation_renderer::{
+    PresentationDrawResult, PresentationRenderer, PresentationRendererError,
 };
 use super::surface::{FrameResult, SurfaceError, SurfaceSize};
 use crate::WindowHandle;
 
 pub struct LauncherCompositionSurface {
     core: CompositionSurfaceCore,
-    renderer: LauncherRenderer,
+    renderer: PresentationRenderer,
     scale: IDCompositionScaleTransform,
     effect: IDCompositionEffectGroup,
 }
@@ -34,7 +35,7 @@ impl LauncherCompositionSurface {
             core.visual().SetEffect(&effect)?;
         }
         core.commit()?;
-        let renderer = LauncherRenderer::create(graphics, core.swap_chain())?;
+        let renderer = PresentationRenderer::create(graphics, core.swap_chain())?;
         Ok(Self {
             core,
             renderer,
@@ -54,27 +55,27 @@ impl LauncherCompositionSurface {
 
     fn render(
         &mut self,
-        scene: &LauncherScene,
-    ) -> Result<FrameResult, LauncherRendererError> {
-        let presentation = scene.presentation();
+        presentation: &Presentation<SvgAsset>,
+        scale: f32,
+        opacity: f32,
+        needs_animation: bool,
+    ) -> Result<FrameResult, PresentationRendererError> {
         let center_x = as_f32(self.core.size().width()) * 0.5;
         let center_y = as_f32(self.core.size().height()) * 0.08;
         unsafe {
             self.scale.SetCenterX2(center_x)?;
             self.scale.SetCenterY2(center_y)?;
-            self.scale.SetScaleX2(presentation.scale)?;
-            self.scale.SetScaleY2(presentation.scale)?;
-            self.effect.SetOpacity2(presentation.opacity)?;
+            self.scale.SetScaleX2(scale)?;
+            self.scale.SetScaleY2(scale)?;
+            self.effect.SetOpacity2(opacity)?;
             self.core.composition_device().Commit()?;
         }
-        match self.renderer.draw(self.core.size(), scene)? {
-            LauncherDrawResult::Complete => {
+        match self.renderer.draw(presentation)? {
+            PresentationDrawResult::Complete => {
                 self.core.present()?;
-                Ok(FrameResult::Presented {
-                    needs_animation: scene.needs_animation(),
-                })
+                Ok(FrameResult::Presented { needs_animation })
             }
-            LauncherDrawResult::RecreateTarget => {
+            PresentationDrawResult::RecreateTarget => {
                 self.core.ensure_device_available()?;
                 self.renderer.attach_target(self.core.swap_chain())?;
                 Ok(FrameResult::TargetRecreated)
@@ -122,7 +123,10 @@ impl LauncherCompositionSurfaceState {
 
     pub fn render_scene(
         &mut self,
-        scene: &LauncherScene,
+        presentation: &Presentation<SvgAsset>,
+        scale: f32,
+        opacity: f32,
+        needs_animation: bool,
     ) -> Result<FrameResult, SurfaceError> {
         let Some(surface) = self.0.get_mut() else {
             return Err(SurfaceError::DeviceLost(
@@ -131,9 +135,11 @@ impl LauncherCompositionSurfaceState {
         };
         let hwnd = surface.core.hwnd();
         let size = surface.core.size();
-        match surface.render(scene) {
+        match surface.render(presentation, scale, opacity, needs_animation) {
             Ok(frame) => Ok(frame),
-            Err(LauncherRendererError::Windows(error)) => self.0.fail(hwnd, size, error),
+            Err(PresentationRendererError::Windows(error)) => {
+                self.0.fail(hwnd, size, error)
+            }
             Err(error) => Err(error.into()),
         }
     }
@@ -150,15 +156,5 @@ impl LauncherCompositionSurfaceState {
 
     pub const fn loss(&self) -> Option<DeviceLost> {
         self.0.loss()
-    }
-}
-
-impl From<LauncherRendererError> for SurfaceError {
-    fn from(error: LauncherRendererError) -> Self {
-        match error {
-            LauncherRendererError::Asset(error) => Self::Asset(error),
-            LauncherRendererError::BitmapCacheInvariant => Self::BitmapCacheInvariant,
-            LauncherRendererError::Windows(error) => Self::from(error),
-        }
     }
 }

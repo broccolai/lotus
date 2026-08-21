@@ -6,15 +6,13 @@ use lotus_windows::activation::{
     ActivationError, force_window_close, launch_target, request_window_close,
 };
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::{
-    AppMenuAction, CompositionSurfaceState, ContextMenuAction, DeviceState, PopupAction,
-    PowerAction,
-};
+use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
 use lotus_windows::interaction::request_exit;
 use lotus_windows::window::{ContextMenuEvent, DockWindow, SelectionDirection};
 
 use super::presentation::resize_dock;
-use crate::app::switcher::AuxiliaryWindows;
+use crate::app::modules::ModuleHost;
+use crate::app::visuals::{AppMenuAction, ContextMenuAction, PopupAction, PowerAction};
 use crate::app::{AppError, DockRuntime};
 
 pub(super) fn handle_context_menu_event(
@@ -24,7 +22,7 @@ pub(super) fn handle_context_menu_event(
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
     windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     match event {
         ContextMenuEvent::PointerMoved { x, y } => {
@@ -110,7 +108,7 @@ struct PopupActionContext<'a> {
     surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     windows: &'a [WindowInfo],
     dock_model: &'a mut DockRuntime,
-    auxiliary: &'a mut AuxiliaryWindows,
+    auxiliary: &'a mut ModuleHost,
 }
 
 fn execute_popup_action(
@@ -360,7 +358,7 @@ fn execute_context_menu_action(
     action: ContextMenuAction,
     graphics: &mut DeviceState,
     dock_model: &DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     match action {
         ContextMenuAction::OpenSettings => {

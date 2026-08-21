@@ -1,12 +1,10 @@
 use lotus_core::settings::{DockSettings, DockZone};
+use lotus_dock::scene::DockPresenter;
 use lotus_media::MediaHitTarget;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_windows::graphics::assets::SvgAsset;
-use lotus_windows::graphics::scene::{
-    DockHitTarget, DockIcon, DockScene, MediaItem, SystemStatusItem, SystemStatusKind,
-};
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
 use lotus_windows::window::{
@@ -18,6 +16,10 @@ use crate::app::dock::{
     dock_anchor, metrics, popup_overlap, status_items, status_popup_center,
 };
 use crate::app::runtime::resize_surface;
+use crate::app::visuals::{
+    DockHitTarget, DockIcon, DockScene, MediaItem, SystemStatusItem, SystemStatusKind,
+    surface_size,
+};
 
 pub(super) enum AuxiliaryZoneAction {
     Media(MediaHitTarget),
@@ -33,6 +35,7 @@ struct ZoneSurface {
     surface: Option<ScheduledSurface<CompositionSurfaceState>>,
     scene: DockScene,
     zone: Option<DockZone>,
+    presenter: DockPresenter,
 }
 
 impl StatusRuntime {
@@ -48,6 +51,7 @@ impl StatusRuntime {
                     window,
                     surface: None,
                     zone: None,
+                    presenter: DockPresenter::default(),
                 })
             })
             .collect::<Result<Vec<_>, AppError>>()?;
@@ -88,14 +92,14 @@ impl StatusRuntime {
             );
 
             if let Some(surface) = &mut zone_surface.surface {
-                resize_surface(graphics, surface.value_mut(), SurfaceSize::from(size))?;
+                resize_surface(graphics, surface.value_mut(), surface_size(size))?;
             } else {
                 let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
                 zone_surface.surface =
                     Some(ScheduledSurface::new(CompositionSurfaceState::create(
                         device,
                         zone_surface.window.handle(),
-                        SurfaceSize::from(size),
+                        surface_size(size),
                     )?));
             }
             zone_surface.window.set_visible(dock.is_visible());
@@ -229,7 +233,14 @@ impl StatusRuntime {
                 continue;
             };
             let animation_allowed = !zone.window.is_fullscreen_occluded();
-            pass.render(surface, |surface| match surface.render_scene(&zone.scene) {
+            let size = zone.scene.desired_size();
+            let (presentation, animating) =
+                zone.presenter
+                    .present(&zone.scene, size.width(), size.height());
+            let render = |surface: &mut CompositionSurfaceState| {
+                surface.render_scene(&presentation, animating)
+            };
+            pass.render(surface, |surface| match render(surface) {
                 Ok(FrameResult::Presented { needs_animation }) => Ok::<_, AppError>(
                     FrameOutcome::complete(needs_animation && animation_allowed),
                 ),
@@ -239,7 +250,7 @@ impl StatusRuntime {
                     graphics.recover()?;
                     let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
                     surface.recover(device)?;
-                    match surface.render_scene(&zone.scene)? {
+                    match render(surface)? {
                         FrameResult::Presented { needs_animation } => {
                             Ok(FrameOutcome::complete(needs_animation && animation_allowed))
                         }

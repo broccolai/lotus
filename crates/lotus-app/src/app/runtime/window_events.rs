@@ -8,8 +8,8 @@ use lotus_windows::window_tracker::{WindowTracker, WindowTrackerEvent};
 use super::presentation::{apply_fullscreen_visibility, resize_dock};
 use super::{dock_events, popup_events, search_events};
 use crate::app::context_menu::ContextMenuRuntime;
+use crate::app::modules::ModuleHost;
 use crate::app::status::AuxiliaryZoneAction;
-use crate::app::switcher::AuxiliaryWindows;
 use crate::app::{AppError, DockRuntime, RuntimePolicy};
 
 pub(super) fn drain_window_events(
@@ -18,7 +18,7 @@ pub(super) fn drain_window_events(
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
     windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<bool, AppError> {
     let events = dock.drain_events().collect::<Vec<_>>();
     let animation_tick = events
@@ -65,7 +65,7 @@ pub(super) struct TrackerEventContext<'a, 'runtime> {
     pub(super) surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     pub(super) window_tracker: &'a mut WindowTracker,
     pub(super) dock_model: &'a mut DockRuntime,
-    pub(super) auxiliary: &'a mut AuxiliaryWindows,
+    pub(super) auxiliary: &'a mut ModuleHost,
 }
 
 pub(super) fn handle_tracker_message(

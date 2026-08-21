@@ -1,6 +1,5 @@
 use lotus_ui::frame::{FrameOutcome, ScheduledSurface};
 use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
-use lotus_windows::graphics::scene::DockScene;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{
     CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize,
@@ -9,8 +8,9 @@ use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
 
 use crate::app::launcher::LauncherRuntime;
+use crate::app::modules::ModuleHost;
 use crate::app::status::StatusRuntime;
-use crate::app::switcher::AuxiliaryWindows;
+use crate::app::visuals::surface_size;
 use crate::app::{AppError, DockRuntime, RuntimePolicy};
 
 pub(super) fn sync_monitor_presentation(
@@ -20,7 +20,7 @@ pub(super) fn sync_monitor_presentation(
     graphics: &mut DeviceState,
     window_tracker: &WindowTracker,
     dock_model: &mut DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     auxiliary
         .monitors
@@ -99,16 +99,17 @@ pub(crate) fn resize_launcher_surface(
 pub(crate) fn render_surface(
     graphics: &mut DeviceState,
     surface: &mut CompositionSurfaceState,
-    scene: &DockScene,
+    model: &mut DockRuntime,
 ) -> Result<FrameOutcome, AppError> {
-    match surface.render_scene(scene) {
+    let (presentation, needs_animation) = model.presentation();
+    match surface.render_scene(&presentation, needs_animation) {
         Ok(FrameResult::Presented { needs_animation }) => {
             Ok(FrameOutcome::complete(needs_animation))
         }
         Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
         Err(SurfaceError::DeviceLost(_)) => {
             recover_graphics(graphics, surface)?;
-            match surface.render_scene(scene)? {
+            match surface.render_scene(&presentation, needs_animation)? {
                 FrameResult::Presented { needs_animation } => {
                     Ok(FrameOutcome::complete(needs_animation))
                 }
@@ -127,7 +128,7 @@ pub(crate) fn resize_dock(
 ) -> Result<(), AppError> {
     let size = model.scene().desired_size();
     dock.resize_content(size.width(), size.height(), model.settings())?;
-    resize_surface(graphics, surface.value_mut(), SurfaceSize::from(size))
+    resize_surface(graphics, surface.value_mut(), surface_size(size))
 }
 
 fn recover_graphics(

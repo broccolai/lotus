@@ -1,30 +1,20 @@
 use lotus_ui::geometry::NonZeroPhysicalSize;
-use windows::Win32::Foundation::{E_FAIL, HWND};
+use lotus_ui::presentation::Presentation;
+use windows::Win32::Foundation::HWND;
 use windows::core::Error as WindowsError;
 
-use super::SwitcherScene;
+use super::assets::SvgAsset;
 use super::composition_surface::{CompositionSurfaceCore, RecoverableSurface};
 use super::device::{DeviceLost, GraphicsDevice};
+use super::presentation_renderer::{
+    PresentationDrawResult, PresentationRenderer, PresentationRendererError,
+};
 use super::surface::{FrameResult, SurfaceError, SurfaceSize};
-use super::switcher_renderer::{DrawResult, RendererError, SwitcherRenderer};
 use crate::WindowHandle;
-
-impl From<RendererError> for SurfaceError {
-    fn from(error: RendererError) -> Self {
-        match error {
-            RendererError::Windows(error) => Self::from(error),
-            RendererError::Asset(error) => Self::from(error),
-            RendererError::BitmapCacheInvariant => Self::from(WindowsError::new(
-                E_FAIL,
-                "switcher bitmap cache invariant failed",
-            )),
-        }
-    }
-}
 
 pub struct SwitcherCompositionSurface {
     core: CompositionSurfaceCore,
-    renderer: SwitcherRenderer,
+    renderer: PresentationRenderer,
 }
 
 impl SwitcherCompositionSurface {
@@ -34,7 +24,7 @@ impl SwitcherCompositionSurface {
         size: SurfaceSize,
     ) -> Result<Self, SurfaceError> {
         let core = CompositionSurfaceCore::create(graphics, hwnd, size)?;
-        let renderer = SwitcherRenderer::create(graphics, core.swap_chain())?;
+        let renderer = PresentationRenderer::create(graphics, core.swap_chain())?;
         Ok(Self { core, renderer })
     }
 
@@ -47,15 +37,18 @@ impl SwitcherCompositionSurface {
         self.renderer.attach_target(self.core.swap_chain())
     }
 
-    fn render(&mut self, scene: &SwitcherScene) -> Result<FrameResult, RendererError> {
-        match self.renderer.draw(self.core.size(), scene)? {
-            DrawResult::Complete => {
+    fn render(
+        &mut self,
+        presentation: &Presentation<SvgAsset>,
+    ) -> Result<FrameResult, PresentationRendererError> {
+        match self.renderer.draw(presentation)? {
+            PresentationDrawResult::Complete => {
                 self.core.present()?;
                 Ok(FrameResult::Presented {
                     needs_animation: false,
                 })
             }
-            DrawResult::RecreateTarget => {
+            PresentationDrawResult::RecreateTarget => {
                 self.core.ensure_device_available()?;
                 self.renderer.attach_target(self.core.swap_chain())?;
                 Ok(FrameResult::TargetRecreated)
@@ -95,7 +88,7 @@ impl SwitcherCompositionSurfaceState {
 
     pub fn render_scene(
         &mut self,
-        scene: &SwitcherScene,
+        presentation: &Presentation<SvgAsset>,
     ) -> Result<FrameResult, SurfaceError> {
         let Some(surface) = self.0.get_mut() else {
             return Err(SurfaceError::DeviceLost(
@@ -104,9 +97,11 @@ impl SwitcherCompositionSurfaceState {
         };
         let hwnd = surface.core.hwnd();
         let size = surface.core.size();
-        match surface.render(scene) {
+        match surface.render(presentation) {
             Ok(frame) => Ok(frame),
-            Err(RendererError::Windows(error)) => self.0.fail(hwnd, size, error),
+            Err(PresentationRendererError::Windows(error)) => {
+                self.0.fail(hwnd, size, error)
+            }
             Err(error) => Err(error.into()),
         }
     }

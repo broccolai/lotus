@@ -1,5 +1,5 @@
+use lotus_settings::scene::SettingsUpdateActivity;
 use lotus_windows::dialog::{confirm_install_update, show_error, show_information};
-use lotus_windows::graphics::SettingsUpdateActivity;
 use lotus_windows::interaction::request_exit;
 use lotus_windows::update::{UpdateResult, UpdateStatus, is_installed, launch_installer};
 

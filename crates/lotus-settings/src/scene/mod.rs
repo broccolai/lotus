@@ -12,9 +12,11 @@ use crate::appearance::{AccentPreset, ForegroundPreset, SurfacePreset, theme_for
 mod draft;
 mod layout;
 mod onboarding;
+mod presentation;
 
 use draft::SettingsDraft;
 use onboarding::OnboardingState;
+pub use presentation::SettingsAssets;
 
 const DIPS_PER_INCH: u64 = 96;
 const WIDTH_DIP: u32 = 900;

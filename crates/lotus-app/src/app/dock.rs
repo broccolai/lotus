@@ -12,13 +12,11 @@ use lotus_core::settings::{DockSettings, SettingsStore};
 use lotus_core::window::{WindowId, WindowInfo};
 use lotus_dock::interaction::DockInteraction;
 use lotus_dock::model::{DockModel, SettingsImpact};
+use lotus_dock::scene::DockPresenter;
 use lotus_media::MediaSnapshot;
 use lotus_settings::appearance::theme_for;
 use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::graphics::assets::SvgAsset;
-use lotus_windows::graphics::scene::{
-    DockIcon, DockItem as SceneDockItem, DockMetrics, DockScene, MediaItem, MediaSymbols,
-};
 use lotus_windows::media::decode_artwork;
 use lotus_windows::native_icon::NativeIconCache;
 use projection::{
@@ -30,6 +28,9 @@ pub(super) use projection::{
 };
 
 use crate::app::AppError;
+use crate::app::visuals::{
+    DockIcon, DockItem as SceneDockItem, DockMetrics, DockScene, MediaItem, MediaSymbols,
+};
 
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
 const EXIT_DURATION: Duration = Duration::from_millis(80);
@@ -47,6 +48,7 @@ pub(super) struct DockRuntime {
     recent_windows: HashMap<String, Vec<WindowId>>,
     transient_unpinned: HashMap<String, (usize, DockItem)>,
     revision: u64,
+    presenter: DockPresenter,
 }
 
 impl DockRuntime {
@@ -75,6 +77,7 @@ impl DockRuntime {
             recent_windows: HashMap::new(),
             transient_unpinned: HashMap::new(),
             revision: 0,
+            presenter: DockPresenter::default(),
         };
         runtime.refresh_scene_items();
         Ok(runtime)
@@ -186,6 +189,14 @@ impl DockRuntime {
     }
     pub(super) const fn scene(&self) -> &DockScene {
         &self.scene
+    }
+
+    pub(super) fn presentation(
+        &mut self,
+    ) -> (lotus_ui::presentation::Presentation<SvgAsset>, bool) {
+        let size = self.scene.desired_size();
+        self.presenter
+            .present(&self.scene, size.width(), size.height())
     }
 
     pub(super) fn apply_settings(

@@ -1,18 +1,19 @@
 use std::time::Instant;
 
+use lotus_core::module::ModuleId;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::launch_target;
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::scene::{DockHitTarget, SystemStatusKind};
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
 use lotus_windows::window::{
     DockContextRequest, DockWindow, PointerEvent, PopupAlignment, SignedPoint, WindowEvent,
 };
 
 use super::presentation::{resize_dock, resize_surface};
+use crate::app::modules::ModuleHost;
 use crate::app::monitors::MonitorDockAction;
-use crate::app::switcher::AuxiliaryWindows;
+use crate::app::visuals::{DockHitTarget, SystemStatusKind};
 use crate::app::{AppError, DockRuntime};
 
 pub(crate) fn handle_pointer_event(
@@ -34,7 +35,7 @@ pub(super) fn handle_window_event(
     graphics: &mut DeviceState,
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
     dock_model: &mut DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     match event {
         WindowEvent::Resized { width, height } => {
@@ -102,7 +103,7 @@ fn handle_dock_pointer(
     graphics: &mut DeviceState,
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
     dock_model: &mut DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     if matches!(event, PointerEvent::LeftButtonPressed { .. }) {
         auxiliary.context_menu.hide();
@@ -148,7 +149,7 @@ fn handle_dock_pointer(
             )?;
         }
         DockHitTarget::Jirachi => {
-            if dock_model.settings().search_enabled {
+            if auxiliary.is_enabled(ModuleId::Search) {
                 auxiliary.launcher.toggle(
                     dock,
                     dock_model,
@@ -186,7 +187,7 @@ fn activate_dock_item(
     owner: WindowHandle,
     graphics: &mut DeviceState,
     dock_model: &mut DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     auxiliary.launcher.hide();
     let window_count = dock_model
@@ -279,7 +280,7 @@ fn handle_context_menu(
     graphics: &mut DeviceState,
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
     dock_model: &mut DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     let Some((target, anchor, alignment)) = dock_model.popup_target_anchor(request) else {
         return Ok(());
@@ -297,7 +298,7 @@ fn open_context_target(
     alignment: PopupAlignment,
     graphics: &mut DeviceState,
     dock_model: &DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     match target {
         DockHitTarget::Jirachi => {
@@ -327,7 +328,7 @@ pub(super) fn handle_monitor_dock_action(
     dock: &DockWindow,
     graphics: &mut DeviceState,
     dock_model: &mut DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     match action {
         MonitorDockAction::Activate {
@@ -345,7 +346,7 @@ pub(super) fn handle_monitor_dock_action(
                 auxiliary,
             )?,
             DockHitTarget::Jirachi => {
-                if dock_model.settings().search_enabled {
+                if auxiliary.is_enabled(ModuleId::Search) {
                     auxiliary.launcher.toggle(
                         dock,
                         dock_model,

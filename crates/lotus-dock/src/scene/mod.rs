@@ -7,6 +7,9 @@ use lotus_ui::theme::Theme;
 pub type DockIcon<Asset> = lotus_ui::icon::Icon<Asset>;
 
 mod layout;
+mod presentation;
+
+pub use presentation::DockPresenter;
 
 const DEFAULT_ICON_SIZE_DIP: u32 = 38;
 const DEFAULT_ITEM_SPACING_DIP: u32 = 8;

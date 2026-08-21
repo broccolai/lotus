@@ -1,19 +1,20 @@
 use lotus_ui::geometry::NonZeroPhysicalSize;
+use lotus_ui::presentation::Presentation;
 use windows::Win32::Foundation::HWND;
 use windows::core::Error as WindowsError;
 
-use super::ContextMenuScene;
+use super::assets::SvgAsset;
 use super::composition_surface::{CompositionSurfaceCore, RecoverableSurface};
-use super::context_menu_renderer::{
-    ContextMenuDrawResult, ContextMenuRenderer, ContextMenuRendererError,
-};
 use super::device::{DeviceLost, GraphicsDevice};
+use super::presentation_renderer::{
+    PresentationDrawResult, PresentationRenderer, PresentationRendererError,
+};
 use super::surface::{FrameResult, SurfaceError, SurfaceSize};
 use crate::WindowHandle;
 
 pub struct ContextMenuCompositionSurface {
     core: CompositionSurfaceCore,
-    renderer: ContextMenuRenderer,
+    renderer: PresentationRenderer,
 }
 
 impl ContextMenuCompositionSurface {
@@ -23,7 +24,7 @@ impl ContextMenuCompositionSurface {
         size: SurfaceSize,
     ) -> Result<Self, SurfaceError> {
         let core = CompositionSurfaceCore::create(graphics, hwnd, size)?;
-        let renderer = ContextMenuRenderer::create(graphics, core.swap_chain())?;
+        let renderer = PresentationRenderer::create(graphics, core.swap_chain())?;
         Ok(Self { core, renderer })
     }
 
@@ -38,16 +39,16 @@ impl ContextMenuCompositionSurface {
 
     fn render(
         &mut self,
-        scene: &ContextMenuScene,
-    ) -> Result<FrameResult, ContextMenuRendererError> {
-        match self.renderer.draw(self.core.size(), scene)? {
-            ContextMenuDrawResult::Complete => {
+        presentation: &Presentation<SvgAsset>,
+    ) -> Result<FrameResult, PresentationRendererError> {
+        match self.renderer.draw(presentation)? {
+            PresentationDrawResult::Complete => {
                 self.core.present()?;
                 Ok(FrameResult::Presented {
                     needs_animation: false,
                 })
             }
-            ContextMenuDrawResult::RecreateTarget => {
+            PresentationDrawResult::RecreateTarget => {
                 self.core.ensure_device_available()?;
                 self.renderer.attach_target(self.core.swap_chain())?;
                 Ok(FrameResult::TargetRecreated)
@@ -90,7 +91,7 @@ impl ContextMenuCompositionSurfaceState {
 
     pub fn render_scene(
         &mut self,
-        scene: &ContextMenuScene,
+        presentation: &Presentation<SvgAsset>,
     ) -> Result<FrameResult, SurfaceError> {
         let Some(surface) = self.0.get_mut() else {
             return Err(SurfaceError::DeviceLost(
@@ -100,9 +101,11 @@ impl ContextMenuCompositionSurfaceState {
         };
         let hwnd = surface.core.hwnd();
         let size = surface.core.size();
-        match surface.render(scene) {
+        match surface.render(presentation) {
             Ok(frame) => Ok(frame),
-            Err(ContextMenuRendererError::Windows(error)) => self.0.fail(hwnd, size, error),
+            Err(PresentationRendererError::Windows(error)) => {
+                self.0.fail(hwnd, size, error)
+            }
             Err(error) => Err(error.into()),
         }
     }
@@ -119,16 +122,6 @@ impl ContextMenuCompositionSurfaceState {
 
     const fn loss(&self) -> Option<DeviceLost> {
         self.0.loss()
-    }
-}
-
-impl From<ContextMenuRendererError> for SurfaceError {
-    fn from(error: ContextMenuRendererError) -> Self {
-        match error {
-            ContextMenuRendererError::Asset(error) => Self::Asset(error),
-            ContextMenuRendererError::BitmapCacheInvariant => Self::BitmapCacheInvariant,
-            ContextMenuRendererError::Windows(error) => Self::from(error),
-        }
     }
 }
 

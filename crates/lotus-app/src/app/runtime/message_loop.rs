@@ -16,7 +16,7 @@ use super::{
     controllers, dock_events, presentation, search_events, settings_events, update_events,
     window_events,
 };
-use crate::app::switcher::AuxiliaryWindows;
+use crate::app::modules::ModuleHost;
 use crate::app::{AppError, DockRuntime, RuntimePolicy};
 
 pub(crate) fn run_message_loop(
@@ -26,9 +26,9 @@ pub(crate) fn run_message_loop(
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
     window_tracker: &mut WindowTracker,
     dock_model: &mut DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
-    let heartbeat = UiHeartbeatTimer::start(runtime.input.is_some())?;
+    let heartbeat = UiHeartbeatTimer::start(auxiliary.input().is_some())?;
     MessageLoop {
         heartbeat,
         runtime,
@@ -46,15 +46,15 @@ pub(crate) fn flush_frame(
     dock: &mut DockWindow,
     graphics: &mut DeviceState,
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
-    dock_model: &DockRuntime,
-    auxiliary: &mut AuxiliaryWindows,
+    dock_model: &mut DockRuntime,
+    auxiliary: &mut ModuleHost,
     trigger: FrameTrigger,
 ) -> Result<(), AppError> {
     let mut pass = FramePass::new(trigger);
     let device_generation = graphics.generation();
     let animation_allowed = !dock.is_fullscreen_occluded();
     pass.render(surface, |surface| {
-        presentation::render_surface(graphics, surface, dock_model.scene()).map(|outcome| {
+        presentation::render_surface(graphics, surface, dock_model).map(|outcome| {
             match outcome {
                 FrameOutcome::Complete {
                     continues_animation,
@@ -91,7 +91,7 @@ struct MessageLoop<'a, 'runtime> {
     surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     window_tracker: &'a mut WindowTracker,
     dock_model: &'a mut DockRuntime,
-    auxiliary: &'a mut AuxiliaryWindows,
+    auxiliary: &'a mut ModuleHost,
 }
 
 impl MessageLoop<'_, '_> {
@@ -113,7 +113,7 @@ impl MessageLoop<'_, '_> {
         if message.is_thread_message()
             && self.heartbeat.matches(message.id(), message.parameter())
         {
-            if let Some(input) = self.runtime.input {
+            if let Some(input) = self.auxiliary.input() {
                 input.heartbeat();
             }
             if self.handle_input_wake() {
@@ -121,7 +121,7 @@ impl MessageLoop<'_, '_> {
             }
             return Ok(());
         }
-        if self.runtime.input.is_some() && is_input_wake(message.id()) {
+        if self.auxiliary.input().is_some() && is_input_wake(message.id()) {
             message.dispatch();
             if self.handle_input_wake() {
                 self.flush_frame(FrameTrigger::Changes)?;
@@ -257,7 +257,13 @@ impl MessageLoop<'_, '_> {
     }
 
     fn handle_input_wake(&mut self) -> bool {
-        let Some(controller) = self.runtime.input else {
+        let ModuleHost {
+            modules,
+            launcher,
+            switcher,
+            ..
+        } = self.auxiliary;
+        let Some(controller) = modules.input() else {
             return false;
         };
         controllers::handle_input_actions(&mut controllers::InputEventContext {
@@ -267,8 +273,8 @@ impl MessageLoop<'_, '_> {
             dock_model: self.dock_model,
             graphics: self.graphics,
             catalog: &self.auxiliary.applications,
-            launcher: &mut self.auxiliary.launcher,
-            switcher: &mut self.auxiliary.switcher,
+            launcher,
+            switcher,
         })
     }
 
@@ -291,6 +297,8 @@ impl MessageLoop<'_, '_> {
                 },
             )?;
         }
+        self.heartbeat
+            .set_enabled(self.auxiliary.input().is_some())?;
         Ok(())
     }
 

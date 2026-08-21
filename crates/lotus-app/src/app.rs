@@ -3,11 +3,13 @@ mod dock;
 mod icon_override;
 mod launcher;
 mod media;
+mod modules;
 mod monitors;
 mod runtime;
 mod settings;
 mod status;
 mod switcher;
+mod visuals;
 
 use std::fs;
 use std::path::PathBuf;
@@ -30,7 +32,6 @@ use lotus_windows::graphics::{
     CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize,
 };
 use lotus_windows::icon_hydrator::IconHydrator;
-use lotus_windows::input::{InputConfig, InputController};
 use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::single_instance::SingleInstance;
 use lotus_windows::startup::{
@@ -42,14 +43,12 @@ use lotus_windows::update::is_installed;
 use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
 use media::MediaRuntime;
+use modules::{ModuleHost, ModuleRuntime};
 use monitors::MonitorDocks;
-use runtime::{
-    apply_fullscreen_visibility, enable_optional_input, flush_frame, resize_dock,
-    run_message_loop,
-};
+use runtime::{apply_fullscreen_visibility, flush_frame, resize_dock, run_message_loop};
 use settings::SettingsRuntime;
 use status::StatusRuntime;
-use switcher::{AuxiliaryWindows, SwitcherRuntime};
+use switcher::SwitcherRuntime;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -99,7 +98,6 @@ enum RestartError {
 }
 
 struct RuntimePolicy<'a> {
-    input: Option<&'a InputController>,
     taskbar_badges: Option<&'a TaskbarBadgeController>,
     onboarding_required: bool,
 }
@@ -145,19 +143,13 @@ pub fn run() -> Result<(), AppError> {
     let taskbar_badges = (!onboarding_required)
         .then(|| enable_notification_badges(&mut dock_model))
         .flatten();
-    dock.set_status_refresh_active(
-        dock_model.settings().show_system_status
-            && dock_model.settings().show_date_time_status,
-    )?;
-    let mut auxiliary = create_auxiliary_windows(&dock, &dock_model, usage, usage_store)?;
-    let input = enable_optional_input(
+    let mut auxiliary = create_auxiliary_windows(
+        &dock,
+        &dock_model,
+        usage,
+        usage_store,
         !onboarding_required,
-        InputConfig {
-            windows_key_search: dock_model.settings().search_enabled
-                && dock_model.settings().search_open_with_windows_key,
-            custom_alt_tab: dock_model.settings().alt_tab_enabled,
-        },
-    );
+    )?;
     resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
     let _shell_integration = if onboarding_required {
         None
@@ -201,12 +193,11 @@ pub fn run() -> Result<(), AppError> {
         &mut dock,
         &mut graphics,
         &mut surface,
-        &dock_model,
+        &mut dock_model,
         &mut auxiliary,
         lotus_ui::frame::FrameTrigger::Changes,
     )?;
     let runtime = RuntimePolicy {
-        input: input.as_ref(),
         taskbar_badges: taskbar_badges.as_ref(),
         onboarding_required,
     };
@@ -226,7 +217,8 @@ fn create_auxiliary_windows(
     dock_model: &DockRuntime,
     usage: SearchUsage,
     usage_store: SearchUsageStore,
-) -> Result<AuxiliaryWindows, AppError> {
+    modules_active: bool,
+) -> Result<ModuleHost, AppError> {
     let search_window = dock.create_search_window()?;
     let icon_hydrator = IconHydrator::start()?;
     lotus_windows::backdrop::apply_search_settings(
@@ -264,13 +256,14 @@ fn create_auxiliary_windows(
         &theme_for(dock_model.settings()),
         icon_hydrator.switcher_client(),
     );
-    let media = MediaRuntime::new(dock_model.settings().show_media_controls);
+    let media = MediaRuntime::new(false);
     let status = StatusRuntime::new(
         [dock.create_status_window()?, dock.create_status_window()?],
         dock_model.settings(),
     )?;
 
-    Ok(AuxiliaryWindows {
+    let mut auxiliary = ModuleHost {
+        modules: ModuleRuntime::new(),
         icon_hydrator,
         applications: SearchCatalogCache::new(),
         launcher,
@@ -280,7 +273,9 @@ fn create_auxiliary_windows(
         status,
         monitors: MonitorDocks::new(),
         switcher,
-    })
+    };
+    auxiliary.reconcile(dock, dock_model.settings(), modules_active)?;
+    Ok(auxiliary)
 }
 
 fn sync_startup_preference(enabled: bool) {

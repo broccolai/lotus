@@ -45,7 +45,7 @@ thread_local! {
     static HOOK_STATE: RefCell<Option<HookState>> = const { RefCell::new(None) };
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InputConfig {
     pub windows_key_search: bool,
     pub custom_alt_tab: bool,
@@ -253,6 +253,24 @@ impl UiHeartbeatTimer {
 
     pub fn matches(&self, message: u32, parameter: usize) -> bool {
         message == WM_TIMER && self.0 == Some(parameter)
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<(), NativeError> {
+        if enabled == self.0.is_some() {
+            return Ok(());
+        }
+
+        if let Some(timer) = self.0.take() {
+            let _ = unsafe { KillTimer(None, timer) };
+            return Ok(());
+        }
+
+        let timer = unsafe { SetTimer(None, 0, HEARTBEAT_INTERVAL_MS, None) };
+        if timer == 0 {
+            return Err(windows::core::Error::from_thread().into());
+        }
+        self.0 = Some(timer);
+        Ok(())
     }
 }
 

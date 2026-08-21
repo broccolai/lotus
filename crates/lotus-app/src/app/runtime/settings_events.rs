@@ -1,16 +1,18 @@
 use std::path::Path;
 
 use lotus_core::application::is_shared_host_executable;
+use lotus_core::module::ModuleId;
 use lotus_core::search::ApplicationEntry;
 use lotus_core::settings::{ApplicationIconOverride, DockSettings};
-use lotus_settings::scene::{SettingsApplicationRecord, SettingsPointerStyle};
+use lotus_settings::scene::{
+    SettingsAction, SettingsApplicationRecord, SettingsKey as SceneSettingsKey,
+    SettingsPointerStyle,
+};
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::clipboard::read_text;
 use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::{
-    CompositionSurfaceState, DeviceState, SettingsAction, SettingsKey as SceneSettingsKey,
-};
+use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
 use lotus_windows::interaction::{PointerCursor, request_exit};
 use lotus_windows::native_icon::NativeIconCache;
 use lotus_windows::startup as startup_registration;
@@ -19,8 +21,8 @@ use lotus_windows::window_tracker::WindowTracker;
 
 use super::presentation::{apply_fullscreen_visibility, resize_dock};
 use super::{controllers, update_events};
+use crate::app::modules::ModuleHost;
 use crate::app::settings::SettingsRuntime;
-use crate::app::switcher::AuxiliaryWindows;
 use crate::app::{AppError, DockRuntime};
 
 pub(super) struct SettingsEventContext<'a> {
@@ -29,7 +31,7 @@ pub(super) struct SettingsEventContext<'a> {
     pub(super) dock_surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     pub(super) window_tracker: &'a WindowTracker,
     pub(super) dock_model: &'a mut DockRuntime,
-    pub(super) auxiliary: &'a mut AuxiliaryWindows,
+    pub(super) auxiliary: &'a mut ModuleHost,
 }
 
 pub(super) fn handle_settings_event(
@@ -461,15 +463,10 @@ fn apply_changed_settings(
         return Ok(());
     }
 
-    context.dock.set_status_refresh_active(
-        context.dock_model.settings().show_system_status
-            && context.dock_model.settings().show_date_time_status,
-    )?;
     context
         .auxiliary
-        .media
-        .set_enabled(context.dock_model.settings().show_media_controls);
-    if context.dock_model.settings().show_media_controls {
+        .reconcile(context.dock, context.dock_model.settings(), true)?;
+    if context.auxiliary.is_enabled(ModuleId::Media) {
         let _changed = context.auxiliary.media.refresh(context.dock_model);
     } else {
         let _changed = context.auxiliary.media.drain(context.dock_model);
