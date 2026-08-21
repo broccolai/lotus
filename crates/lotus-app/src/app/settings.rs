@@ -161,10 +161,13 @@ impl SettingsRuntime {
             .surface
             .as_mut()
             .ok_or(AppError::InvalidSettingsScene)?;
-        let presentation = self.scene.presentation(&SettingsAssets {
-            lotus: SvgAsset::LotusPixel,
-            search: SvgAsset::FluentSearch,
-        });
+        let presentation = self.scene.presentation(
+            &SettingsAssets {
+                lotus: SvgAsset::LotusPixel,
+                search: SvgAsset::FluentSearch,
+            },
+            lotus_windows::backdrop::settings_uses_translucent_material(self.scene.draft()),
+        );
         let render = |surface: &mut SettingsCompositionSurfaceState| {
             surface.render_scene(&presentation)
         };

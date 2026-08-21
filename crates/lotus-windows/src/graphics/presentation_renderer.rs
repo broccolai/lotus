@@ -18,13 +18,14 @@ use windows::Win32::Graphics::Direct2D::{
     ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
+    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_AXIS_TAG, DWRITE_FONT_AXIS_TAG_OPTICAL_SIZE,
+    DWRITE_FONT_AXIS_TAG_WEIGHT, DWRITE_FONT_AXIS_VALUE, DWRITE_FONT_STRETCH_NORMAL,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_FAR,
     DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
-    IDWriteFontCollection, IDWriteTextFormat,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteFactory6,
+    IDWriteFontCollection1, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::core::{Error as WindowsError, Interface, w};
@@ -37,6 +38,10 @@ use crate::font::BundledFontCollection;
 use crate::resource_cache::BoundedResourceCache;
 
 const BITMAP_CACHE_BYTES: usize = 16 * 1024 * 1024;
+const FRAUNCES_SOFTNESS: DWRITE_FONT_AXIS_TAG =
+    DWRITE_FONT_AXIS_TAG(u32::from_le_bytes(*b"SOFT"));
+const FRAUNCES_WONK: DWRITE_FONT_AXIS_TAG =
+    DWRITE_FONT_AXIS_TAG(u32::from_le_bytes(*b"WONK"));
 
 pub(super) enum PresentationDrawResult {
     Complete,
@@ -49,8 +54,9 @@ pub(super) struct PresentationRenderer {
     context: ID2D1DeviceContext,
     target: Option<ID2D1Bitmap1>,
     write_factory: IDWriteFactory,
+    write_factory6: IDWriteFactory6,
     _bundled_fonts: BundledFontCollection,
-    brand_collection: IDWriteFontCollection,
+    brand_collection: IDWriteFontCollection1,
     modern_symbol_font: bool,
     brushes: BoundedResourceCache<ColorKey, ID2D1SolidColorBrush>,
     text_formats: BoundedResourceCache<TextFormatKey, IDWriteTextFormat>,
@@ -72,9 +78,9 @@ impl PresentationRenderer {
             unsafe { device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
         let write_factory: IDWriteFactory =
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
-        let write_factory6 = write_factory.cast()?;
+        let write_factory6: IDWriteFactory6 = write_factory.cast()?;
         let bundled_fonts = BundledFontCollection::create(&write_factory6)?;
-        let brand_collection = bundled_fonts.collection().cast()?;
+        let brand_collection = bundled_fonts.collection().clone();
         let modern_symbol_font =
             system_font_family_exists(&write_factory, w!("Segoe Fluent Icons"))?;
         let mut renderer = Self {
@@ -83,6 +89,7 @@ impl PresentationRenderer {
             context,
             target: None,
             write_factory,
+            write_factory6,
             _bundled_fonts: bundled_fonts,
             brand_collection,
             modern_symbol_font,
@@ -365,17 +372,20 @@ impl PresentationRenderer {
         if let Some(format) = self.text_formats.get(&key) {
             return Ok(format.clone());
         }
-        let format = unsafe {
-            self.write_factory.CreateTextFormat(
+        let format = if style.family == FontFamily::Brand {
+            self.brand_text_format(style)?
+        } else {
+            unsafe {
+                self.write_factory.CreateTextFormat(
                 match style.family {
                     FontFamily::Interface => w!("Segoe UI Variable Text"),
                     FontFamily::SystemSymbols if self.modern_symbol_font => {
                         w!("Segoe Fluent Icons")
                     }
                     FontFamily::SystemSymbols => w!("Segoe MDL2 Assets"),
-                    FontFamily::Brand => w!("Fraunces"),
+                    FontFamily::Brand => unreachable!(),
                 },
-                (style.family == FontFamily::Brand).then_some(&self.brand_collection),
+                None,
                 match style.weight {
                     FontWeight::Normal => DWRITE_FONT_WEIGHT_NORMAL,
                     FontWeight::Semibold => {
@@ -386,7 +396,8 @@ impl PresentationRenderer {
                 DWRITE_FONT_STRETCH_NORMAL,
                 style.size,
                 w!("en-us"),
-            )?
+                )?
+            }
         };
         unsafe {
             format.SetTextAlignment(match style.horizontal {
@@ -403,6 +414,44 @@ impl PresentationRenderer {
         }
         self.text_formats.insert(key, format.clone(), 1);
         Ok(format)
+    }
+
+    fn brand_text_format(
+        &self,
+        style: TextStyle,
+    ) -> Result<IDWriteTextFormat, WindowsError> {
+        let weight = match style.weight {
+            FontWeight::Normal => 400.0,
+            FontWeight::Semibold => 600.0,
+        };
+        let axes = [
+            DWRITE_FONT_AXIS_VALUE {
+                axisTag: DWRITE_FONT_AXIS_TAG_OPTICAL_SIZE,
+                value: style.size.clamp(9.0, 144.0),
+            },
+            DWRITE_FONT_AXIS_VALUE {
+                axisTag: DWRITE_FONT_AXIS_TAG_WEIGHT,
+                value: weight,
+            },
+            DWRITE_FONT_AXIS_VALUE {
+                axisTag: FRAUNCES_SOFTNESS,
+                value: 0.0,
+            },
+            DWRITE_FONT_AXIS_VALUE {
+                axisTag: FRAUNCES_WONK,
+                value: 1.0,
+            },
+        ];
+        let format = unsafe {
+            self.write_factory6.CreateTextFormat(
+                w!("Fraunces"),
+                &self.brand_collection,
+                &axes,
+                style.size,
+                w!("en-us"),
+            )?
+        };
+        format.cast()
     }
 
     fn ensure_embedded(

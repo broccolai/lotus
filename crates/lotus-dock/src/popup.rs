@@ -389,7 +389,7 @@ impl<Asset: Clone> DockPopup<Asset> {
                 as_f32(size.width()) - 0.5,
                 as_f32(size.height()) - 0.5,
             ),
-            radius: self.scale_f32(theme.radii.panel),
+            radius: self.scale_f32(theme.radii.window),
             color: theme.chrome_overlay,
         });
 

@@ -23,25 +23,27 @@ impl SettingsScene {
     pub fn presentation<Asset: Clone>(
         &self,
         assets: &SettingsAssets<Asset>,
+        translucent: bool,
     ) -> Presentation<Asset> {
         let layout = self.layout();
         let theme = self.theme();
+        let palette = SettingsPalette::new(&theme, translucent);
         let mut output = Presentation::new(theme.canvas.with_alpha(0.0));
 
         output.push(fill(
             rect(0, 0, layout.size.width(), layout.size.height()),
             0.0,
-            theme.canvas,
+            palette.panel,
         ));
         if let Some(step) = self.onboarding_step() {
-            self.present_onboarding(&mut output, &layout, step, assets);
+            self.present_onboarding(&mut output, &layout, step, assets, palette);
         } else {
             output.push(fill(
                 rect(0, 0, scale(self, 209), layout.size.height()),
                 0.0,
-                theme.accent_soft,
+                palette.sidebar,
             ));
-            self.present_navigation(&mut output, &layout);
+            self.present_navigation(&mut output, &layout, palette);
             self.present_content(&mut output, &layout, assets);
             self.present_footer(&mut output, &layout);
         }
@@ -52,6 +54,7 @@ impl SettingsScene {
         &self,
         output: &mut Presentation<Asset>,
         layout: &SettingsLayout,
+        palette: SettingsPalette,
     ) {
         let theme = self.theme();
         output.push(text(
@@ -74,7 +77,7 @@ impl SettingsScene {
                 output.push(fill(
                     settings_rect(bounds),
                     scaled(self, theme.radii.control),
-                    theme.border_strong,
+                    palette.sidebar_selected,
                 ));
                 output.push(fill(
                     rect(
@@ -934,6 +937,7 @@ impl SettingsScene {
         layout: &SettingsLayout,
         step: OnboardingStep,
         assets: &SettingsAssets<Asset>,
+        palette: SettingsPalette,
     ) {
         let title_bounds = match step {
             OnboardingStep::Welcome => rect(
@@ -1033,7 +1037,7 @@ impl SettingsScene {
         for entry in &layout.controls {
             match entry.control {
                 SettingsControl::OnboardingModule(module) => {
-                    self.present_onboarding_module(output, entry.bounds, module);
+                    self.present_onboarding_module(output, entry.bounds, module, palette);
                 }
                 SettingsControl::OnboardingZone(module) => {
                     self.present_onboarding_zone(output, entry.bounds, module);
@@ -1085,6 +1089,7 @@ impl SettingsScene {
         output: &mut Presentation<Asset>,
         bounds: SettingsRect,
         module: OnboardingModule,
+        palette: SettingsPalette,
     ) {
         let enabled = self.onboarding_module_enabled(module);
         output.push(fill(
@@ -1095,7 +1100,7 @@ impl SettingsScene {
             } else if self.hovered() == Some(SettingsControl::OnboardingModule(module)) {
                 self.theme().control_hover
             } else {
-                self.theme().surface
+                palette.group
             },
         ));
         output.push(text(
@@ -1180,6 +1185,34 @@ impl SettingsScene {
             ));
         }
         self.present_focus(output, SettingsControl::OnboardingZone(module), bounds);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SettingsPalette {
+    panel: Color,
+    sidebar: Color,
+    sidebar_selected: Color,
+    group: Color,
+}
+
+impl SettingsPalette {
+    fn new(theme: &lotus_ui::theme::Theme, translucent: bool) -> Self {
+        if translucent {
+            Self {
+                panel: theme.chrome_overlay,
+                sidebar: theme.accent.with_alpha(0.38),
+                sidebar_selected: theme.text.with_alpha(0.14),
+                group: theme.control,
+            }
+        } else {
+            Self {
+                panel: theme.canvas,
+                sidebar: theme.canvas.blend(theme.accent, 0.18),
+                sidebar_selected: theme.text.with_alpha(0.14),
+                group: theme.surface,
+            }
+        }
     }
 }
 

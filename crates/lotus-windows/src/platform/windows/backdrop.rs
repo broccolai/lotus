@@ -84,6 +84,11 @@ pub fn apply_popup_settings(window: WindowHandle, settings: &DockSettings) {
     apply_unified_material(hwnd, DWMWCP_ROUND, settings);
 }
 
+pub fn apply_context_menu_settings(window: WindowHandle, settings: &DockSettings) {
+    let hwnd = window.raw();
+    apply_unified_material(hwnd, DWMWCP_ROUNDSMALL, settings);
+}
+
 pub(crate) fn apply_settings_window(hwnd: HWND) {
     let dark_mode = 1_i32;
     let corner = DWMWCP_ROUND;
@@ -119,11 +124,15 @@ pub(crate) fn apply_settings_window(hwnd: HWND) {
 
 pub(crate) fn apply_settings_material(hwnd: HWND, settings: &DockSettings) {
     apply_window_backdrop(hwnd, DWMWCP_ROUND, DWMSBT_NONE, Some(DWMWA_COLOR_NONE));
-    if settings.use_acrylic && settings_material() == SettingsMaterial::Acrylic {
+    if settings_uses_translucent_material(settings) {
         let _ = apply_explicit_acrylic(hwnd, acrylic_tint(settings));
     } else {
         let _ = disable_explicit_acrylic(hwnd);
     }
+}
+
+pub fn settings_uses_translucent_material(settings: &DockSettings) -> bool {
+    settings.use_acrylic && settings_material() == SettingsMaterial::Acrylic
 }
 
 pub(crate) fn settings_material() -> SettingsMaterial {

@@ -239,7 +239,7 @@ fn create_auxiliary_windows(
         is_installed().unwrap_or(false),
     )?;
     let context_menu_window = dock.create_context_menu_window()?;
-    lotus_windows::backdrop::apply_popup_settings(
+    lotus_windows::backdrop::apply_context_menu_settings(
         context_menu_window.handle(),
         dock_model.settings(),
     );

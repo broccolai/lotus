@@ -1,3 +1,4 @@
+use lotus_ui::presentation::Presentation;
 use windows::Win32::Foundation::HWND;
 use windows::core::Error as WindowsError;
 
@@ -118,5 +119,3 @@ impl SettingsCompositionSurfaceState {
         self.0.loss()
     }
 }
-
-use lotus_ui::presentation::Presentation;

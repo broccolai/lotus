@@ -49,7 +49,10 @@ impl ContextMenuRuntime {
     pub(super) fn apply_settings(&mut self, settings: &DockSettings) {
         let _ = self.scene.set_theme(theme_for(settings));
         self.theme = theme_for(settings);
-        lotus_windows::backdrop::apply_popup_settings(self.window.handle(), settings);
+        lotus_windows::backdrop::apply_context_menu_settings(
+            self.window.handle(),
+            settings,
+        );
     }
 
     pub(super) fn open(
