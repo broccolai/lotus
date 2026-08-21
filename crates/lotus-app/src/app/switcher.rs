@@ -1,3 +1,4 @@
+use lotus_core::application::{ApplicationIdentity, is_reliable_registered_id};
 use lotus_core::settings::DockSettings;
 use lotus_core::window::WindowInfo;
 use lotus_settings::appearance::theme_for;
@@ -6,17 +7,18 @@ use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::theme::Theme;
 use lotus_windows::activation::{request_window_close, switch_window};
-use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::scene_adapter::resolve_icon_with_native;
+use lotus_windows::graphics::scene::DockIcon;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::switcher_surface::SwitcherCompositionSurfaceState;
 use lotus_windows::graphics::{
     DeviceState, SurfaceError, SwitcherHitTarget, SwitcherItem, SwitcherScene,
 };
 use lotus_windows::interaction::PointerCursor;
-use lotus_windows::native_icon::NativeIconCache;
 use lotus_windows::search_catalog::SearchCatalogCache;
+use lotus_windows::switcher_icons::{
+    SwitcherIconHydrator, SwitcherIconHydratorError, SwitcherIconRequest,
+};
 use lotus_windows::window::{SwitcherEvent, SwitcherWindow};
 
 use crate::app::AppError;
@@ -57,9 +59,10 @@ pub(super) struct SwitcherRuntime {
     pub(super) surface: Option<ScheduledSurface<SwitcherCompositionSurfaceState>>,
     pub(super) scene: Option<SwitcherScene>,
     pub(super) session: Option<SwitcherSession<WindowInfo>>,
-    pub(super) native_icons: NativeIconCache,
-    custom_images: CustomImageCache,
+    icon_hydrator: SwitcherIconHydrator,
     icon_settings: DockSettings,
+    icon_generation: u64,
+    icon_settings_revision: u64,
     pub(super) name_overrides: std::collections::BTreeMap<String, String>,
     recent_windows: RecentOrder<lotus_core::window::WindowId>,
     theme: Theme,
@@ -70,19 +73,20 @@ impl SwitcherRuntime {
         window: SwitcherWindow,
         settings: &DockSettings,
         theme: &Theme,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, SwitcherIconHydratorError> {
+        Ok(Self {
             window,
             surface: None,
             scene: None,
             session: None,
-            native_icons: NativeIconCache::default(),
-            custom_images: CustomImageCache::default(),
+            icon_hydrator: SwitcherIconHydrator::start()?,
             icon_settings: settings.clone(),
+            icon_generation: 0,
+            icon_settings_revision: 0,
             name_overrides: std::collections::BTreeMap::new(),
             recent_windows: RecentOrder::default(),
             theme: *theme,
-        }
+        })
     }
 
     pub(super) fn begin(
@@ -105,9 +109,9 @@ impl SwitcherRuntime {
         };
         self.name_overrides = settings.application_name_overrides.clone();
         self.icon_settings = settings.clone();
-        self.custom_images.clear();
         self.theme = theme_for(settings);
         self.session = Some(session);
+        self.icon_generation = self.icon_generation.wrapping_add(1);
         self.rebuild_scene(self.window.dpi())?;
         let size = self
             .scene
@@ -131,6 +135,7 @@ impl SwitcherRuntime {
             let _dpi = self.window.show_centered(foreground, size)?;
         }
         self.ensure_surface(graphics)?;
+        self.request_visible_icons();
         self.invalidate();
         Ok(())
     }
@@ -144,14 +149,15 @@ impl SwitcherRuntime {
         }
     }
 
-    pub(super) fn cycle(&mut self, direction: lotus_switcher::model::Direction) {
+    pub(super) fn cycle_by(&mut self, delta: i32) {
         let Some(session) = &mut self.session else {
             return;
         };
-        session.cycle(direction);
+        session.cycle_by(delta);
         if let Some(scene) = &mut self.scene {
             let _changed = scene.set_selected(session.selected_index());
         }
+        self.request_visible_icons();
         self.invalidate();
     }
 
@@ -177,7 +183,6 @@ impl SwitcherRuntime {
         self.surface = None;
         self.scene = None;
         self.session = None;
-        self.custom_images.clear();
     }
 
     pub(super) fn drain_events(&mut self) -> Vec<SwitcherEvent> {
@@ -234,6 +239,7 @@ impl SwitcherRuntime {
             }
             SwitcherEvent::DpiChanged { dpi } => {
                 self.rebuild_scene(dpi)?;
+                self.request_visible_icons();
             }
             SwitcherEvent::RenderRequested => self.invalidate(),
         }
@@ -244,30 +250,13 @@ impl SwitcherRuntime {
         let Some(session) = &self.session else {
             return Ok(());
         };
-        let icon_size = lotus_ui::geometry::DpiScale::from_system(dpi)
-            .physical(SWITCHER_ICON_DIP)
-            .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
         let items = session
             .items()
             .iter()
             .map(|window| SwitcherItem {
                 window: window.id,
                 title: switcher_title(window, &self.name_overrides),
-                icon: resolve_icon_with_native(|| {
-                    crate::app::icon_override::resolve_application_icon(
-                        &self.icon_settings,
-                        &mut self.custom_images,
-                        window.app_user_model_id.as_deref(),
-                        None,
-                        &window.executable_path,
-                    )
-                    .or_else(|| {
-                        self.native_icons
-                            .icon(&window.executable_path, icon_size)
-                            .ok()
-                            .flatten()
-                    })
-                }),
+                icon: None,
             })
             .collect();
         self.scene = SwitcherScene::new(dpi, items, session.selected_index());
@@ -283,11 +272,36 @@ impl SwitcherRuntime {
     pub(super) fn apply_settings(&mut self, settings: &DockSettings) {
         self.theme = theme_for(settings);
         self.icon_settings = settings.clone();
-        self.custom_images.clear();
+        self.icon_settings_revision = self.icon_settings_revision.wrapping_add(1);
         lotus_windows::backdrop::apply_popup_settings(self.window.handle(), settings);
         if let Some(scene) = &mut self.scene {
             let _ = scene.set_theme(self.theme);
         }
+        self.request_visible_icons();
+    }
+
+    pub(super) fn drain_hydrated_icons(&mut self) -> bool {
+        let Some(scene) = &mut self.scene else {
+            let _discarded = self.icon_hydrator.drain();
+            return false;
+        };
+        let dpi = scene.dpi();
+        let icon_size = sampled_icon_size(dpi);
+        let mut changed = false;
+
+        for result in self.icon_hydrator.drain() {
+            if result.generation != self.icon_generation
+                || result.settings_revision != self.icon_settings_revision
+                || result.pixel_size != icon_size
+            {
+                continue;
+            }
+            changed |= scene.set_icon(result.window, result.icon.map(DockIcon::Raster));
+        }
+        if changed {
+            self.invalidate();
+        }
+        changed
     }
 
     pub(super) fn ensure_surface(
@@ -349,19 +363,48 @@ impl SwitcherRuntime {
     }
 }
 
+impl SwitcherRuntime {
+    fn request_visible_icons(&self) {
+        let (Some(session), Some(scene)) = (&self.session, &self.scene) else {
+            return;
+        };
+        let pixel_size = sampled_icon_size(scene.dpi());
+        let requests = scene
+            .visible_range_with_margin(2)
+            .filter_map(|index| {
+                let window = session.items().get(index)?;
+                Some(SwitcherIconRequest {
+                    generation: self.icon_generation,
+                    window: window.id,
+                    executable_path: window.executable_path.clone(),
+                    custom_image_path: crate::app::icon_override::application_icon_path(
+                        &self.icon_settings,
+                        window.app_user_model_id.as_deref(),
+                        None,
+                        &window.executable_path,
+                    ),
+                    pixel_size,
+                    settings_revision: self.icon_settings_revision,
+                })
+            })
+            .collect();
+        self.icon_hydrator.request(requests);
+    }
+}
+
+fn sampled_icon_size(dpi: u32) -> u32 {
+    lotus_ui::geometry::DpiScale::from_system(dpi)
+        .physical(SWITCHER_ICON_DIP)
+        .saturating_mul(NATIVE_ICON_SAMPLE_SCALE)
+}
+
 fn switcher_title(
     window: &WindowInfo,
     overrides: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    let executable_name = window
-        .executable_path
-        .file_name()
-        .and_then(|name| name.to_str());
-    if let Some(name) = executable_name.and_then(|name| {
-        overrides
-            .iter()
-            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
-            .map(|(_, display_name)| display_name.trim())
+    if let Some(name) = overrides.iter().find_map(|(identifier, display_name)| {
+        application_identifier_matches_window(identifier, window)
+            .then_some(display_name.trim())
             .filter(|display_name| !display_name.is_empty())
     }) {
         return name.to_owned();
@@ -375,14 +418,21 @@ fn switcher_title(
 }
 
 fn executable_is_hidden(window: &WindowInfo, hidden: &[String]) -> bool {
-    let Some(name) = window
-        .executable_path
-        .file_name()
-        .and_then(|name| name.to_str())
-    else {
-        return false;
-    };
-    hidden
-        .iter()
-        .any(|candidate| candidate.trim().eq_ignore_ascii_case(name))
+    hidden.iter().any(|candidate| {
+        window
+            .application_identity()
+            .has_executable_alias(candidate)
+    })
+}
+
+fn application_identifier_matches_window(identifier: &str, window: &WindowInfo) -> bool {
+    if is_reliable_registered_id(identifier) {
+        return ApplicationIdentity::new(Some(identifier), None, None, std::iter::empty())
+            .match_strength(&window.application_identity())
+            .is_match();
+    }
+
+    window
+        .application_identity()
+        .has_executable_alias(identifier)
 }

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::num::NonZeroU32;
 
 use lotus_search::controller::SearchMode;
@@ -28,6 +27,7 @@ use super::resources::{raster_key, target_bitmap_properties, upload_bgra_pixels}
 use super::scene::{DockIcon, RasterIconId};
 use super::surface::SurfaceSize;
 use super::{LauncherLayout, LauncherResultKind, LauncherScene, PixelRect, theme};
+use crate::resource_cache::BoundedResourceCache;
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = color(0.0, 0.0, 0.0, 0.0);
@@ -74,8 +74,8 @@ pub(super) struct LauncherRenderer {
     search_mode_format: IDWriteTextFormat,
     assets: SvgAssetCache,
     icon_tint: IconTint,
-    embedded_icons: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
-    raster_icons: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
+    embedded_icons: BoundedResourceCache<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
+    raster_icons: BoundedResourceCache<(RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
 
 impl LauncherRenderer {
@@ -159,8 +159,8 @@ impl LauncherRenderer {
             search_mode_format,
             assets: SvgAssetCache::create()?,
             icon_tint: IconTint::from_color(theme.text),
-            embedded_icons: HashMap::new(),
-            raster_icons: HashMap::new(),
+            embedded_icons: BoundedResourceCache::new(16 * 1024 * 1024),
+            raster_icons: BoundedResourceCache::new(16 * 1024 * 1024),
         };
         result.attach_target(swap_chain)?;
         Ok(result)
@@ -504,7 +504,7 @@ impl LauncherRenderer {
         match icon {
             DockIcon::Embedded(asset) => {
                 let key = (*asset, size);
-                if !self.embedded_icons.contains_key(&key) {
+                if self.embedded_icons.get(&key).is_none() {
                     let raster = self.assets.rasterize(
                         *asset,
                         RasterSize::square(size),
@@ -517,12 +517,16 @@ impl LauncherRenderer {
                         raster.pixels(),
                         raster.stride()?,
                     )?;
-                    self.embedded_icons.insert(key, bitmap);
+                    let bytes = usize::try_from(size.get())
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(usize::try_from(size.get()).unwrap_or(usize::MAX))
+                        .saturating_mul(4);
+                    self.embedded_icons.insert(key, bitmap, bytes);
                 }
             }
             DockIcon::Raster(raster) => {
                 let key = raster_key(raster);
-                if !self.raster_icons.contains_key(&key) {
+                if self.raster_icons.get(&key).is_none() {
                     let bitmap = upload_bgra_pixels(
                         &self.context,
                         raster.width(),
@@ -530,7 +534,13 @@ impl LauncherRenderer {
                         raster.pixels(),
                         raster.stride(),
                     )?;
-                    self.raster_icons.insert(key, bitmap);
+                    let bytes = usize::try_from(raster.width())
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(
+                            usize::try_from(raster.height()).unwrap_or(usize::MAX),
+                        )
+                        .saturating_mul(4);
+                    self.raster_icons.insert(key, bitmap, bytes);
                 }
             }
         }
@@ -543,8 +553,8 @@ impl LauncherRenderer {
         size: NonZeroU32,
     ) -> Result<&ID2D1Bitmap1, LauncherRendererError> {
         match icon {
-            DockIcon::Embedded(asset) => self.embedded_icons.get(&(*asset, size)),
-            DockIcon::Raster(raster) => self.raster_icons.get(&raster_key(raster)),
+            DockIcon::Embedded(asset) => self.embedded_icons.peek(&(*asset, size)),
+            DockIcon::Raster(raster) => self.raster_icons.peek(&raster_key(raster)),
         }
         .ok_or(LauncherRendererError::BitmapCacheInvariant)
     }

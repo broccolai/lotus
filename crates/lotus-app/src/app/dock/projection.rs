@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use lotus_core::application::{ApplicationIdentity, is_reliable_registered_id};
 use lotus_core::dock::DockItem;
 use lotus_core::notification::count_for_item;
 use lotus_core::settings::{DockSettings, DockZone, NotificationBadgeStyle};
@@ -93,6 +94,17 @@ pub(in crate::app) fn departure_transition(
         .map(|(index, item)| (item.id.as_str(), index))
         .collect::<HashMap<_, _>>();
     let mut current_visuals = current_scene.iter().cloned().map(Some).collect::<Vec<_>>();
+    let current_visual_positions = current_scene.iter().enumerate().fold(
+        HashMap::<usize, Vec<usize>>::new(),
+        |mut positions, (position, item)| {
+            positions
+                .entry(item.source_index())
+                .or_default()
+                .push(position);
+            positions
+        },
+    );
+    let mut next_visual_positions = HashMap::<usize, usize>::new();
     let mut transition = Vec::with_capacity(previous_scene.len().max(current_scene.len()));
     let mut departing = false;
 
@@ -103,11 +115,15 @@ pub(in crate::app) fn departure_transition(
         else {
             continue;
         };
-        if let Some(&current_index) = current_indices.get(identity)
-            && let Some(position) = current_visuals.iter().position(|item| {
-                item.as_ref()
-                    .is_some_and(|item| item.source_index() == current_index)
-            })
+        let position = current_indices.get(identity).and_then(|&current_index| {
+            let positions = current_visual_positions.get(&current_index)?;
+            let position_index = next_visual_positions.entry(current_index).or_default();
+            let position = positions.get(*position_index).copied();
+            *position_index = (*position_index).saturating_add(1);
+            position
+        });
+        if let Some(position) = position
+            && current_visuals[position].is_some()
         {
             transition.push(current_visuals[position].take().expect("item is present"));
         } else {
@@ -186,38 +202,34 @@ pub(in crate::app) fn projected_items(
     })
 }
 
-pub(in crate::app) fn media_identity_matches(source_id: &str, candidate: &str) -> bool {
-    let source = source_id.to_ascii_lowercase();
-    let candidate = candidate.to_ascii_lowercase();
-    let candidate = Path::new(&candidate)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or(&candidate);
-    !candidate.is_empty()
-        && (source == candidate
-            || source.ends_with(&format!("\\{candidate}.exe"))
-            || source.contains(candidate))
+pub(in crate::app) fn media_source_matches_item(source_id: &str, item: &DockItem) -> bool {
+    if is_reliable_registered_id(source_id) {
+        return ApplicationIdentity::new(Some(source_id), None, None, std::iter::empty())
+            .match_strength(&item.application_identity())
+            .is_match();
+    }
+
+    ApplicationIdentity::new(None, None, None, std::iter::once(source_id))
+        .match_strength(&executable_identity(item))
+        .is_match()
 }
 
 pub(in crate::app) fn window_matches_item(window: &WindowInfo, item: &DockItem) -> bool {
-    if window
-        .executable_path
-        .to_string_lossy()
-        .eq_ignore_ascii_case(&item.executable_path)
-    {
-        return true;
-    }
+    window
+        .application_identity()
+        .match_strength(&item.application_identity())
+        .is_match()
+}
 
-    let window_name = window
-        .executable_path
-        .file_name()
-        .and_then(|name| name.to_str());
-    let item_name = Path::new(&item.executable_path)
-        .file_name()
-        .and_then(|name| name.to_str());
-    window_name
-        .zip(item_name)
-        .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+fn executable_identity(item: &DockItem) -> ApplicationIdentity {
+    ApplicationIdentity::new(
+        None,
+        Some(&item.id),
+        Some(&item.executable_path),
+        item.windows
+            .iter()
+            .filter_map(|window| window.executable_name().and_then(|name| name.to_str())),
+    )
 }
 
 pub(in crate::app) fn metrics(settings: &DockSettings) -> Result<DockMetrics, AppError> {

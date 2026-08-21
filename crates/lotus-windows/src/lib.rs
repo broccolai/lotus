@@ -1,8 +1,9 @@
 mod error;
 mod platform;
+mod resource_cache;
+pub mod responsiveness;
 
 pub mod activation;
-pub mod alt_tab;
 pub mod application_identity;
 pub mod clipboard;
 pub mod clock;
@@ -17,14 +18,17 @@ mod explorer_bridge;
 mod font;
 pub mod graphics;
 pub mod image_picker;
+pub mod input;
 pub mod launch;
 pub mod media;
+pub(crate) mod messages;
 pub mod native_icon;
 pub mod network;
 pub mod search_catalog;
 mod shell_bridge;
 pub mod single_instance;
 pub mod startup;
+pub mod switcher_icons;
 pub mod taskbar_badges;
 pub mod taskbar_state;
 pub mod tray;
@@ -32,8 +36,6 @@ pub mod update;
 pub mod window;
 pub mod window_tracker;
 
+pub use error::NativeError;
 pub use platform::windows::native_window::WindowHandle;
 pub use platform::windows::{appbar, backdrop, dialog, interaction};
-pub mod windows_key;
-
-pub use error::NativeError;

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use lotus_ui::icon::{RasterIcon, RasterIconError};
@@ -6,11 +5,13 @@ use thiserror::Error;
 use windows::core::Error;
 
 use crate::NativeError;
+use crate::resource_cache::BoundedResourceCache;
 
 mod raster;
 mod source;
 
 const MAX_ICON_SIZE: u32 = 1_024;
+const NATIVE_ICON_CACHE_BYTES: usize = 6 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum NativeIconError {
@@ -39,9 +40,16 @@ struct CacheKey {
     size: u32,
 }
 
-#[derive(Default)]
 pub struct NativeIconCache {
-    icons: HashMap<CacheKey, RasterIcon>,
+    icons: BoundedResourceCache<CacheKey, RasterIcon>,
+}
+
+impl Default for NativeIconCache {
+    fn default() -> Self {
+        Self {
+            icons: BoundedResourceCache::new(NATIVE_ICON_CACHE_BYTES),
+        }
+    }
 }
 
 impl NativeIconCache {
@@ -72,7 +80,7 @@ impl NativeIconCache {
             None => None,
         };
         if let Some(icon) = &image {
-            self.icons.insert(key, icon.clone());
+            let _ = self.icons.insert(key, icon.clone(), icon.pixels().len());
         }
         Ok(image)
     }

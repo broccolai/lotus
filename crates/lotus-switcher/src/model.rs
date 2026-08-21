@@ -60,6 +60,13 @@ impl<T> SwitcherSession<T> {
         };
     }
 
+    pub fn cycle_by(&mut self, delta: i32) {
+        let length = i64::try_from(self.items.len()).unwrap_or(i64::MAX);
+        let selected = i64::try_from(self.selected).unwrap_or_default();
+        self.selected = usize::try_from((selected + i64::from(delta)).rem_euclid(length))
+            .unwrap_or_default();
+    }
+
     pub const fn selected_index(&self) -> usize {
         self.selected
     }

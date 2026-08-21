@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::num::NonZeroU32;
 
 use lotus_core::settings::{DockZone, NotificationBadgeStyle};
@@ -38,6 +37,7 @@ use super::{
 };
 use crate::font::BundledFontCollection;
 use crate::platform::windows::backdrop::{self, SettingsMaterial};
+use crate::resource_cache::BoundedResourceCache;
 
 mod about_update;
 mod controls;
@@ -96,8 +96,8 @@ pub(super) struct SettingsRenderer {
     button_format: IDWriteTextFormat,
     material: SettingsMaterial,
     assets: SvgAssetCache,
-    embedded: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
-    rasters: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
+    embedded: BoundedResourceCache<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
+    rasters: BoundedResourceCache<(RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
 
 impl SettingsRenderer {
@@ -186,8 +186,8 @@ impl SettingsRenderer {
             button_format,
             material: backdrop::settings_material(),
             assets: SvgAssetCache::create().map_err(|error| asset_error(&error))?,
-            embedded: HashMap::new(),
-            rasters: HashMap::new(),
+            embedded: BoundedResourceCache::new(16 * 1024 * 1024),
+            rasters: BoundedResourceCache::new(16 * 1024 * 1024),
         };
         renderer.attach_target(swap_chain)?;
         Ok(renderer)
@@ -341,7 +341,7 @@ impl SettingsRenderer {
         tint: IconTint,
     ) -> Result<(), SettingsRendererError> {
         let key = (asset, size);
-        if self.embedded.contains_key(&key) {
+        if self.embedded.get(&key).is_some() {
             return Ok(());
         }
         let raster = self
@@ -355,7 +355,11 @@ impl SettingsRenderer {
             raster.pixels(),
             raster.stride().map_err(|error| asset_error(&error))?,
         )?;
-        self.embedded.insert(key, bitmap);
+        let bytes = usize::try_from(size.get())
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(size.get()).unwrap_or(usize::MAX))
+            .saturating_mul(4);
+        self.embedded.insert(key, bitmap, bytes);
         Ok(())
     }
 
@@ -364,7 +368,7 @@ impl SettingsRenderer {
         asset: SvgAsset,
         size: NonZeroU32,
     ) -> Result<&ID2D1Bitmap1, SettingsRendererError> {
-        self.embedded.get(&(asset, size)).ok_or_else(|| {
+        self.embedded.peek(&(asset, size)).ok_or_else(|| {
             SettingsRendererError::Windows(WindowsError::new(
                 E_FAIL,
                 "uploaded onboarding artwork disappeared from the graphics cache",
@@ -386,7 +390,7 @@ impl SettingsRenderer {
 
     fn ensure_raster(&mut self, raster: &RasterIcon) -> Result<(), SettingsRendererError> {
         let key = raster_key(raster);
-        if self.rasters.contains_key(&key) {
+        if self.rasters.get(&key).is_some() {
             return Ok(());
         }
         let bitmap = upload_bgra_pixels(
@@ -396,12 +400,16 @@ impl SettingsRenderer {
             raster.pixels(),
             raster.stride(),
         )?;
-        self.rasters.insert(key, bitmap);
+        let bytes = usize::try_from(raster.width())
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(raster.height()).unwrap_or(usize::MAX))
+            .saturating_mul(4);
+        self.rasters.insert(key, bitmap, bytes);
         Ok(())
     }
 
     fn raster_bitmap(&self, raster: &RasterIcon) -> Option<&ID2D1Bitmap1> {
-        self.rasters.get(&raster_key(raster))
+        self.rasters.peek(&raster_key(raster))
     }
 
     fn draw_footer(&self, scene: &SettingsScene) {

@@ -6,14 +6,11 @@ use lotus_windows::activation::launch_target;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::scene::{DockHitTarget, SystemStatusKind};
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
-use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::window::{
     DockContextRequest, DockWindow, PointerEvent, PopupAlignment, SignedPoint, WindowEvent,
 };
-use lotus_windows::windows_key::{WindowsKeyController, WindowsKeyEvent};
 
 use super::presentation::{resize_dock, resize_surface};
-use crate::app::launcher::LauncherRuntime;
 use crate::app::monitors::MonitorDockAction;
 use crate::app::switcher::AuxiliaryWindows;
 use crate::app::{AppError, DockRuntime};
@@ -29,25 +26,6 @@ pub(crate) fn handle_pointer_event(
         PointerEvent::LeftButtonReleased { x, y } => return model.pointer_released(x, y),
         PointerEvent::Cancelled => (model.pointer_cancelled(), None),
     })
-}
-
-pub(crate) fn handle_windows_key_events(
-    controller: &WindowsKeyController,
-    dock: &DockWindow,
-    graphics: &mut DeviceState,
-    dock_model: &DockRuntime,
-    catalog: &SearchCatalogCache,
-    launcher: &mut LauncherRuntime,
-) -> Result<(), AppError> {
-    for event in controller.drain_events() {
-        match event {
-            WindowsKeyEvent::ToggleRequested => {
-                launcher.toggle(dock, dock_model, catalog, graphics)?;
-            }
-            WindowsKeyEvent::ReplayIncomplete { .. } => {}
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn handle_window_event(

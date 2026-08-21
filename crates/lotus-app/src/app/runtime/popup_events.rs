@@ -307,13 +307,10 @@ fn open_application_icon_manager(
     let Some(item) = context.dock_model.item(source_index) else {
         return Ok(());
     };
-    let custom = context.dock_model.settings().application_icon_override(
-        item.app_user_model_id.as_deref(),
-        Some(&item.id),
-        std::path::Path::new(&item.executable_path)
-            .file_name()
-            .and_then(|name| name.to_str()),
-    );
+    let custom = context
+        .dock_model
+        .settings()
+        .application_icon_override_for(&item.application_identity());
     let id = custom.map_or_else(|| item.id.clone(), |override_| override_.id.clone());
     let record = SettingsApplicationRecord {
         id: id.clone(),

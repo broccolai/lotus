@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -11,7 +10,10 @@ use lotus_ui::icon::{RasterIcon, RasterIconError};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::resource_cache::BoundedResourceCache;
+
 const MAX_DIMENSION: u32 = 512;
+const CUSTOM_IMAGE_CACHE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum CustomImageError {
@@ -38,9 +40,16 @@ pub fn load_custom_image(path: &Path) -> Result<RasterIcon, CustomImageError> {
     RasterIcon::new(identity, width, height, pixels).map_err(Into::into)
 }
 
-#[derive(Default)]
 pub struct CustomImageCache {
-    images: HashMap<PathBuf, RasterIcon>,
+    images: BoundedResourceCache<PathBuf, RasterIcon>,
+}
+
+impl Default for CustomImageCache {
+    fn default() -> Self {
+        Self {
+            images: BoundedResourceCache::new(CUSTOM_IMAGE_CACHE_BYTES),
+        }
+    }
 }
 
 impl CustomImageCache {
@@ -50,7 +59,9 @@ impl CustomImageCache {
         }
 
         let image = load_custom_image(path)?;
-        self.images.insert(path.to_path_buf(), image.clone());
+        let _ = self
+            .images
+            .insert(path.to_path_buf(), image.clone(), image.pixels().len());
         Ok(image)
     }
 

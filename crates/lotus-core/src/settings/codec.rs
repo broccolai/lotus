@@ -1,7 +1,7 @@
 use serde_json::Value;
 use thiserror::Error;
 
-use super::model::{CURRENT_APPEARANCE_VERSION, DockSettings};
+use super::model::{CURRENT_APPEARANCE_VERSION, CURRENT_ONBOARDING_VERSION, DockSettings};
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 #[error("invalid Lotus settings: {0}")]
@@ -32,11 +32,15 @@ pub(super) fn apply_legacy_migrations(source: &str, settings: &mut DockSettings)
     };
 
     let has_appearance_version = object.contains_key("appearanceVersion");
+    let needs_onboarding_migration = !object.contains_key("onboardingVersion");
     let needs_appearance_migration =
         !has_appearance_version || settings.appearance_version < 2;
     let needs_frosted_material_migration =
         !has_appearance_version || settings.appearance_version < CURRENT_APPEARANCE_VERSION;
 
+    if needs_onboarding_migration {
+        settings.onboarding_version = CURRENT_ONBOARDING_VERSION;
+    }
     if needs_appearance_migration {
         settings.corner_radius = 8;
         settings.icon_size = 38;
@@ -49,7 +53,9 @@ pub(super) fn apply_legacy_migrations(source: &str, settings: &mut DockSettings)
         settings.appearance_version = CURRENT_APPEARANCE_VERSION;
     }
 
-    let changed = needs_appearance_migration || needs_frosted_material_migration;
+    let changed = needs_onboarding_migration
+        || needs_appearance_migration
+        || needs_frosted_material_migration;
     if changed {
         *settings = settings.clone().normalized();
     }

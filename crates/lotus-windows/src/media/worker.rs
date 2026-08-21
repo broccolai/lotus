@@ -4,12 +4,11 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
+use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 
 use super::session::MediaWorker;
 use super::{MediaCommand, MediaEvent};
-
-const MEDIA_WAKE_MESSAGE: u32 = WM_APP + 0x4C9;
+use crate::messages::MEDIA_WAKE as MEDIA_WAKE_MESSAGE;
 
 pub(super) enum WorkerCommand {
     Refresh,

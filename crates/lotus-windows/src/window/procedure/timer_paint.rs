@@ -1,5 +1,5 @@
 use windows::Win32::Foundation::{HWND, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::ValidateRect;
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows::Win32::UI::WindowsAndMessaging::{WM_PAINT, WM_TIMER};
 
 use super::{
@@ -44,7 +44,13 @@ pub(super) fn dispatch_paint(hwnd: HWND, message: u32) -> Option<LRESULT> {
     if message != WM_PAINT {
         return None;
     }
+
+    let mut paint = PAINTSTRUCT::default();
+    // SAFETY: WM_PAINT grants this procedure the update region until the matching EndPaint.
+    unsafe {
+        let _ = BeginPaint(hwnd, &raw mut paint);
+        let _ = EndPaint(hwnd, &raw const paint);
+    }
     push_window_event(hwnd, WindowEvent::RenderRequested);
-    let _ = unsafe { ValidateRect(Some(hwnd), None) };
     Some(LRESULT(0))
 }

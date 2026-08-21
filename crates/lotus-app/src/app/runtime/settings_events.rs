@@ -1,8 +1,8 @@
 use std::path::Path;
 
+use lotus_core::application::is_shared_host_executable;
 use lotus_core::search::ApplicationEntry;
 use lotus_core::settings::{ApplicationIconOverride, DockSettings};
-use lotus_core::window::is_reliable_application_identity;
 use lotus_settings::scene::{SettingsApplicationRecord, SettingsPointerStyle};
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::clipboard::read_text;
@@ -627,11 +627,13 @@ pub(super) fn application_records(
                 .as_deref()
                 .and_then(|path| path.file_name())
                 .and_then(|name| name.to_str());
-            let custom = settings.application_icon_override(
+            let identity = lotus_core::application::ApplicationIdentity::from_path(
                 entry.app_user_model_id.as_deref(),
                 Some(&id),
-                executable_name,
+                executable.as_deref(),
+                std::iter::empty(),
             );
+            let custom = settings.application_icon_override_for(&identity);
             SettingsApplicationRecord {
                 id,
                 name: entry.name.clone(),
@@ -713,18 +715,12 @@ fn rects_intersect(
 }
 
 fn application_record_id(entry: &ApplicationEntry) -> String {
-    entry
-        .app_user_model_id
-        .as_deref()
-        .filter(|identity| is_reliable_application_identity(identity))
+    let identity = entry.application_identity();
+    identity
+        .reliable_registered_id()
+        .or_else(|| identity.stable_id())
         .unwrap_or(&entry.launch_target)
         .to_owned()
-}
-
-fn is_shared_host_executable(executable: &str) -> bool {
-    ["chrome.exe", "msedge.exe", "applicationframehost.exe"]
-        .iter()
-        .any(|host| executable.eq_ignore_ascii_case(host))
 }
 
 fn effective_application_icon(
@@ -735,15 +731,14 @@ fn effective_application_icon(
 ) -> Option<lotus_ui::icon::RasterIcon> {
     let executable = lotus_windows::launch::resolve_executable(&entry.launch_target)
         .unwrap_or_else(|| Path::new(&entry.icon_source).to_path_buf());
-    let executable_name = executable.file_name().and_then(|name| name.to_str());
-    if let Some(override_) = settings.application_icon_override(
+    let identity = lotus_core::application::ApplicationIdentity::from_path(
         entry.app_user_model_id.as_deref(),
-        entry
-            .app_user_model_id
-            .as_deref()
-            .or(Some(&entry.launch_target)),
-        executable_name,
-    ) && let Ok(icon) = custom_images.image(Path::new(&override_.image_path))
+        Some(&application_record_id(entry)),
+        Some(&executable),
+        std::iter::empty(),
+    );
+    if let Some(override_) = settings.application_icon_override_for(&identity)
+        && let Ok(icon) = custom_images.image(Path::new(&override_.image_path))
     {
         return Some(icon);
     }

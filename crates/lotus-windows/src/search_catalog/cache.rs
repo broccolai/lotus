@@ -2,17 +2,17 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::{io, thread};
 
+use lotus_core::application::ApplicationIdentity;
 use lotus_core::dock::DockItem;
 use lotus_core::search::{ApplicationEntry, SearchCatalog};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
+use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 
-use super::identity::{compose_catalog, paths_equal};
+use super::identity::compose_catalog;
 use super::sources::discover_start_menu_entries;
 use crate::launch::resolve_executable;
-
-const SEARCH_CATALOG_WAKE_MESSAGE: u32 = WM_APP + 0x4C6;
+use crate::messages::SEARCH_CATALOG_WAKE as SEARCH_CATALOG_WAKE_MESSAGE;
 
 type Discovery = dyn Fn() -> Vec<ApplicationEntry> + Send + Sync + 'static;
 
@@ -42,6 +42,19 @@ pub struct RegisteredApplication {
     pub arguments: Option<String>,
     pub icon_source: String,
     pub app_user_model_id: Option<String>,
+}
+
+impl RegisteredApplication {
+    #[must_use]
+    pub fn application_identity(&self) -> ApplicationIdentity {
+        let executable = resolve_executable(&self.launch_target);
+        ApplicationIdentity::from_path(
+            self.app_user_model_id.as_deref(),
+            Some(&self.id),
+            executable.as_deref(),
+            std::iter::empty(),
+        )
+    }
 }
 
 impl Default for SearchCatalogCache {
@@ -90,22 +103,17 @@ impl SearchCatalogCache {
             .and_then(|identity| identity.app_user_model_id.as_deref())
             .or(window.app_user_model_id.as_deref());
         let entries = lock(&self.state).entries.clone();
-        let entry = app_user_model_id
-            .and_then(|identity| {
-                entries.iter().find(|entry| {
-                    entry
-                        .app_user_model_id
-                        .as_deref()
-                        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(identity))
-                })
-            })
-            .or_else(|| {
-                entries.iter().find(|entry| {
-                    resolve_executable(&entry.launch_target).is_some_and(|candidate| {
-                        paths_equal(&candidate, &window.executable_path)
-                    })
-                })
-            });
+        let window_identity = ApplicationIdentity::from_path(
+            app_user_model_id,
+            None,
+            Some(&window.executable_path),
+            std::iter::empty(),
+        );
+        let entry = entries.iter().find(|entry| {
+            application_entry_identity(entry)
+                .match_strength(&window_identity)
+                .is_match()
+        });
 
         if let Some(entry) = entry {
             return Some(RegisteredApplication {
@@ -206,6 +214,16 @@ impl SearchCatalogCache {
         let _ = cache.refresh_if_stale(Duration::ZERO);
         cache
     }
+}
+
+fn application_entry_identity(entry: &ApplicationEntry) -> ApplicationIdentity {
+    let executable = resolve_executable(&entry.launch_target);
+    ApplicationIdentity::from_path(
+        entry.app_user_model_id.as_deref(),
+        Some(&entry.launch_target),
+        executable.as_deref(),
+        std::iter::empty(),
+    )
 }
 
 struct RefreshCompletion {

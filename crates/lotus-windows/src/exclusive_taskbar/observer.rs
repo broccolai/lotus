@@ -9,15 +9,14 @@ use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWi
 use windows::Win32::UI::WindowsAndMessaging::{
     EVENT_OBJECT_CREATE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, GetMessageW, MSG,
     OBJID_WINDOW, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_QUIT,
+    WINEVENT_SKIPOWNPROCESS, WM_QUIT,
 };
 use windows::core::Error;
 
 use super::taskbar_windows::is_taskbar_window;
 use super::visibility_transaction::TaskbarVisibilityTransaction;
 use crate::exclusive_taskbar::ExclusiveTaskbarError;
-
-const TASKBAR_EVENT_MESSAGE: u32 = WM_APP + 0x4CA;
+use crate::messages::TASKBAR_EVENT as TASKBAR_EVENT_MESSAGE;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 static EVENT_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -84,7 +83,7 @@ fn taskbar_event_loop(ready: &mpsc::SyncSender<Result<u32, Error>>, stop: &Atomi
     let hooks = match hooks {
         Ok(hooks) => hooks,
         Err(error) => {
-            EVENT_THREAD_ID.store(0, Ordering::Release);
+            clear_event_thread(thread_id);
             let _ = ready.send(Err(error));
             return;
         }
@@ -92,12 +91,12 @@ fn taskbar_event_loop(ready: &mpsc::SyncSender<Result<u32, Error>>, stop: &Atomi
 
     let mut windows = TaskbarVisibilityTransaction::start();
     if stop.load(Ordering::Acquire) {
-        EVENT_THREAD_ID.store(0, Ordering::Release);
+        clear_event_thread(thread_id);
         return;
     }
     windows.hide_existing();
     if ready.send(Ok(thread_id)).is_err() {
-        EVENT_THREAD_ID.store(0, Ordering::Release);
+        clear_event_thread(thread_id);
         return;
     }
 
@@ -114,7 +113,7 @@ fn taskbar_event_loop(ready: &mpsc::SyncSender<Result<u32, Error>>, stop: &Atomi
     }
 
     drop(hooks);
-    EVENT_THREAD_ID.store(0, Ordering::Release);
+    clear_event_thread(thread_id);
 }
 
 fn install_hooks() -> Result<Vec<OwnedWinEventHook>, Error> {
@@ -133,6 +132,11 @@ fn post_quit(thread_id: u32) {
         // SAFETY: A nonzero published ID belongs to the event thread's live queue.
         let _ = unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
     }
+}
+
+fn clear_event_thread(thread_id: u32) {
+    let _ =
+        EVENT_THREAD_ID.compare_exchange(thread_id, 0, Ordering::AcqRel, Ordering::Acquire);
 }
 
 struct OwnedWinEventHook(HWINEVENTHOOK);

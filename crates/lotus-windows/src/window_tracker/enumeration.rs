@@ -1,13 +1,14 @@
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::path::PathBuf;
 
 use lotus_core::window::{WindowId, WindowInfo};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM};
+use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -19,29 +20,50 @@ use windows::core::{BOOL, Result as WindowsResult};
 
 use crate::application_identity::window_application_identity_in_apartment;
 use crate::launch::ComApartment;
+use crate::responsiveness::METRICS;
 const IMAGE_PATH_CAPACITY: usize = 32_768;
 const CLASS_NAME_CAPACITY: usize = 128;
-pub(super) fn enumerate_windows(own_process_id: u32) -> WindowsResult<Vec<WindowInfo>> {
+pub(super) fn enumerate_windows(
+    own_process_id: u32,
+    process_cache: &mut ProcessMetadataCache,
+) -> WindowsResult<Vec<WindowInfo>> {
     let _apartment = ComApartment::enter();
     let mut state = EnumerationState {
         own_process_id,
         windows: Vec::new(),
+        process_cache,
+        observed_processes: HashSet::new(),
     };
     unsafe { EnumWindows(Some(visit_window), pointer_lparam(&raw mut state))? };
+    unsafe { &mut *state.process_cache }.retain_processes(&state.observed_processes);
     Ok(state.windows)
 }
 struct EnumerationState {
     own_process_id: u32,
     windows: Vec<WindowInfo>,
+    process_cache: *mut ProcessMetadataCache,
+    observed_processes: HashSet<u32>,
 }
 unsafe extern "system" fn visit_window(hwnd: HWND, state: LPARAM) -> BOOL {
+    // EnumWindows invokes this callback synchronously, preserving the unique state borrow.
     let state = unsafe { &mut *(state.0 as *mut EnumerationState) };
-    if let Some(window) = window_info(hwnd, state.own_process_id) {
+    let process_cache = unsafe { &mut *state.process_cache };
+    if let Some(window) = window_info(
+        hwnd,
+        state.own_process_id,
+        process_cache,
+        &mut state.observed_processes,
+    ) {
         state.windows.push(window);
     }
     BOOL(1)
 }
-fn window_info(hwnd: HWND, own_process_id: u32) -> Option<WindowInfo> {
+fn window_info(
+    hwnd: HWND,
+    own_process_id: u32,
+    process_cache: &mut ProcessMetadataCache,
+    observed_processes: &mut HashSet<u32>,
+) -> Option<WindowInfo> {
     if !should_include_window(hwnd) {
         return None;
     }
@@ -50,8 +72,15 @@ fn window_info(hwnd: HWND, own_process_id: u32) -> Option<WindowInfo> {
     if process_id == 0 || process_id == own_process_id {
         return None;
     }
+    let process = if observed_processes.contains(&process_id) {
+        process_cache.cached(process_id)?
+    } else {
+        let process = process_cache.metadata(process_id)?;
+        observed_processes.insert(process_id);
+        process
+    };
     let title = window_title(hwnd);
-    let executable_path = window_icon_identity(&title, process_image_path(process_id)?);
+    let executable_path = window_icon_identity(&title, process.executable_path.clone());
     let id = window_id(hwnd)?;
     let application_identity = window_application_identity_in_apartment(id);
     Some(WindowInfo {
@@ -61,8 +90,54 @@ fn window_info(hwnd: HWND, own_process_id: u32) -> Option<WindowInfo> {
         executable_path,
         app_user_model_id: application_identity
             .and_then(|identity| identity.app_user_model_id)
-            .or_else(|| process_application_id(process_id)),
+            .or_else(|| process.app_user_model_id.clone()),
     })
+}
+
+#[derive(Default)]
+pub(super) struct ProcessMetadataCache {
+    entries: HashMap<u32, ProcessMetadata>,
+}
+
+struct ProcessMetadata {
+    creation_time: u64,
+    executable_path: PathBuf,
+    app_user_model_id: Option<String>,
+}
+
+impl ProcessMetadataCache {
+    fn cached(&self, process_id: u32) -> Option<&ProcessMetadata> {
+        self.entries.get(&process_id)
+    }
+
+    fn metadata(&mut self, process_id: u32) -> Option<&ProcessMetadata> {
+        let process = open_process(process_id)?;
+        let creation_time = process_creation_time(process.get())?;
+        let current = self
+            .entries
+            .get(&process_id)
+            .is_some_and(|entry| entry.creation_time == creation_time);
+        METRICS.record_process_metadata(current);
+        if !current {
+            let executable_path = process_image_path_from_handle(process.get())?;
+            let app_user_model_id = process_application_id(process.get());
+            self.entries.insert(
+                process_id,
+                ProcessMetadata {
+                    creation_time,
+                    executable_path,
+                    app_user_model_id,
+                },
+            );
+        }
+
+        self.entries.get(&process_id)
+    }
+
+    fn retain_processes(&mut self, observed: &HashSet<u32>) {
+        self.entries
+            .retain(|process_id, _| observed.contains(process_id));
+    }
 }
 fn window_icon_identity(title: &str, executable_path: PathBuf) -> PathBuf {
     let executable = executable_path.file_name().and_then(|name| name.to_str());
@@ -147,15 +222,22 @@ fn window_id(hwnd: HWND) -> Option<WindowId> {
         .map(WindowId::new)
 }
 pub(crate) fn process_image_path(process_id: u32) -> Option<PathBuf> {
-    let process =
-        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
-            .ok()?;
-    let process = OwnedHandle(process);
+    let process = open_process(process_id)?;
+    process_image_path_from_handle(process.get())
+}
+
+fn open_process(process_id: u32) -> Option<OwnedHandle> {
+    unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
+        .ok()
+        .map(OwnedHandle)
+}
+
+fn process_image_path_from_handle(process: HANDLE) -> Option<PathBuf> {
     let mut buffer = vec![0_u16; IMAGE_PATH_CAPACITY];
     let mut length = u32::try_from(buffer.len()).ok()?;
     unsafe {
         QueryFullProcessImageNameW(
-            process.get(),
+            process,
             PROCESS_NAME_WIN32,
             windows::core::PWSTR(buffer.as_mut_ptr()),
             &raw mut length,
@@ -165,16 +247,13 @@ pub(crate) fn process_image_path(process_id: u32) -> Option<PathBuf> {
     buffer.truncate(usize::try_from(length).ok()?);
     Some(PathBuf::from(String::from_utf16_lossy(&buffer)))
 }
-fn process_application_id(process_id: u32) -> Option<String> {
-    let process =
-        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
-            .ok()?;
-    let process = OwnedHandle(process);
+
+fn process_application_id(process: HANDLE) -> Option<String> {
     let mut buffer = vec![0_u16; 512];
     let mut length = u32::try_from(buffer.len()).ok()?;
     let result = unsafe {
         GetApplicationUserModelId(
-            process.get(),
+            process,
             &raw mut length,
             Some(windows::core::PWSTR(buffer.as_mut_ptr())),
         )
@@ -184,6 +263,24 @@ fn process_application_id(process_id: u32) -> Option<String> {
     }
     let text_length = usize::try_from(length.saturating_sub(1)).ok()?;
     Some(String::from_utf16_lossy(&buffer[..text_length]))
+}
+
+fn process_creation_time(process: HANDLE) -> Option<u64> {
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe {
+        GetProcessTimes(
+            process,
+            &raw mut creation,
+            &raw mut exit,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    }
+    .ok()?;
+    Some((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
 }
 struct OwnedHandle(HANDLE);
 impl OwnedHandle {

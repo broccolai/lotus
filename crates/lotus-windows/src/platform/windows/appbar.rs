@@ -14,7 +14,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, PostThreadMessageW, RegisterWindowMessageW,
-    SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WINDOW_EX_STYLE, WM_APP, WS_EX_NOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WINDOW_EX_STYLE, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::core::w;
@@ -22,10 +22,9 @@ use windows::core::w;
 use crate::NativeError;
 use crate::exclusive_taskbar::{ExclusiveTaskbarError, ExclusiveTaskbarGuard};
 use crate::explorer_bridge::ExplorerBridgeLease;
+use crate::messages::FULLSCREEN_NOTIFICATION as FULLSCREEN_NOTIFICATION_MESSAGE;
 use crate::taskbar_state::{TaskbarStateError, TaskbarStateGuard};
 use crate::window::{AppBarLayout, DockWindow};
-
-const FULLSCREEN_NOTIFICATION_MESSAGE: u32 = WM_APP + 0x4C8;
 const RESERVATION_SUBCLASS_ID: usize = 0x4C4F_5455;
 
 pub fn fullscreen_notification(

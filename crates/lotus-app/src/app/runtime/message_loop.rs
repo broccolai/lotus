@@ -1,15 +1,16 @@
 use lotus_ui::frame::{FrameOutcome, FramePass, FrameTrigger, ScheduledSurface};
-use lotus_windows::alt_tab::is_alt_tab_wake;
 use lotus_windows::appbar::fullscreen_notification;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
+use lotus_windows::input::{UiHeartbeatTimer, is_input_wake};
 use lotus_windows::interaction::{NativeMessage, next_message};
 use lotus_windows::media::is_media_wake;
+use lotus_windows::responsiveness::METRICS;
 use lotus_windows::search_catalog::is_search_catalog_wake;
+use lotus_windows::switcher_icons::is_switcher_icon_wake;
 use lotus_windows::taskbar_badges::is_taskbar_badge_wake;
 use lotus_windows::update::is_update_wake;
 use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
-use lotus_windows::windows_key::is_windows_key_wake;
 
 use super::{
     controllers, dock_events, presentation, search_events, settings_events, update_events,
@@ -27,7 +28,9 @@ pub(crate) fn run_message_loop(
     dock_model: &mut DockRuntime,
     auxiliary: &mut AuxiliaryWindows,
 ) -> Result<(), AppError> {
+    let heartbeat = UiHeartbeatTimer::start(runtime.input.is_some())?;
     MessageLoop {
+        heartbeat,
         runtime,
         dock,
         graphics,
@@ -81,6 +84,7 @@ pub(crate) fn flush_frame(
 }
 
 struct MessageLoop<'a, 'runtime> {
+    heartbeat: UiHeartbeatTimer,
     runtime: &'a RuntimePolicy<'runtime>,
     dock: &'a mut DockWindow,
     graphics: &'a mut DeviceState,
@@ -98,11 +102,32 @@ impl MessageLoop<'_, '_> {
                 return Ok(());
             };
 
-            self.process_message(&message)?;
+            let started = std::time::Instant::now();
+            let result = self.process_message(&message);
+            METRICS.record_ui_message(started.elapsed());
+            result?;
         }
     }
 
     fn process_message(&mut self, message: &NativeMessage) -> Result<(), AppError> {
+        if message.is_thread_message()
+            && self.heartbeat.matches(message.id(), message.parameter())
+        {
+            if let Some(input) = self.runtime.input {
+                input.heartbeat();
+            }
+            if self.handle_input_wake() {
+                self.flush_frame(FrameTrigger::Changes)?;
+            }
+            return Ok(());
+        }
+        if self.runtime.input.is_some() && is_input_wake(message.id()) {
+            message.dispatch();
+            if self.handle_input_wake() {
+                self.flush_frame(FrameTrigger::Changes)?;
+            }
+            return Ok(());
+        }
         let shell_fullscreen = fullscreen_notification(
             message.is_thread_message(),
             message.id(),
@@ -205,29 +230,6 @@ impl MessageLoop<'_, '_> {
             )?;
             self.render_dock();
         }
-        if wakes.windows_key
-            && let Some(controller) = self.runtime.windows_key
-        {
-            dock_events::handle_windows_key_events(
-                controller,
-                self.dock,
-                self.graphics,
-                self.dock_model,
-                &self.auxiliary.applications,
-                &mut self.auxiliary.launcher,
-            )?;
-        }
-        if wakes.alt_tab
-            && let Some(controller) = self.runtime.alt_tab
-        {
-            controllers::handle_alt_tab_events(
-                controller,
-                self.window_tracker,
-                self.dock_model,
-                self.graphics,
-                &mut self.auxiliary.switcher,
-            );
-        }
         if wakes.search_catalog {
             search_events::refresh_catalog(
                 self.dock,
@@ -238,8 +240,27 @@ impl MessageLoop<'_, '_> {
                 self.auxiliary,
             )?;
         }
+        if wakes.switcher_icons {
+            let _changed = self.auxiliary.switcher.drain_hydrated_icons();
+        }
 
         Ok(())
+    }
+
+    fn handle_input_wake(&mut self) -> bool {
+        let Some(controller) = self.runtime.input else {
+            return false;
+        };
+        controllers::handle_input_actions(&mut controllers::InputEventContext {
+            controller,
+            dock: self.dock,
+            tracker: self.window_tracker,
+            dock_model: self.dock_model,
+            graphics: self.graphics,
+            catalog: &self.auxiliary.applications,
+            launcher: &mut self.auxiliary.launcher,
+            switcher: &mut self.auxiliary.switcher,
+        })
     }
 
     fn render_dock(&mut self) {
@@ -288,23 +309,21 @@ impl MessageLoop<'_, '_> {
 
 #[derive(Clone, Copy)]
 struct WakeEvents {
-    windows_key: bool,
-    alt_tab: bool,
     search_catalog: bool,
     update: bool,
     media: bool,
     badges: bool,
+    switcher_icons: bool,
 }
 
 impl WakeEvents {
     fn from_message(runtime: &RuntimePolicy<'_>, message: u32) -> Self {
         Self {
-            windows_key: runtime.windows_key.is_some() && is_windows_key_wake(message),
-            alt_tab: runtime.alt_tab.is_some() && is_alt_tab_wake(message),
             search_catalog: is_search_catalog_wake(message),
             update: is_update_wake(message),
             media: is_media_wake(message),
             badges: runtime.taskbar_badges.is_some() && is_taskbar_badge_wake(message),
+            switcher_icons: is_switcher_icon_wake(message),
         }
     }
 }

@@ -6,6 +6,8 @@ use resvg::usvg;
 use thiserror::Error;
 use tiny_skia::{Pixmap, Transform};
 
+use crate::resource_cache::BoundedResourceCache;
+
 const LOTUS_PIXEL_SVG: &[u8] = include_bytes!("../../assets/ui/lotus-pixel.svg");
 const FLUENT_CALCULATOR_SVG: &[u8] =
     include_bytes!("../../assets/fluent/calculator-24-regular.svg");
@@ -39,6 +41,7 @@ const FLUENT_PIN_SVG: &[u8] = include_bytes!("../../assets/fluent/pin-24-regular
 const FLUENT_PIN_OFF_SVG: &[u8] =
     include_bytes!("../../assets/fluent/pin-off-24-regular.svg");
 const MAX_RASTER_DIMENSION: u32 = 4_096;
+const SVG_RASTER_CACHE_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SvgAsset {
@@ -213,7 +216,8 @@ impl RasterImage {
 
 pub struct SvgAssetCache {
     trees: HashMap<SvgAsset, usvg::Tree>,
-    rasters: HashMap<(SvgAsset, RasterSize, Option<IconTint>), RasterImage>,
+    rasters: BoundedResourceCache<(SvgAsset, RasterSize, Option<IconTint>), RasterImage>,
+    transient_raster: Option<RasterImage>,
 }
 
 impl SvgAssetCache {
@@ -227,7 +231,8 @@ impl SvgAssetCache {
         }
         Ok(Self {
             trees,
-            rasters: HashMap::new(),
+            rasters: BoundedResourceCache::new(SVG_RASTER_CACHE_BYTES),
+            transient_raster: None,
         })
     }
 
@@ -239,15 +244,27 @@ impl SvgAssetCache {
     ) -> Result<&RasterImage, AssetError> {
         let tint = asset.is_interface_symbol().then_some(tint);
         let key = (asset, size, tint);
-        if !self.rasters.contains_key(&key) {
-            let tree = self.trees.get(&asset).ok_or(AssetError::CacheInvariant)?;
-            let mut raster = rasterize_tree(tree, size)?;
-            if let Some(tint) = tint {
-                tint_interface_symbol(&mut raster.pixels, tint);
-            }
-            self.rasters.insert(key, raster);
+        if self.rasters.contains(&key) {
+            self.transient_raster = None;
+            return self.rasters.get(&key).ok_or(AssetError::CacheInvariant);
         }
 
+        let tree = self.trees.get(&asset).ok_or(AssetError::CacheInvariant)?;
+        let mut raster = rasterize_tree(tree, size)?;
+        if let Some(tint) = tint {
+            tint_interface_symbol(&mut raster.pixels, tint);
+        }
+
+        let raster_bytes = raster.pixels().len();
+        if let Some(raster) = self.rasters.insert(key, raster, raster_bytes) {
+            self.transient_raster = Some(raster);
+            return self
+                .transient_raster
+                .as_ref()
+                .ok_or(AssetError::CacheInvariant);
+        }
+
+        self.transient_raster = None;
         self.rasters.get(&key).ok_or(AssetError::CacheInvariant)
     }
 }

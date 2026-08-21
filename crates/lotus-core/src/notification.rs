@@ -64,12 +64,15 @@ fn source_matches(source: &NotificationSource, candidates: &[String]) -> bool {
 
 fn item_candidates(item: &DockItem) -> Vec<String> {
     let mut candidates = Vec::new();
+    let identity = item.application_identity();
     for value in [
         item.display_name.as_str(),
-        item.id.as_str(),
         file_stem(&item.executable_path),
         file_stem(&item.launch_target),
-    ] {
+    ]
+    .into_iter()
+    .chain(identity.identifiers())
+    {
         let value = normalized(value);
         if !value.is_empty() && !candidates.contains(&value) {
             candidates.push(value);

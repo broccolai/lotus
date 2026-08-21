@@ -45,23 +45,9 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "{code:UpdateLaunchParameters}"; 
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch lotus"; Flags: nowait postinstall skipifsilent; Check: not RestartAfterUpdate
 
 [Code]
-var
-  LegacyPortableInstall: Boolean;
 
 function GetCurrentProcessId: LongWord;
   external 'GetCurrentProcessId@kernel32.dll stdcall';
-
-function InitializeSetup: Boolean;
-begin
-  LegacyPortableInstall :=
-    FileExists(ExpandConstant('{localappdata}\Programs\Lotus\lotus.exe')) and
-    not FileExists(ExpandConstant('{localappdata}\Programs\Lotus\unins000.exe')) and
-    not RegKeyExists(
-      HKCU,
-      'Software\Microsoft\Windows\CurrentVersion\Uninstall\{EB208C8B-11C0-4B22-93A9-8113140647AA}_is1'
-    );
-  Result := True;
-end;
 
 function RestartAfterUpdate: Boolean;
 begin
@@ -72,12 +58,6 @@ function UpdateLaunchParameters(Param: String): String;
 begin
   Result := '--restart-after ' + IntToStr(GetCurrentProcessId) +
     ' --cleanup-update "' + ExpandConstant('{src}') + '" --open-settings';
-end;
-
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if (CurStep = ssPostInstall) and LegacyPortableInstall then
-    DeleteFile(ExpandConstant('{localappdata}\Lotus\settings.json'));
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::num::NonZeroU32;
 
 use lotus_ui::geometry::{PhysicalRect, physical_rect};
@@ -27,6 +26,7 @@ use super::device::GraphicsDevice;
 use super::resources::{raster_key, target_bitmap_properties, upload_bgra_pixels};
 use super::surface::SurfaceSize;
 use super::{ContextMenuScene, PopupEntry, PopupIcon, PopupSymbol, theme};
+use crate::resource_cache::BoundedResourceCache;
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = rgba8(0, 0, 0, 0);
@@ -46,11 +46,11 @@ pub(super) struct ContextMenuRenderer {
     active: ID2D1SolidColorBrush,
     text: ID2D1SolidColorBrush,
     write_factory: IDWriteFactory,
-    text_formats: HashMap<u32, IDWriteTextFormat>,
+    text_formats: BoundedResourceCache<u32, IDWriteTextFormat>,
     assets: SvgAssetCache,
     icon_tint: IconTint,
-    embedded: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
-    rasters: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
+    embedded: BoundedResourceCache<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
+    rasters: BoundedResourceCache<(RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
 
 impl ContextMenuRenderer {
@@ -77,11 +77,11 @@ impl ContextMenuRenderer {
             active: brush(&context, &theme::d2d(theme.control_selected))?,
             text: brush(&context, &theme::d2d(theme.text))?,
             write_factory,
-            text_formats: HashMap::new(),
+            text_formats: BoundedResourceCache::new(16),
             assets: SvgAssetCache::create()?,
             icon_tint: IconTint::from_color(theme.text),
-            embedded: HashMap::new(),
-            rasters: HashMap::new(),
+            embedded: BoundedResourceCache::new(16 * 1024 * 1024),
+            rasters: BoundedResourceCache::new(16 * 1024 * 1024),
         };
         renderer.attach_target(swap_chain)?;
         Ok(renderer)
@@ -368,7 +368,7 @@ impl ContextMenuRenderer {
             format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
         }
-        self.text_formats.insert(dpi, format.clone());
+        self.text_formats.insert(dpi, format.clone(), 1);
         Ok(format)
     }
 
@@ -390,7 +390,7 @@ impl ContextMenuRenderer {
         size: NonZeroU32,
     ) -> Result<(), ContextMenuRendererError> {
         let key = (asset, size);
-        if self.embedded.contains_key(&key) {
+        if self.embedded.get(&key).is_some() {
             return Ok(());
         }
         let raster =
@@ -403,7 +403,11 @@ impl ContextMenuRenderer {
             raster.pixels(),
             raster.stride()?,
         )?;
-        self.embedded.insert(key, bitmap);
+        let bytes = usize::try_from(size.get())
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(size.get()).unwrap_or(usize::MAX))
+            .saturating_mul(4);
+        self.embedded.insert(key, bitmap, bytes);
         Ok(())
     }
 
@@ -412,7 +416,7 @@ impl ContextMenuRenderer {
         raster: &RasterIcon,
     ) -> Result<(), ContextMenuRendererError> {
         let key = raster_key(raster);
-        if self.rasters.contains_key(&key) {
+        if self.rasters.get(&key).is_some() {
             return Ok(());
         }
         let bitmap = upload_bgra_pixels(
@@ -422,7 +426,11 @@ impl ContextMenuRenderer {
             raster.pixels(),
             raster.stride(),
         )?;
-        self.rasters.insert(key, bitmap);
+        let bytes = usize::try_from(raster.width())
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(raster.height()).unwrap_or(usize::MAX))
+            .saturating_mul(4);
+        self.rasters.insert(key, bitmap, bytes);
         Ok(())
     }
 
@@ -436,7 +444,7 @@ impl ContextMenuRenderer {
             PopupIcon::Artwork(Icon::Embedded(asset)) => self.embedded_bitmap(*asset, size),
             PopupIcon::Artwork(Icon::Raster(raster)) => self
                 .rasters
-                .get(&raster_key(raster))
+                .peek(&raster_key(raster))
                 .ok_or(ContextMenuRendererError::BitmapCacheInvariant),
         }
     }
@@ -447,7 +455,7 @@ impl ContextMenuRenderer {
         size: NonZeroU32,
     ) -> Result<&ID2D1Bitmap1, ContextMenuRendererError> {
         self.embedded
-            .get(&(asset, size))
+            .peek(&(asset, size))
             .ok_or(ContextMenuRendererError::BitmapCacheInvariant)
     }
 }

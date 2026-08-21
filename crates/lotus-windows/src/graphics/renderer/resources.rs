@@ -25,7 +25,7 @@ impl Direct2DRenderer {
         size: NonZeroU32,
     ) -> Result<(), RendererError> {
         let key = (asset, size);
-        if self.embedded_bitmaps.contains_key(&key) {
+        if self.embedded_bitmaps.get(&key).is_some() {
             return Ok(());
         }
 
@@ -33,7 +33,11 @@ impl Direct2DRenderer {
             self.assets
                 .rasterize(asset, RasterSize::square(size), self.icon_tint)?;
         let bitmap = upload_raster_image(&self.context, raster)?;
-        self.embedded_bitmaps.insert(key, bitmap);
+        let bytes = usize::try_from(size.get())
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(size.get()).unwrap_or(usize::MAX))
+            .saturating_mul(4);
+        self.embedded_bitmaps.insert(key, bitmap, bytes);
         Ok(())
     }
 
@@ -42,7 +46,7 @@ impl Direct2DRenderer {
         raster: &RasterIcon,
     ) -> Result<(), RendererError> {
         let key = raster_key(raster);
-        if self.raster_bitmaps.contains_key(&key) {
+        if self.raster_bitmaps.get(&key).is_some() {
             return Ok(());
         }
 
@@ -53,7 +57,11 @@ impl Direct2DRenderer {
             raster.pixels(),
             raster.stride(),
         )?;
-        self.raster_bitmaps.insert(key, bitmap);
+        let bytes = usize::try_from(raster.width())
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(raster.height()).unwrap_or(usize::MAX))
+            .saturating_mul(4);
+        self.raster_bitmaps.insert(key, bitmap, bytes);
         Ok(())
     }
 
@@ -65,11 +73,11 @@ impl Direct2DRenderer {
         match icon {
             DockIcon::Embedded(asset) => self
                 .embedded_bitmaps
-                .get(&(*asset, embedded_size))
+                .peek(&(*asset, embedded_size))
                 .ok_or(RendererError::BitmapCacheInvariant),
             DockIcon::Raster(raster) => self
                 .raster_bitmaps
-                .get(&raster_key(raster))
+                .peek(&raster_key(raster))
                 .ok_or(RendererError::BitmapCacheInvariant),
         }
     }

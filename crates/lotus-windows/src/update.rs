@@ -14,12 +14,12 @@ use windows::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
+use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 use windows::core::PCWSTR;
 
-use crate::startup::{parse_startup_args, wait_for_restart_source};
+use crate::messages::UPDATE_WAKE as UPDATE_WAKE_MESSAGE;
+use crate::startup::{RestartWaitOutcome, parse_startup_args, wait_for_restart_source};
 
-const UPDATE_WAKE_MESSAGE: u32 = WM_APP + 0x4C9;
 const APPLY_UPDATE_ARGUMENT: &str = "--apply-update";
 const INSTALL_UPDATE_ARGUMENT: &str = "--install-update";
 const CLEANUP_UPDATE_ARGUMENT: &str = "--cleanup-update";
@@ -163,8 +163,7 @@ pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
     if let Some(installer) = helper_target(&arguments, INSTALL_UPDATE_ARGUMENT)? {
         let startup =
             parse_startup_args(&arguments).map_err(UpdateInstallError::StartupArguments)?;
-        wait_for_restart_source(startup.restart_after)
-            .map_err(UpdateInstallError::RestartWait)?;
+        wait_for_update_source(startup.restart_after)?;
         run_installer(&installer)?;
         return Ok(true);
     }
@@ -174,8 +173,7 @@ pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
     };
     let startup =
         parse_startup_args(&arguments).map_err(UpdateInstallError::StartupArguments)?;
-    wait_for_restart_source(startup.restart_after)
-        .map_err(UpdateInstallError::RestartWait)?;
+    wait_for_update_source(startup.restart_after)?;
     let source = std::env::current_exe().map_err(UpdateInstallError::CurrentExecutable)?;
     let directory = target
         .parent()
@@ -194,6 +192,21 @@ pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
         .spawn()
         .map_err(UpdateInstallError::LaunchInstalled)?;
     Ok(true)
+}
+
+fn wait_for_update_source(restart_after: Option<u32>) -> Result<(), UpdateInstallError> {
+    let Some(process_id) = restart_after else {
+        return Ok(());
+    };
+
+    match wait_for_restart_source(Some(process_id))
+        .map_err(UpdateInstallError::RestartWait)?
+    {
+        RestartWaitOutcome::TimedOut => {
+            Err(UpdateInstallError::RestartTimedOut { process_id })
+        }
+        _ => Ok(()),
+    }
 }
 
 fn helper_target(
@@ -307,6 +320,8 @@ pub enum UpdateInstallError {
     StartupArguments(#[source] crate::startup::StartupArgsError),
     #[error("the update helper could not wait for Lotus: {0}")]
     RestartWait(#[source] crate::startup::RestartWaitError),
+    #[error("Lotus did not exit before the update timeout (process {process_id})")]
+    RestartTimedOut { process_id: u32 },
     #[error("Lotus could not create its install directory: {0}")]
     InstallDirectory(#[source] std::io::Error),
     #[error("Lotus could not stage its installed executable: {0}")]

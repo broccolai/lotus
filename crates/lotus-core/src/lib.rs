@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod activation;
+pub mod application;
 pub mod dock;
 pub mod fullscreen;
 pub mod launcher_model;

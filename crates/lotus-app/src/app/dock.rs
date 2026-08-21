@@ -21,7 +21,10 @@ use lotus_windows::graphics::scene::{
 };
 use lotus_windows::media::decode_artwork;
 use lotus_windows::native_icon::NativeIconCache;
-use projection::{departure_transition, docked_status_items, mascot, projected_items};
+use projection::{
+    departure_transition, docked_status_items, mascot, media_source_matches_item,
+    projected_items,
+};
 pub(super) use projection::{
     dock_anchor, metrics, popup_overlap, status_items, status_popup_center,
 };
@@ -268,10 +271,11 @@ impl DockRuntime {
     }
 
     fn media_source_icon(&mut self, source_id: &str) -> Option<DockIcon> {
-        let item = self.model.items().iter().find(|item| {
-            projection::media_identity_matches(source_id, &item.executable_path)
-                || projection::media_identity_matches(source_id, &item.display_name)
-        })?;
+        let item = self
+            .model
+            .items()
+            .iter()
+            .find(|item| media_source_matches_item(source_id, item))?;
         let size = self
             .scene
             .icon_size_pixels()

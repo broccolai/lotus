@@ -18,18 +18,18 @@ use launcher::LauncherRuntime;
 use lotus_core::search::SearchUsage;
 use lotus_core::settings::{
     CURRENT_ONBOARDING_VERSION, DockSettings, NotificationBadgeStyle, SettingsDecodeError,
-    SettingsStore, SettingsStoreError, decode_settings,
+    SettingsLoadSource, SettingsStore, SettingsStoreError, decode_settings,
 };
 use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::activation::ActivationError;
-use lotus_windows::alt_tab::AltTabController;
 use lotus_windows::appbar::ShellIntegration;
 use lotus_windows::dpi::enable_per_monitor_v2;
 use lotus_windows::graphics::{
     CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize,
 };
+use lotus_windows::input::{InputConfig, InputController};
 use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::single_instance::SingleInstance;
 use lotus_windows::startup::{
@@ -40,12 +40,11 @@ use lotus_windows::taskbar_badges::TaskbarBadgeController;
 use lotus_windows::update::is_installed;
 use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
-use lotus_windows::windows_key::{WindowsKeyController, WindowsKeyError};
 use media::MediaRuntime;
 use monitors::MonitorDocks;
 use runtime::{
-    apply_fullscreen_visibility, enable_optional_alt_tab, enable_optional_windows_key,
-    flush_frame, resize_dock, run_message_loop,
+    apply_fullscreen_visibility, enable_optional_input, flush_frame, resize_dock,
+    run_message_loop,
 };
 use settings::SettingsRuntime;
 use status::StatusRuntime;
@@ -66,6 +65,8 @@ pub enum AppError {
     InvalidScene,
     #[error("the application switcher could not produce a valid render scene")]
     InvalidSwitcherScene,
+    #[error(transparent)]
+    SwitcherIcons(#[from] lotus_windows::switcher_icons::SwitcherIconHydratorError),
     #[error("the native launcher could not produce a valid render scene")]
     InvalidLauncherScene,
     #[error("the native settings window could not produce a valid render scene")]
@@ -97,8 +98,7 @@ enum RestartError {
 }
 
 struct RuntimePolicy<'a> {
-    windows_key: Option<&'a WindowsKeyController>,
-    alt_tab: Option<&'a AltTabController>,
+    input: Option<&'a InputController>,
     taskbar_badges: Option<&'a TaskbarBadgeController>,
     onboarding_required: bool,
 }
@@ -149,18 +149,13 @@ pub fn run() -> Result<(), AppError> {
             && dock_model.settings().show_date_time_status,
     )?;
     let mut auxiliary = create_auxiliary_windows(&dock, &dock_model, usage, usage_store)?;
-    let windows_key = enable_optional_windows_key(
-        !onboarding_required
-            && dock_model.settings().search_enabled
-            && dock_model.settings().search_open_with_windows_key,
-        || {
-            let mut controller = WindowsKeyController::new();
-            let _enabled = controller.enable()?;
-            Ok::<WindowsKeyController, WindowsKeyError>(controller)
+    let input = enable_optional_input(
+        !onboarding_required,
+        InputConfig {
+            windows_key_search: dock_model.settings().search_enabled
+                && dock_model.settings().search_open_with_windows_key,
+            custom_alt_tab: dock_model.settings().alt_tab_enabled,
         },
-    );
-    let alt_tab = enable_optional_alt_tab(
-        !onboarding_required && dock_model.settings().alt_tab_enabled,
     );
     resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
     let _shell_integration = if onboarding_required {
@@ -210,8 +205,7 @@ pub fn run() -> Result<(), AppError> {
         lotus_ui::frame::FrameTrigger::Changes,
     )?;
     let runtime = RuntimePolicy {
-        windows_key: windows_key.as_ref(),
-        alt_tab: alt_tab.as_ref(),
+        input: input.as_ref(),
         taskbar_badges: taskbar_badges.as_ref(),
         onboarding_required,
     };
@@ -265,7 +259,7 @@ fn create_auxiliary_windows(
         switcher_window,
         dock_model.settings(),
         &theme_for(dock_model.settings()),
-    );
+    )?;
     let media = MediaRuntime::new(dock_model.settings().show_media_controls);
     let status = StatusRuntime::new(
         [dock.create_status_window()?, dock.create_status_window()?],
@@ -308,12 +302,6 @@ fn load_settings() -> Result<(DockSettings, SettingsStore), AppError> {
     let store = SettingsStore::new(settings_directory);
 
     let settings_existed = store.settings_path().exists();
-    let legacy_without_onboarding = settings_existed
-        && fs::read_to_string(store.settings_path()).is_ok_and(|contents| {
-            !contents
-                .to_ascii_lowercase()
-                .contains("\"onboardingversion\"")
-        });
 
     if !settings_existed {
         let shipped_defaults = decode_settings(include_str!(
@@ -322,11 +310,16 @@ fn load_settings() -> Result<(DockSettings, SettingsStore), AppError> {
         store.save(&shipped_defaults)?;
     }
 
-    let mut settings = store.load()?.settings;
-    if legacy_without_onboarding {
-        settings.onboarding_version = CURRENT_ONBOARDING_VERSION;
-        store.save(&settings)?;
+    let load = store.load()?;
+    if let SettingsLoadSource::RecoveredInvalid { backup_path, error } = &load.source {
+        lotus_windows::diagnostics::record_message(
+            "settings.recovered_invalid",
+            &format!(
+                "Lotus restored default settings after `{error}`. The original file is at `{}`.",
+                backup_path.display()
+            ),
+        );
     }
 
-    Ok((settings, store))
+    Ok((load.settings, store))
 }

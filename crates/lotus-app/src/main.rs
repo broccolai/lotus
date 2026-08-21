@@ -21,7 +21,12 @@ fn main() {
     if lotus_windows::exclusive_taskbar::run_guardian_if_requested() {
         return;
     }
-    if let Err(error) = app::run() {
+    let result = app::run();
+    lotus_windows::diagnostics::record_diagnostic(
+        "responsiveness",
+        &lotus_windows::responsiveness::METRICS.snapshot().to_text(),
+    );
+    if let Err(error) = result {
         lotus_windows::dialog::show_unowned_error(
             "Lotus",
             &format!("Lotus could not start.\n\n{error}"),

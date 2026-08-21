@@ -14,8 +14,8 @@ use thiserror::Error;
 
 const RELEASES_API: &str =
     "https://api.github.com/repos/broccolai/lotus/releases?per_page=100";
-const RELEASE_BASE_URL: &str = "https://github.com/broccolai/lotus/releases";
-const DOWNLOAD_LIMIT: u64 = 64 * 1024 * 1024;
+const METADATA_DOWNLOAD_LIMIT: u64 = 64 * 1024;
+const INSTALLER_DOWNLOAD_LIMIT: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Release {
@@ -53,6 +53,8 @@ pub enum UpdateError {
     },
     #[error("GitHub returned no eligible Lotus releases for the selected update channel")]
     NoEligibleRelease,
+    #[error("the selected Lotus release is missing its {asset} asset")]
+    MissingAsset { asset: String },
     #[error("GitHub returned an invalid release checksum")]
     InvalidChecksum,
     #[error("the downloaded release did not match its published SHA-256 checksum")]
@@ -86,7 +88,7 @@ pub fn check(
 }
 
 pub fn stage(release: &Release) -> Result<StagedUpdate, UpdateError> {
-    let checksum = download(&release.checksum_url)?;
+    let checksum = download(&release.checksum_url, METADATA_DOWNLOAD_LIMIT)?;
     let expected = std::str::from_utf8(&checksum)
         .ok()
         .and_then(|value| value.split_whitespace().next())
@@ -94,7 +96,7 @@ pub fn stage(release: &Release) -> Result<StagedUpdate, UpdateError> {
             value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
         })
         .ok_or(UpdateError::InvalidChecksum)?;
-    let installer = download(&release.installer_url)?;
+    let installer = download(&release.installer_url, INSTALLER_DOWNLOAD_LIMIT)?;
     let digest = Sha256::digest(&installer);
     let mut actual = String::with_capacity(64);
     for byte in digest {
@@ -133,12 +135,28 @@ fn fetch_release(channel: UpdateChannel) -> Result<Release, UpdateError> {
     let tag = release.tag_name.trim();
     let version = tag.strip_prefix('v').unwrap_or(tag);
     let installer_name = format!("lotus-v{version}-windows-x86_64-setup.exe");
-    let download_base = format!("{RELEASE_BASE_URL}/download/{}", release.tag_name);
+    let checksum_name = format!("{installer_name}.sha256");
+    let installer_url = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == installer_name)
+        .map(|asset| asset.browser_download_url.clone())
+        .ok_or_else(|| UpdateError::MissingAsset {
+            asset: installer_name.clone(),
+        })?;
+    let checksum_url = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == checksum_name)
+        .map(|asset| asset.browser_download_url.clone())
+        .ok_or_else(|| UpdateError::MissingAsset {
+            asset: checksum_name.clone(),
+        })?;
     Ok(Release {
         version: version.to_owned(),
-        page_url: format!("{RELEASE_BASE_URL}/tag/{}", release.tag_name),
-        installer_url: format!("{download_base}/{installer_name}"),
-        checksum_url: format!("{download_base}/{installer_name}.sha256"),
+        page_url: release.html_url,
+        installer_url,
+        checksum_url,
     })
 }
 
@@ -164,7 +182,7 @@ fn select_release(
         .map(|(_, release)| release)
 }
 
-fn download(url: &str) -> Result<Vec<u8>, UpdateError> {
+fn download(url: &str, limit: u64) -> Result<Vec<u8>, UpdateError> {
     agent()
         .get(url)
         .header("User-Agent", concat!("Lotus/", env!("CARGO_PKG_VERSION")))
@@ -172,7 +190,7 @@ fn download(url: &str) -> Result<Vec<u8>, UpdateError> {
         .map_err(UpdateError::Request)?
         .body_mut()
         .with_config()
-        .limit(DOWNLOAD_LIMIT)
+        .limit(limit)
         .read_to_vec()
         .map_err(UpdateError::Request)
 }
@@ -199,6 +217,14 @@ struct GitHubRelease {
     tag_name: String,
     draft: bool,
     prerelease: bool,
+    html_url: String,
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Deserialize)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
 }
 
 #[cfg(test)]
@@ -211,6 +237,8 @@ mod tests {
             tag_name: tag_name.into(),
             draft,
             prerelease,
+            html_url: String::new(),
+            assets: Vec::new(),
         };
         let releases = || {
             vec![

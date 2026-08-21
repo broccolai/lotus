@@ -9,7 +9,6 @@ mod layout;
 
 pub use layout::{LauncherLayout, LauncherSize, PixelRect};
 
-const MAX_RESULTS: usize = 5;
 const COMPLETE_PROGRESS: u16 = 1_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,11 +87,10 @@ impl<Asset> LauncherScene<Asset> {
         dpi: u32,
         query: impl Into<String>,
         mode: SearchMode,
-        mut results: Vec<LauncherResult<Asset>>,
+        results: Vec<LauncherResult<Asset>>,
         selected: Option<usize>,
     ) -> Option<Self> {
         let dpi = NonZeroU32::new(dpi)?;
-        results.truncate(MAX_RESULTS);
         let selected = selected.filter(|index| *index < results.len());
         let query = query.into();
         let query_cursor = query.chars().count();

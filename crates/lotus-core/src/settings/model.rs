@@ -2,6 +2,11 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::application::{
+    ApplicationIdentity, ApplicationMatchStrength, is_reliable_application_identity,
+    is_shared_host_executable,
+};
+
 pub const CURRENT_APPEARANCE_VERSION: u32 = 3;
 pub const CURRENT_ONBOARDING_VERSION: u32 = 1;
 
@@ -226,9 +231,19 @@ impl DockSettings {
         stable_id: Option<&str>,
         executable_name: Option<&str>,
     ) -> Option<&ApplicationIconOverride> {
-        self.application_icon_overrides.iter().find(|override_| {
-            override_.matches(app_user_model_id, stable_id, executable_name)
-        })
+        let identity =
+            ApplicationIdentity::new(app_user_model_id, stable_id, None, executable_name);
+        self.application_icon_override_for(&identity)
+    }
+
+    #[must_use]
+    pub fn application_icon_override_for(
+        &self,
+        identity: &ApplicationIdentity,
+    ) -> Option<&ApplicationIconOverride> {
+        self.application_icon_overrides
+            .iter()
+            .find(|override_| override_.matches_identity(identity))
     }
 }
 
@@ -243,38 +258,51 @@ pub struct ApplicationIconOverride {
 
 impl ApplicationIconOverride {
     #[must_use]
+    pub fn application_identity(&self) -> ApplicationIdentity {
+        ApplicationIdentity::new(
+            self.app_user_model_id.as_deref(),
+            Some(&self.id),
+            None,
+            self.match_executables.iter().map(String::as_str),
+        )
+    }
+
+    fn legacy_identity(&self) -> ApplicationIdentity {
+        ApplicationIdentity::new(
+            None,
+            Some(&self.id),
+            None,
+            self.match_executables.iter().map(String::as_str),
+        )
+    }
+
+    #[must_use]
     pub fn matches(
         &self,
         app_user_model_id: Option<&str>,
         stable_id: Option<&str>,
         executable_name: Option<&str>,
     ) -> bool {
-        let reliable_candidate = app_user_model_id
-            .filter(|candidate| crate::window::is_reliable_application_identity(candidate));
-        if let (Some(candidate), Some(saved)) =
-            (reliable_candidate, self.app_user_model_id.as_deref())
-            && crate::window::is_reliable_application_identity(saved)
+        let candidate =
+            ApplicationIdentity::new(app_user_model_id, stable_id, None, executable_name);
+        self.matches_identity(&candidate)
+    }
+
+    #[must_use]
+    pub fn matches_identity(&self, candidate: &ApplicationIdentity) -> bool {
+        if self
+            .application_identity()
+            .match_strength(candidate)
+            .is_match()
         {
-            return candidate.eq_ignore_ascii_case(saved);
-        }
-        if stable_id.is_some_and(|candidate| candidate.eq_ignore_ascii_case(&self.id)) {
             return true;
         }
-        if reliable_candidate.is_some() {
-            return false;
-        }
-        if let Some(candidate) = stable_id
-            && is_registered_application_identity(candidate)
-        {
-            return false;
-        }
-        executable_name.is_some_and(|candidate| {
-            !is_shared_host_executable(candidate)
-                && self
-                    .match_executables
-                    .iter()
-                    .any(|saved| saved.eq_ignore_ascii_case(candidate))
-        })
+
+        candidate.reliable_registered_id().is_none()
+            && !candidate
+                .stable_id()
+                .is_some_and(is_reliable_application_identity)
+            && self.legacy_identity().match_strength(candidate).is_match()
     }
 
     fn is_valid(&self) -> bool {
@@ -286,8 +314,7 @@ impl ApplicationIconOverride {
         self.image_path = self.image_path.trim().into();
         self.app_user_model_id = self.app_user_model_id.take().and_then(|identity| {
             let identity = identity.trim();
-            crate::window::is_reliable_application_identity(identity)
-                .then(|| identity.to_owned())
+            is_reliable_application_identity(identity).then(|| identity.to_owned())
         });
         self.match_executables =
             normalized_unique_strings(std::mem::take(&mut self.match_executables))
@@ -295,24 +322,6 @@ impl ApplicationIconOverride {
                 .filter(|executable| !is_shared_host_executable(executable))
                 .collect();
     }
-}
-
-fn is_shared_host_executable(executable: &str) -> bool {
-    ["chrome.exe", "msedge.exe", "applicationframehost.exe"]
-        .iter()
-        .any(|host| executable.eq_ignore_ascii_case(host))
-}
-
-fn is_registered_application_identity(value: &str) -> bool {
-    crate::window::is_reliable_application_identity(value)
-        && !value.contains(['\\', '/'])
-        && !value.contains("://")
-        && !std::path::Path::new(value)
-            .extension()
-            .is_some_and(|extension| {
-                extension.eq_ignore_ascii_case("exe")
-                    || extension.eq_ignore_ascii_case("lnk")
-            })
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -328,6 +337,41 @@ pub struct PinnedApp {
 }
 
 impl PinnedApp {
+    #[must_use]
+    pub fn application_identity(
+        &self,
+        resolved_launch: Option<&str>,
+    ) -> ApplicationIdentity {
+        ApplicationIdentity::new(
+            self.app_user_model_id.as_deref(),
+            Some(&self.id),
+            resolved_launch.or(Some(&self.launch_target)),
+            self.match_executables.iter().map(String::as_str),
+        )
+    }
+
+    #[must_use]
+    pub fn match_identity(
+        &self,
+        candidate: &ApplicationIdentity,
+        resolved_launch: Option<&str>,
+    ) -> ApplicationMatchStrength {
+        let matched = self
+            .application_identity(resolved_launch)
+            .match_strength(candidate);
+        if matched.is_match() || candidate.reliable_registered_id().is_some() {
+            return matched;
+        }
+
+        ApplicationIdentity::new(
+            None,
+            Some(&self.id),
+            resolved_launch.or(Some(&self.launch_target)),
+            self.match_executables.iter().map(String::as_str),
+        )
+        .match_strength(candidate)
+    }
+
     fn is_launchable(&self) -> bool {
         !self.id.trim().is_empty() && !self.launch_target.trim().is_empty()
     }

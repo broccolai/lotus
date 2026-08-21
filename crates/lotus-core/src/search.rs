@@ -1,7 +1,9 @@
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+
+use crate::application::ApplicationIdentity;
 
 const MAX_USAGE_ENTRIES: usize = 64;
 
@@ -22,7 +24,7 @@ struct SearchUsageEntry {
 
 impl SearchUsage {
     pub fn from_json(source: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(source)
+        serde_json::from_str::<Self>(source).map(Self::normalized)
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -66,6 +68,49 @@ impl SearchUsage {
                 launches: entry.launches,
                 last_used: entry.last_used,
             })
+    }
+
+    fn normalized(mut self) -> Self {
+        let mut entries = BTreeMap::<String, SearchUsageEntry>::new();
+
+        for entry in self.entries {
+            let target = normalize_target(&entry.target);
+            if target.is_empty() {
+                continue;
+            }
+
+            entries
+                .entry(target.clone())
+                .and_modify(|current| {
+                    current.launches = current.launches.saturating_add(entry.launches);
+                    current.last_used = current.last_used.max(entry.last_used);
+                })
+                .or_insert(SearchUsageEntry {
+                    target,
+                    launches: entry.launches,
+                    last_used: entry.last_used,
+                });
+        }
+
+        let mut entries = entries.into_values().collect::<Vec<_>>();
+        entries.sort_unstable_by(|left, right| {
+            right
+                .launches
+                .cmp(&left.launches)
+                .then_with(|| right.last_used.cmp(&left.last_used))
+                .then_with(|| left.target.cmp(&right.target))
+        });
+        entries.truncate(MAX_USAGE_ENTRIES);
+
+        self.sequence = self.sequence.max(
+            entries
+                .iter()
+                .map(|entry| entry.last_used)
+                .max()
+                .unwrap_or_default(),
+        );
+        self.entries = entries;
+        self
     }
 }
 
@@ -131,6 +176,16 @@ impl ApplicationEntry {
         self.hidden_until_search = true;
         self
     }
+
+    #[must_use]
+    pub fn application_identity(&self) -> ApplicationIdentity {
+        ApplicationIdentity::new(
+            self.app_user_model_id.as_deref(),
+            Some(&self.launch_target),
+            None,
+            std::iter::empty(),
+        )
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -140,7 +195,7 @@ pub struct SearchCatalog {
 
 impl SearchCatalog {
     pub fn new(entries: impl IntoIterator<Item = ApplicationEntry>) -> Self {
-        let mut seen_names = HashSet::new();
+        let mut seen_identities = HashSet::new();
         let mut catalog = Vec::new();
 
         for mut entry in entries {
@@ -152,15 +207,16 @@ impl SearchCatalog {
 
             let normalized_name = normalize(&entry.name);
             if normalized_name.is_empty()
-                || !seen_names.insert(identity_key(&normalized_name))
+                || !seen_identities.insert(application_identity(&entry))
             {
                 continue;
             }
 
             let ordinal = catalog.len();
             catalog.push(CatalogEntry {
+                normalized_name_chars: normalized_name.chars().collect(),
+                sort_name: entry.name.to_lowercase(),
                 entry,
-                normalized_name,
                 ordinal,
             });
         }
@@ -183,6 +239,7 @@ impl SearchCatalog {
         usage: &SearchUsage,
     ) -> Vec<&ApplicationEntry> {
         let normalized_query = normalize(query);
+        let query_tokens = query_tokens(&normalized_query);
         let mut ranked = self
             .entries
             .iter()
@@ -190,41 +247,42 @@ impl SearchCatalog {
                 if normalized_query.is_empty() && candidate.entry.hidden_until_search {
                     return None;
                 }
-                score(&candidate.normalized_name, &normalized_query)
-                    .map(|score| (candidate, score))
+                score(&candidate.normalized_name_chars, &query_tokens).map(|score| {
+                    let usage = usage.rank(&candidate.entry.launch_target);
+                    (candidate, score, usage)
+                })
             })
             .collect::<Vec<_>>();
 
-        ranked.sort_by(|(left, left_score), (right, right_score)| {
-            Reverse(left_score.quality)
-                .cmp(&Reverse(right_score.quality))
-                .then_with(|| {
-                    if normalized_query.is_empty() {
-                        std::cmp::Ordering::Equal
-                    } else {
-                        Reverse(left.entry.source).cmp(&Reverse(right.entry.source))
-                    }
-                })
-                .then_with(|| left_score.penalty.cmp(&right_score.penalty))
-                .then_with(|| {
-                    Reverse(usage.rank(&left.entry.launch_target))
-                        .cmp(&Reverse(usage.rank(&right.entry.launch_target)))
-                })
-                .then_with(|| {
-                    if normalized_query.is_empty() {
-                        left.ordinal.cmp(&right.ordinal)
-                    } else {
-                        compare_names(&left.entry.name, &right.entry.name)
-                    }
-                })
-                .then_with(|| left.entry.name.cmp(&right.entry.name))
-                .then_with(|| left.entry.launch_target.cmp(&right.entry.launch_target))
-        });
+        ranked.sort_by(
+            |(left, left_score, left_usage), (right, right_score, right_usage)| {
+                Reverse(left_score.quality)
+                    .cmp(&Reverse(right_score.quality))
+                    .then_with(|| {
+                        if normalized_query.is_empty() {
+                            std::cmp::Ordering::Equal
+                        } else {
+                            Reverse(left.entry.source).cmp(&Reverse(right.entry.source))
+                        }
+                    })
+                    .then_with(|| left_score.penalty.cmp(&right_score.penalty))
+                    .then_with(|| Reverse(left_usage).cmp(&Reverse(right_usage)))
+                    .then_with(|| {
+                        if normalized_query.is_empty() {
+                            left.ordinal.cmp(&right.ordinal)
+                        } else {
+                            left.sort_name.cmp(&right.sort_name)
+                        }
+                    })
+                    .then_with(|| left.entry.name.cmp(&right.entry.name))
+                    .then_with(|| left.entry.launch_target.cmp(&right.entry.launch_target))
+            },
+        );
 
         ranked
             .into_iter()
             .take(limit)
-            .map(|(candidate, _)| &candidate.entry)
+            .map(|(candidate, _, _)| &candidate.entry)
             .collect()
     }
 
@@ -240,12 +298,9 @@ impl SearchCatalog {
 #[derive(Clone, Debug)]
 struct CatalogEntry {
     entry: ApplicationEntry,
-    normalized_name: String,
+    normalized_name_chars: Vec<char>,
+    sort_name: String,
     ordinal: usize,
-}
-
-fn compare_names(left: &str, right: &str) -> std::cmp::Ordering {
-    left.to_lowercase().cmp(&right.to_lowercase())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -254,25 +309,31 @@ struct MatchScore {
     penalty: i32,
 }
 
-fn score(candidate: &str, query: &str) -> Option<MatchScore> {
-    if query.is_empty() {
+fn score(candidate: &[char], query_tokens: &[Vec<char>]) -> Option<MatchScore> {
+    if query_tokens.is_empty() {
         return Some(MatchScore {
             quality: 0,
             penalty: 0,
         });
     }
 
-    let candidate_chars = candidate.chars().collect::<Vec<_>>();
     let mut quality = 0;
     let mut penalty = 0;
-    for token in query.split_whitespace() {
-        let token = score_token(&candidate_chars, &token.chars().collect::<Vec<_>>())?;
+    for token in query_tokens {
+        let token = score_token(candidate, token)?;
         quality += token.quality;
         penalty += token.penalty;
     }
 
-    penalty += i32::try_from(candidate_chars.len()).unwrap_or(i32::MAX);
+    penalty += i32::try_from(candidate.len()).unwrap_or(i32::MAX);
     Some(MatchScore { quality, penalty })
+}
+
+fn query_tokens(query: &str) -> Vec<Vec<char>> {
+    query
+        .split_whitespace()
+        .map(|token| token.chars().collect())
+        .collect()
 }
 
 fn score_token(candidate: &[char], token: &[char]) -> Option<MatchScore> {
@@ -368,11 +429,11 @@ fn normalize(value: &str) -> String {
     normalized
 }
 
-fn identity_key(normalized_name: &str) -> String {
-    normalized_name
-        .chars()
-        .filter(|character| *character != ' ')
-        .collect()
+fn application_identity(entry: &ApplicationEntry) -> String {
+    entry
+        .application_identity()
+        .deduplication_key()
+        .unwrap_or_else(|| format!("target:{}", normalize_target(&entry.launch_target)))
 }
 
 fn normalize_target(value: &str) -> String {

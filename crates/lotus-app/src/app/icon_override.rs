@@ -1,5 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use lotus_core::application::ApplicationIdentity;
 use lotus_core::settings::DockSettings;
 use lotus_ui::icon::RasterIcon;
 use lotus_windows::custom_image::CustomImageCache;
@@ -11,11 +12,23 @@ pub(super) fn resolve_application_icon(
     stable_id: Option<&str>,
     executable_path: &Path,
 ) -> Option<RasterIcon> {
-    let executable_name = executable_path.file_name().and_then(|name| name.to_str());
-    let custom = settings.application_icon_override(
+    let path =
+        application_icon_path(settings, app_user_model_id, stable_id, executable_path)?;
+    custom_images.image(&path).ok()
+}
+
+pub(super) fn application_icon_path(
+    settings: &DockSettings,
+    app_user_model_id: Option<&str>,
+    stable_id: Option<&str>,
+    executable_path: &Path,
+) -> Option<PathBuf> {
+    let identity = ApplicationIdentity::from_path(
         app_user_model_id,
         stable_id,
-        executable_name,
-    )?;
-    custom_images.image(Path::new(&custom.image_path)).ok()
+        Some(executable_path),
+        std::iter::empty(),
+    );
+    let custom = settings.application_icon_override_for(&identity)?;
+    Some(PathBuf::from(&custom.image_path))
 }

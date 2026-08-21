@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::application::{ApplicationIdentity, is_reliable_application_identity};
 use crate::settings::PinnedApp;
-use crate::window::{WindowInfo, is_reliable_application_identity};
+use crate::window::WindowInfo;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DockItem {
@@ -18,6 +19,16 @@ pub struct DockItem {
 }
 
 impl DockItem {
+    #[must_use]
+    pub fn application_identity(&self) -> ApplicationIdentity {
+        ApplicationIdentity::new(
+            self.app_user_model_id.as_deref(),
+            Some(&self.id),
+            Some(&self.executable_path),
+            std::iter::empty(),
+        )
+    }
+
     pub fn is_running(&self) -> bool {
         !self.windows.is_empty()
     }
@@ -49,11 +60,10 @@ where
     let visible_windows = windows
         .iter()
         .filter(|window| {
-            let executable = window.executable_name();
-            !settings.hidden_executables.iter().any(|hidden| {
-                executable
-                    .is_some_and(|executable| path_case_eq(Path::new(hidden), executable))
-            })
+            !settings
+                .hidden_executables
+                .iter()
+                .any(|hidden| window.application_identity().has_executable_alias(hidden))
         })
         .collect::<Vec<_>>();
     let mut unmatched = vec![true; visible_windows.len()];
@@ -119,41 +129,9 @@ fn matches_pin(
     window: &WindowInfo,
     resolved_launch: Option<&str>,
 ) -> bool {
-    if let Some(window_id) = window
-        .app_user_model_id
-        .as_deref()
-        .filter(|identity| is_reliable_application_identity(identity))
-    {
-        if pinned.id.eq_ignore_ascii_case(window_id) {
-            return true;
-        }
-        return pinned
-            .app_user_model_id
-            .as_deref()
-            .is_some_and(|pinned_id| {
-                is_reliable_application_identity(pinned_id)
-                    && pinned_id.eq_ignore_ascii_case(window_id)
-            });
-    }
-
-    let executable_name = window.executable_name();
-    let shared_host = executable_name.is_some_and(is_shared_host_executable);
-    (pinned.match_executables.iter().any(|candidate| {
-        executable_name
-            .is_some_and(|executable| path_case_eq(Path::new(candidate), executable))
-    }) || resolved_launch
-        .is_some_and(|resolved| path_case_eq(Path::new(resolved), &window.executable_path)))
-        && !shared_host
-}
-
-fn is_shared_host_executable(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            ["chrome.exe", "msedge.exe", "applicationframehost.exe"]
-                .iter()
-                .any(|host| name.eq_ignore_ascii_case(host))
-        })
+    pinned
+        .match_identity(&window.application_identity(), resolved_launch)
+        .is_match()
 }
 
 fn append_unpinned(
@@ -162,7 +140,7 @@ fn append_unpinned(
     unmatched: &[bool],
 ) {
     let mut group_indices = HashMap::<String, usize>::new();
-    let mut groups = Vec::<(String, Vec<WindowInfo>)>::new();
+    let mut groups = Vec::<(String, String, Vec<WindowInfo>)>::new();
 
     for (window, is_unmatched) in visible_windows.iter().zip(unmatched) {
         if !is_unmatched {
@@ -170,24 +148,35 @@ fn append_unpinned(
         }
 
         let executable_path = path_text(&window.executable_path);
-        let key = case_key(&executable_path);
+        let identity = window.application_identity();
+        let key = identity
+            .process_group_key()
+            .unwrap_or_else(|| format!("window:{}", window.id.get()));
+        let id = if identity.is_shared_host() {
+            identity
+                .reliable_registered_id()
+                .or_else(|| identity.stable_id())
+                .map_or_else(|| key.clone(), str::to_owned)
+        } else {
+            executable_path.clone()
+        };
         let index = *group_indices.entry(key).or_insert_with(|| {
-            groups.push((executable_path, Vec::new()));
+            groups.push((id, executable_path, Vec::new()));
             groups.len() - 1
         });
-        groups[index].1.push((*window).clone());
+        groups[index].2.push((*window).clone());
     }
 
     groups.sort_by(|left, right| {
-        case_key(&file_stem(&left.0))
-            .cmp(&case_key(&file_stem(&right.0)))
-            .then_with(|| case_key(&left.0).cmp(&case_key(&right.0)))
-            .then_with(|| left.0.cmp(&right.0))
+        case_key(&file_stem(&left.1))
+            .cmp(&case_key(&file_stem(&right.1)))
+            .then_with(|| case_key(&left.1).cmp(&case_key(&right.1)))
+            .then_with(|| left.1.cmp(&right.1))
     });
 
-    items.extend(groups.into_iter().map(|(executable_path, windows)| {
+    items.extend(groups.into_iter().map(|(id, executable_path, windows)| {
         DockItem {
-            id: executable_path.clone(),
+            id,
             display_name: file_stem(&executable_path),
             launch_target: executable_path.clone(),
             arguments: None,
@@ -226,10 +215,6 @@ fn file_stem(path: &str) -> String {
     name.rsplit_once('.')
         .map_or(name, |(stem, _)| stem)
         .to_owned()
-}
-
-fn path_case_eq(left: &Path, right: &Path) -> bool {
-    case_key(&path_text(left)) == case_key(&path_text(right))
 }
 
 fn case_key(value: &str) -> String {

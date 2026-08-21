@@ -13,7 +13,7 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, DefWindowProcW, GWLP_USERDATA,
     GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassExW, SetWindowLongPtrW,
-    UnregisterClassW, WM_APP, WNDCLASSEXW,
+    UnregisterClassW, WNDCLASSEXW,
 };
 use windows::core::w;
 
@@ -27,7 +27,7 @@ use crate::platform::windows::interaction::{PointerCursor, WindowTimer, request_
 
 type Result<T> = std::result::Result<T, NativeError>;
 
-pub(super) const SEARCH_OUTSIDE_CLICK_MESSAGE: u32 = WM_APP + 0x4CC;
+pub(super) use crate::messages::SEARCH_OUTSIDE_CLICK as SEARCH_OUTSIDE_CLICK_MESSAGE;
 pub(super) const ANIMATION_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5455, 16);
 pub(super) const DOCK_STATUS_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5453, 30_000);
 pub(super) const SEARCH_CLOCK_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5443, 30_000);

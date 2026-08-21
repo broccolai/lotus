@@ -130,12 +130,24 @@ impl SettingsStore {
         error: SettingsDecodeError,
     ) -> Result<SettingsLoad, SettingsStoreError> {
         let backup_path = self.invalid_backup_path();
-        fs::copy(settings_path, &backup_path).map_err(|error| {
+        fs::rename(settings_path, &backup_path).map_err(|error| {
             store_io("back up invalid settings to", &backup_path, error)
         })?;
 
+        let settings = DockSettings::default().normalized();
+        if let Err(error) = self.save(&settings) {
+            if let Err(restore_error) = fs::rename(&backup_path, settings_path) {
+                return Err(store_io(
+                    "restore invalid settings from",
+                    &backup_path,
+                    restore_error,
+                ));
+            }
+            return Err(error);
+        }
+
         Ok(SettingsLoad {
-            settings: DockSettings::default().normalized(),
+            settings,
             source: SettingsLoadSource::RecoveredInvalid { backup_path, error },
         })
     }

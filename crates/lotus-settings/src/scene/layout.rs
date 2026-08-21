@@ -63,6 +63,7 @@ impl SettingsScene {
         });
         let content_width = WIDTH_DIP - CONTENT_LEFT_DIP - CONTENT_RIGHT_DIP;
         let content = self.page_content_positions();
+        let content_height = content.height;
         self.append_page_content(&mut controls, &mut sections, content, content_width);
         if self.page != SettingsPage::About {
             controls.push(SettingsControlLayout {
@@ -105,7 +106,7 @@ impl SettingsScene {
             sections,
             content_viewport,
             content_scroll_offset: self.scale(self.scroll_offset_dip),
-            scrollbar_thumb: self.scrollbar_thumb(),
+            scrollbar_thumb: self.scrollbar_thumb_for(content_height),
         }
     }
 
@@ -390,10 +391,9 @@ impl SettingsScene {
             .saturating_sub(Self::content_viewport_height_dip())
     }
 
-    pub(super) fn scrollbar_thumb(&self) -> Option<SettingsRect> {
-        let content_height = self.content_height_dip();
+    fn scrollbar_thumb_for(&self, content_height: u32) -> Option<SettingsRect> {
         let viewport_height = Self::content_viewport_height_dip();
-        let maximum = self.maximum_scroll_offset_dip();
+        let maximum = content_height.saturating_sub(viewport_height);
         if maximum == 0 {
             return None;
         }

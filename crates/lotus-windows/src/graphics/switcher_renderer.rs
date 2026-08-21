@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::num::NonZeroU32;
 
 use lotus_ui::geometry::DpiScale;
@@ -30,6 +29,7 @@ use super::resources::{raster_key, target_bitmap_properties, upload_bgra_pixels}
 use super::scene::{DockIcon, RasterIconId};
 use super::surface::SurfaceSize;
 use super::{LaidOutItem, SwitcherHitTarget, SwitcherScene, theme};
+use crate::resource_cache::BoundedResourceCache;
 
 const TARGET_DPI: f32 = 96.0;
 const TRANSPARENT: D2D1_COLOR_F = rgba(0, 0, 0, 0);
@@ -55,8 +55,8 @@ pub(super) struct SwitcherRenderer {
     text_format: IDWriteTextFormat,
     assets: SvgAssetCache,
     icon_tint: IconTint,
-    embedded_bitmaps: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
-    raster_bitmaps: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
+    embedded_bitmaps: BoundedResourceCache<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
+    raster_bitmaps: BoundedResourceCache<(RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
 
 impl SwitcherRenderer {
@@ -91,8 +91,8 @@ impl SwitcherRenderer {
             text_format,
             assets: SvgAssetCache::create()?,
             icon_tint: IconTint::from_color(theme.text),
-            embedded_bitmaps: HashMap::new(),
-            raster_bitmaps: HashMap::new(),
+            embedded_bitmaps: BoundedResourceCache::new(16 * 1024 * 1024),
+            raster_bitmaps: BoundedResourceCache::new(16 * 1024 * 1024),
         };
         renderer.attach_target(swap_chain)?;
         Ok(renderer)
@@ -375,19 +375,23 @@ impl SwitcherRenderer {
         match icon {
             DockIcon::Embedded(asset) => {
                 let key = (*asset, size);
-                if !self.embedded_bitmaps.contains_key(&key) {
+                if self.embedded_bitmaps.get(&key).is_none() {
                     let raster = self.assets.rasterize(
                         *asset,
                         RasterSize::square(size),
                         self.icon_tint,
                     )?;
                     let bitmap = upload_bitmap(&self.context, raster)?;
-                    self.embedded_bitmaps.insert(key, bitmap);
+                    let bytes = usize::try_from(size.get())
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(usize::try_from(size.get()).unwrap_or(usize::MAX))
+                        .saturating_mul(4);
+                    self.embedded_bitmaps.insert(key, bitmap, bytes);
                 }
             }
             DockIcon::Raster(raster) => {
                 let key = raster_key(raster);
-                if !self.raster_bitmaps.contains_key(&key) {
+                if self.raster_bitmaps.get(&key).is_none() {
                     let bitmap = upload_bgra_pixels(
                         &self.context,
                         raster.width(),
@@ -395,7 +399,13 @@ impl SwitcherRenderer {
                         raster.pixels(),
                         raster.stride(),
                     )?;
-                    self.raster_bitmaps.insert(key, bitmap);
+                    let bytes = usize::try_from(raster.width())
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(
+                            usize::try_from(raster.height()).unwrap_or(usize::MAX),
+                        )
+                        .saturating_mul(4);
+                    self.raster_bitmaps.insert(key, bitmap, bytes);
                 }
             }
         }
@@ -410,11 +420,11 @@ impl SwitcherRenderer {
         match icon {
             DockIcon::Embedded(asset) => self
                 .embedded_bitmaps
-                .get(&(*asset, size))
+                .peek(&(*asset, size))
                 .ok_or(RendererError::BitmapCacheInvariant),
             DockIcon::Raster(raster) => self
                 .raster_bitmaps
-                .get(&raster_key(raster))
+                .peek(&raster_key(raster))
                 .ok_or(RendererError::BitmapCacheInvariant),
         }
     }

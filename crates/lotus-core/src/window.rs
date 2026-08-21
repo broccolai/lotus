@@ -1,5 +1,8 @@
 use std::path::{Path, PathBuf};
 
+use crate::application::ApplicationIdentity;
+pub use crate::application::is_reliable_application_identity;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WindowId(u64);
 
@@ -26,8 +29,14 @@ impl WindowInfo {
     pub fn executable_name(&self) -> Option<&Path> {
         self.executable_path.file_name().map(Path::new)
     }
-}
 
-pub fn is_reliable_application_identity(identity: &str) -> bool {
-    !identity.trim().is_empty() && !identity.eq_ignore_ascii_case("com.electron.app")
+    #[must_use]
+    pub fn application_identity(&self) -> ApplicationIdentity {
+        ApplicationIdentity::from_path(
+            self.app_user_model_id.as_deref(),
+            None,
+            Some(&self.executable_path),
+            std::iter::empty(),
+        )
+    }
 }

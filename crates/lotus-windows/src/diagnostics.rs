@@ -44,6 +44,10 @@ pub fn record_message(context: &str, message: &str) {
     write_entry("error", context, message);
 }
 
+pub fn record_diagnostic(context: &str, message: &str) {
+    write_entry("diagnostic", context, message);
+}
+
 pub fn log_path() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA")
         .filter(|path| !path.is_empty())

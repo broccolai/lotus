@@ -12,7 +12,7 @@ use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::scene::{DockAnchor, DockHitTarget, DockIcon};
 use lotus_windows::window::{DockContextRequest, PopupAlignment, SignedPoint};
 
-use super::projection::{media_identity_matches, popup_overlap, status_popup_center};
+use super::projection::{media_source_matches_item, popup_overlap, status_popup_center};
 use super::{DockRuntime, NATIVE_ICON_SAMPLE_SCALE};
 use crate::app::AppError;
 
@@ -217,15 +217,11 @@ impl DockRuntime {
     }
 
     pub(in crate::app) fn media_window(&self, source_id: &str) -> Option<WindowId> {
-        let item = self.model.items().iter().find(|item| {
-            item.windows.iter().any(|window| {
-                window
-                    .app_user_model_id
-                    .as_deref()
-                    .is_some_and(|identity| identity.eq_ignore_ascii_case(source_id))
-            }) || media_identity_matches(source_id, &item.executable_path)
-                || media_identity_matches(source_id, &item.display_name)
-        })?;
+        let item = self
+            .model
+            .items()
+            .iter()
+            .find(|item| media_source_matches_item(source_id, item))?;
         self.recent_windows
             .get(&item.id)
             .and_then(|recent| {

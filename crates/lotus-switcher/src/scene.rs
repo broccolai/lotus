@@ -77,6 +77,18 @@ impl<Asset> SwitcherScene<Asset> {
         true
     }
 
+    pub fn set_icon(&mut self, window: WindowId, icon: Option<Asset>) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.window == window) else {
+            return false;
+        };
+        if item.icon.is_none() && icon.is_none() {
+            return false;
+        }
+
+        item.icon = icon;
+        true
+    }
+
     pub fn set_dpi(&mut self, dpi: u32) -> bool {
         let Some(dpi) = DpiScale::new(dpi) else {
             return false;
@@ -173,6 +185,13 @@ impl<Asset> SwitcherScene<Asset> {
             })
             .collect();
         SwitcherLayout { items }
+    }
+
+    pub fn visible_range_with_margin(&self, margin: usize) -> std::ops::Range<usize> {
+        let visible = self.visible_range();
+        let start = visible.start.saturating_sub(margin);
+        let end = visible.end.saturating_add(margin).min(self.items.len());
+        start..end
     }
 
     fn visible_range(&self) -> std::ops::Range<usize> {

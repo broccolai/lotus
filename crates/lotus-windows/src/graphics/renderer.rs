@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::time::Instant;
 
@@ -32,6 +31,7 @@ use super::scene::{
 };
 use super::surface::SurfaceSize;
 use super::theme;
+use crate::resource_cache::BoundedResourceCache;
 
 mod animation;
 mod content;
@@ -54,6 +54,8 @@ const REORDER_DURATION: std::time::Duration = std::time::Duration::from_millis(1
 const CHROME_RESIZE_DURATION: std::time::Duration = std::time::Duration::from_millis(90);
 const CHROME_RESIZE_DISTANCE_DIP: f32 = 10.0;
 const EXIT_DURATION: std::time::Duration = std::time::Duration::from_millis(80);
+const BITMAP_CACHE_BYTES: usize = 32 * 1024 * 1024;
+const TEXT_FORMAT_CACHE_ENTRIES: usize = 16;
 
 const TRANSPARENT: D2D1_COLOR_F = D2D1_COLOR_F {
     r: 0.0,
@@ -103,17 +105,17 @@ pub(super) struct Direct2DRenderer {
     status_text_brush: ID2D1SolidColorBrush,
     status_muted_text_brush: ID2D1SolidColorBrush,
     write_factory: IDWriteFactory,
-    badge_formats: HashMap<u32, IDWriteTextFormat>,
-    status_formats: HashMap<u32, StatusTextFormats>,
-    media_formats: HashMap<u32, MediaTextFormats>,
+    badge_formats: BoundedResourceCache<u32, IDWriteTextFormat>,
+    status_formats: BoundedResourceCache<u32, StatusTextFormats>,
+    media_formats: BoundedResourceCache<u32, MediaTextFormats>,
     interaction: InteractionAnimator,
     reorder: ReorderAnimator,
     chrome: ChromeAnimator,
     exit: ExitAnimator,
     assets: SvgAssetCache,
     icon_tint: IconTint,
-    embedded_bitmaps: HashMap<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
-    raster_bitmaps: HashMap<(RasterIconId, u32, u32), ID2D1Bitmap1>,
+    embedded_bitmaps: BoundedResourceCache<(SvgAsset, NonZeroU32), ID2D1Bitmap1>,
+    raster_bitmaps: BoundedResourceCache<(RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
 
 impl Direct2DRenderer {
@@ -171,17 +173,17 @@ impl Direct2DRenderer {
             status_text_brush,
             status_muted_text_brush,
             write_factory,
-            badge_formats: HashMap::new(),
-            status_formats: HashMap::new(),
-            media_formats: HashMap::new(),
+            badge_formats: BoundedResourceCache::new(TEXT_FORMAT_CACHE_ENTRIES),
+            status_formats: BoundedResourceCache::new(TEXT_FORMAT_CACHE_ENTRIES),
+            media_formats: BoundedResourceCache::new(TEXT_FORMAT_CACHE_ENTRIES),
             interaction: InteractionAnimator::default(),
             reorder: ReorderAnimator::default(),
             chrome: ChromeAnimator::default(),
             exit: ExitAnimator::default(),
             assets: SvgAssetCache::create()?,
             icon_tint: IconTint::from_color(default_theme.text),
-            embedded_bitmaps: HashMap::new(),
-            raster_bitmaps: HashMap::new(),
+            embedded_bitmaps: BoundedResourceCache::new(BITMAP_CACHE_BYTES),
+            raster_bitmaps: BoundedResourceCache::new(BITMAP_CACHE_BYTES),
         };
         renderer.attach_target(swap_chain)?;
         Ok(renderer)
@@ -380,7 +382,7 @@ impl Direct2DRenderer {
         let date = centered_text_format(&self.write_factory, 10.5 * scale)?;
         let symbol = centered_symbol_format(&self.write_factory, 18.0 * scale)?;
         let formats = StatusTextFormats { time, date, symbol };
-        self.status_formats.insert(dpi, formats.clone());
+        self.status_formats.insert(dpi, formats.clone(), 1);
         Ok(formats)
     }
 
@@ -393,7 +395,7 @@ impl Direct2DRenderer {
         let title = media_text_format(&self.write_factory, 12.5 * scale)?;
         let artist = media_text_format(&self.write_factory, 10.5 * scale)?;
         let formats = MediaTextFormats { title, artist };
-        self.media_formats.insert(dpi, formats.clone());
+        self.media_formats.insert(dpi, formats.clone(), 1);
         Ok(formats)
     }
 
@@ -419,7 +421,7 @@ impl Direct2DRenderer {
             format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
         }
-        self.badge_formats.insert(dpi, format.clone());
+        self.badge_formats.insert(dpi, format.clone(), 1);
         Ok(format)
     }
 }
