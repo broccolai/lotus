@@ -67,6 +67,8 @@ pub enum AppError {
     InvalidSwitcherScene,
     #[error(transparent)]
     SwitcherIcons(#[from] lotus_windows::switcher_icons::SwitcherIconHydratorError),
+    #[error(transparent)]
+    LauncherIcons(#[from] lotus_windows::launcher_icons::LauncherIconHydratorError),
     #[error("the native launcher could not produce a valid render scene")]
     InvalidLauncherScene,
     #[error("the native settings window could not produce a valid render scene")]
@@ -237,7 +239,7 @@ fn create_auxiliary_windows(
         &theme_for(dock_model.settings()),
         usage,
         usage_store,
-    );
+    )?;
     let settings = SettingsRuntime::new(
         dock.create_settings_window()?,
         dock_model.settings().clone(),

@@ -55,6 +55,15 @@ impl SearchController {
         self.refresh_special_results();
     }
 
+    pub fn restart(&mut self) {
+        self.model.reset_query();
+        self.refresh_special_results();
+    }
+
+    pub fn catalog_generation(&self) -> Option<u64> {
+        (self.catalog_generation != 0).then_some(self.catalog_generation)
+    }
+
     pub fn refresh_catalog(&mut self, generation: u64, catalog: SearchCatalog) -> bool {
         if generation <= self.catalog_generation {
             return false;

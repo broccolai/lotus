@@ -20,6 +20,7 @@ pub mod graphics;
 pub mod image_picker;
 pub mod input;
 pub mod launch;
+pub mod launcher_icons;
 pub mod media;
 pub(crate) mod messages;
 pub mod native_icon;

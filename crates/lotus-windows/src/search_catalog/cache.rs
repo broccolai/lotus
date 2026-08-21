@@ -161,6 +161,11 @@ impl SearchCatalogCache {
         })
     }
 
+    pub fn ready_generation(&self) -> Option<u64> {
+        let generation = lock(&self.state).generation;
+        (generation != 0).then_some(generation)
+    }
+
     pub fn refresh_if_stale(&self, maximum_age: Duration) -> io::Result<RefreshStatus> {
         {
             let mut state = lock(&self.state);

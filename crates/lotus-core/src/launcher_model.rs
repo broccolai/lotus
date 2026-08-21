@@ -64,6 +64,10 @@ impl LauncherModel {
 
     pub fn reset(&mut self, catalog: SearchCatalog) {
         self.catalog = catalog;
+        self.reset_query();
+    }
+
+    pub fn reset_query(&mut self) {
         self.query.clear();
         self.selected = None;
         self.cursor = 0;

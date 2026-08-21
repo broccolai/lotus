@@ -3,6 +3,7 @@ use lotus_windows::appbar::fullscreen_notification;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
 use lotus_windows::input::{UiHeartbeatTimer, is_input_wake};
 use lotus_windows::interaction::{NativeMessage, next_message};
+use lotus_windows::launcher_icons::is_launcher_icon_wake;
 use lotus_windows::media::is_media_wake;
 use lotus_windows::responsiveness::METRICS;
 use lotus_windows::search_catalog::is_search_catalog_wake;
@@ -243,6 +244,9 @@ impl MessageLoop<'_, '_> {
         if wakes.switcher_icons {
             let _changed = self.auxiliary.switcher.drain_hydrated_icons();
         }
+        if wakes.launcher_icons {
+            let _changed = self.auxiliary.launcher.drain_hydrated_icons()?;
+        }
 
         Ok(())
     }
@@ -314,6 +318,7 @@ struct WakeEvents {
     media: bool,
     badges: bool,
     switcher_icons: bool,
+    launcher_icons: bool,
 }
 
 impl WakeEvents {
@@ -324,6 +329,7 @@ impl WakeEvents {
             media: is_media_wake(message),
             badges: runtime.taskbar_badges.is_some() && is_taskbar_badge_wake(message),
             switcher_icons: is_switcher_icon_wake(message),
+            launcher_icons: is_launcher_icon_wake(message),
         }
     }
 }

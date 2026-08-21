@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::time::Duration;
 
@@ -12,7 +14,6 @@ use lotus_ui::theme::Theme;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::launch_target;
 use lotus_windows::clock::local_time;
-use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
@@ -21,7 +22,9 @@ use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{
     DeviceState, LauncherResult, LauncherScene, SurfaceError, SurfaceSize,
 };
-use lotus_windows::native_icon::NativeIconCache;
+use lotus_windows::launcher_icons::{
+    LauncherIconHydrator, LauncherIconHydratorError, LauncherIconRequest,
+};
 use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::window::{DockWindow, SearchEvent, SearchWindow, SelectionDirection};
 
@@ -29,11 +32,17 @@ use crate::app::AppError;
 use crate::app::dock::DockRuntime;
 use crate::app::runtime::resize_launcher_surface;
 
+const MAX_HYDRATED_ICONS: usize = 64;
+
 pub(super) struct LauncherRuntime {
     pub(super) window: SearchWindow,
     pub(super) controller: SearchController,
-    pub(super) native_icons: NativeIconCache,
-    custom_images: CustomImageCache,
+    icon_hydrator: LauncherIconHydrator,
+    hydrated_icons: BTreeMap<LauncherIconKey, lotus_ui::icon::RasterIcon>,
+    icon_generation: u64,
+    icon_settings_revision: u64,
+    icon_request_signature: Option<Vec<LauncherIconKey>>,
+    catalog_projection: Option<u64>,
     pub(super) scene: Option<LauncherScene>,
     pub(super) surface: Option<ScheduledSurface<LauncherCompositionSurfaceState>>,
     pub(super) presentation: SearchPresentation,
@@ -55,16 +64,20 @@ impl LauncherRuntime {
         theme: &Theme,
         usage: lotus_core::search::SearchUsage,
         usage_store: SearchUsageStore,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, LauncherIconHydratorError> {
+        Ok(Self {
             window,
             controller: SearchController::new(
                 usize::try_from(settings.search_result_limit).unwrap_or(8),
                 usage,
                 usage_store,
             ),
-            native_icons: NativeIconCache::default(),
-            custom_images: CustomImageCache::default(),
+            icon_hydrator: LauncherIconHydrator::start()?,
+            hydrated_icons: BTreeMap::new(),
+            icon_generation: 0,
+            icon_settings_revision: 0,
+            icon_request_signature: None,
+            catalog_projection: None,
             scene: None,
             surface: None,
             presentation: SearchPresentation::default(),
@@ -72,7 +85,7 @@ impl LauncherRuntime {
             theme: *theme,
             use_24_hour_time: settings.use_24_hour_time,
             settings,
-        }
+        })
     }
 
     pub(super) const fn is_visible(&self) -> bool {
@@ -92,20 +105,7 @@ impl LauncherRuntime {
         }
 
         let _ = catalog.refresh_if_stale(Duration::from_mins(5));
-        if let Some(ready) = catalog.ready_catalog(
-            dock_model.items(),
-            &dock_model.settings().hidden_executables,
-        ) {
-            self.controller.begin(Some(ready.generation), ready.catalog);
-        } else {
-            self.controller.begin(
-                None,
-                catalog.catalog(
-                    dock_model.items(),
-                    &dock_model.settings().hidden_executables,
-                ),
-            );
-        }
+        self.prepare_catalog(dock_model, catalog);
         self.presentation.begin();
         self.rebuild_scene(dock.dpi())?;
 
@@ -174,6 +174,54 @@ impl LauncherRuntime {
         Ok(true)
     }
 
+    pub(super) fn drain_hydrated_icons(&mut self) -> Result<bool, AppError> {
+        let Some(dpi) = self.scene.as_ref().map(LauncherScene::dpi) else {
+            let _discarded = self.icon_hydrator.drain();
+            return Ok(false);
+        };
+        let icon_size = launcher_icon_size(dpi);
+        let current_keys = self
+            .controller
+            .results()
+            .iter()
+            .map(|entry| {
+                LauncherIconKey::from_entry(entry, icon_size, self.icon_settings_revision)
+            })
+            .collect::<Vec<_>>();
+        let mut changed = false;
+
+        for result in self.icon_hydrator.drain() {
+            if result.generation != self.icon_generation
+                || result.pixel_size != icon_size
+                || result.settings_revision != self.icon_settings_revision
+            {
+                continue;
+            }
+            let key = LauncherIconKey {
+                identity: result.identity,
+                pixel_size: result.pixel_size,
+                settings_revision: result.settings_revision,
+            };
+            if !current_keys.contains(&key) {
+                continue;
+            }
+            if let Some(icon) = result.icon
+                && self.hydrated_icons.get(&key) != Some(&icon)
+            {
+                if self.hydrated_icons.len() >= MAX_HYDRATED_ICONS {
+                    let _discarded = self.hydrated_icons.pop_first();
+                }
+                self.hydrated_icons.insert(key, icon);
+                changed = true;
+            }
+        }
+        if changed {
+            self.rebuild_scene(dpi)?;
+            self.invalidate();
+        }
+        Ok(changed)
+    }
+
     pub(super) fn hide(&mut self) {
         self.window.hide();
         self.visible = false;
@@ -184,18 +232,7 @@ impl LauncherRuntime {
     }
 
     pub(super) fn rebuild_scene(&mut self, dpi: u32) -> Result<(), AppError> {
-        let iconless_results = self.iconless_results();
-        let icon_size = LauncherScene::new(
-            dpi,
-            self.controller.query(),
-            self.controller.mode(),
-            iconless_results,
-            self.controller.selected_index(),
-        )
-        .ok_or(AppError::InvalidLauncherScene)?
-        .result_icon_size()
-        .get();
-        let results = self.results_with_icons(icon_size);
+        let results = self.results_with_icons(dpi);
         let mut scene = LauncherScene::new(
             dpi,
             self.controller.query(),
@@ -213,6 +250,7 @@ impl LauncherRuntime {
         let _ = scene.set_footer_time(local_time(self.use_24_hour_time));
         let _ = scene.set_presentation_progress(self.presentation.progress());
         self.scene = Some(scene);
+        self.request_visible_icons();
         Ok(())
     }
 
@@ -239,35 +277,105 @@ impl LauncherRuntime {
             .collect()
     }
 
-    fn results_with_icons(&mut self, icon_size: u32) -> Vec<LauncherResult> {
+    fn results_with_icons(&self, dpi: u32) -> Vec<LauncherResult> {
         if self.controller.is_command_mode() || self.controller.is_calculator_mode() {
             return self.iconless_results();
         }
 
+        let icon_size = launcher_icon_size(dpi);
         self.controller
             .results()
             .iter()
             .map(|entry| {
-                let icon = crate::app::icon_override::resolve_application_icon(
-                    &self.settings,
-                    &mut self.custom_images,
-                    entry.app_user_model_id.as_deref(),
-                    Some(&entry.launch_target),
-                    Path::new(&entry.icon_source),
-                )
-                .or_else(|| {
-                    self.native_icons
-                        .icon(Path::new(&entry.icon_source), icon_size)
-                        .ok()
-                        .flatten()
-                })
-                .map(DockIcon::Raster);
-                icon.map_or_else(
+                let key = LauncherIconKey::from_entry(
+                    entry,
+                    icon_size,
+                    self.icon_settings_revision,
+                );
+                self.hydrated_icons.get(&key).map_or_else(
                     || LauncherResult::new(&entry.name),
-                    |icon| LauncherResult::with_icon(&entry.name, icon),
+                    |icon| {
+                        LauncherResult::with_icon(
+                            &entry.name,
+                            DockIcon::Raster(icon.clone()),
+                        )
+                    },
                 )
             })
             .collect()
+    }
+
+    fn prepare_catalog(&mut self, dock_model: &DockRuntime, catalog: &SearchCatalogCache) {
+        let projection = catalog_projection(dock_model);
+        let ready_generation = catalog.ready_generation();
+        if self.catalog_projection == Some(projection)
+            && self.controller.catalog_generation() == ready_generation
+        {
+            self.controller.restart();
+            return;
+        }
+
+        if let Some(ready) = catalog.ready_catalog(
+            dock_model.items(),
+            &dock_model.settings().hidden_executables,
+        ) {
+            self.controller.begin(Some(ready.generation), ready.catalog);
+        } else {
+            self.controller.begin(
+                None,
+                catalog.catalog(
+                    dock_model.items(),
+                    &dock_model.settings().hidden_executables,
+                ),
+            );
+        }
+        self.catalog_projection = Some(projection);
+    }
+
+    fn request_visible_icons(&mut self) {
+        let Some(scene) = &self.scene else {
+            return;
+        };
+        if self.controller.is_command_mode() || self.controller.is_calculator_mode() {
+            self.icon_request_signature = None;
+            return;
+        }
+        let icon_size = scene.result_icon_size().get();
+        let keys = self
+            .controller
+            .results()
+            .iter()
+            .map(|entry| {
+                LauncherIconKey::from_entry(entry, icon_size, self.icon_settings_revision)
+            })
+            .collect::<Vec<_>>();
+        if self.icon_request_signature.as_ref() == Some(&keys) {
+            return;
+        }
+        self.icon_request_signature = Some(keys.clone());
+        self.icon_generation = self.icon_generation.wrapping_add(1);
+
+        let requests = self
+            .controller
+            .results()
+            .iter()
+            .zip(keys)
+            .filter(|(_, key)| !self.hydrated_icons.contains_key(key))
+            .map(|(entry, key)| LauncherIconRequest {
+                generation: self.icon_generation,
+                identity: key.identity,
+                icon_source: entry.icon_source.clone().into(),
+                custom_image_path: crate::app::icon_override::application_icon_path(
+                    &self.settings,
+                    entry.app_user_model_id.as_deref(),
+                    Some(&entry.launch_target),
+                    Path::new(&entry.icon_source),
+                ),
+                pixel_size: icon_size,
+                settings_revision: self.icon_settings_revision,
+            })
+            .collect();
+        self.icon_hydrator.request(requests);
     }
 
     pub(super) fn move_selection(
@@ -424,7 +532,10 @@ impl LauncherRuntime {
     ) -> Result<(), AppError> {
         lotus_windows::backdrop::apply_search_settings(self.window.handle(), settings);
         self.settings = settings.clone();
-        self.custom_images.clear();
+        self.hydrated_icons.clear();
+        self.icon_settings_revision = self.icon_settings_revision.wrapping_add(1);
+        self.icon_request_signature = None;
+        self.catalog_projection = None;
         let next_theme = theme_for(settings);
         let theme_changed = self.theme != next_theme;
         self.theme = next_theme;
@@ -442,6 +553,50 @@ impl LauncherRuntime {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct LauncherIconKey {
+    identity: String,
+    pixel_size: u32,
+    settings_revision: u64,
+}
+
+impl LauncherIconKey {
+    fn from_entry(
+        entry: &lotus_core::search::ApplicationEntry,
+        pixel_size: u32,
+        settings_revision: u64,
+    ) -> Self {
+        Self {
+            identity: format!(
+                "{}\u{1f}{}\u{1f}{}",
+                entry.app_user_model_id.as_deref().unwrap_or_default(),
+                entry.launch_target,
+                entry.icon_source,
+            ),
+            pixel_size,
+            settings_revision,
+        }
+    }
+}
+
+fn catalog_projection(dock_model: &DockRuntime) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for item in dock_model.items() {
+        item.id.hash(&mut hasher);
+        item.display_name.hash(&mut hasher);
+        item.launch_target.hash(&mut hasher);
+        item.executable_path.hash(&mut hasher);
+        item.app_user_model_id.hash(&mut hasher);
+        item.is_pinned.hash(&mut hasher);
+    }
+    dock_model.settings().hidden_executables.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn launcher_icon_size(dpi: u32) -> u32 {
+    lotus_ui::geometry::DpiScale::from_system(dpi).physical(26)
 }
 
 const fn command_icon(command: CommandId) -> DockIcon {
