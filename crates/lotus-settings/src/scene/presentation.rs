@@ -65,7 +65,7 @@ impl SettingsScene {
                 scale(self, 160),
                 scale(self, 44),
             ),
-            brand(22.0),
+            brand_leading(22.0),
             theme.text,
         ));
         for page in SettingsPage::ALL {
@@ -133,7 +133,11 @@ impl SettingsScene {
             bounds: settings_rect(layout.content_viewport),
         });
         let translation = -as_f32(layout.content_scroll_offset);
-        for section in &layout.sections {
+        for section in layout
+            .sections
+            .iter()
+            .filter(|section| layout.content_intersects_viewport(section.bounds))
+        {
             let first = output.primitives.len();
             output.push(text(
                 section.section.title(),
@@ -149,9 +153,11 @@ impl SettingsScene {
             .iter()
             .filter(|entry| is_page_content(entry.control))
         {
+            let visible = layout.content_intersects_viewport(entry.bounds);
             let first = output.primitives.len();
             if grouped_control(entry.control) {
                 if let Some(before) = previous
+                    && visible
                     && entry
                         .bounds
                         .top
@@ -170,6 +176,9 @@ impl SettingsScene {
                     ));
                 }
                 previous = Some(entry.bounds);
+            }
+            if !visible {
+                continue;
             }
             self.present_control(output, entry.control, entry.bounds, assets);
             output.translate_y_from(first, translation);
@@ -1347,6 +1356,9 @@ fn style(size: f32, family: FontFamily, weight: FontWeight, centered: bool) -> T
 }
 fn brand(size: f32) -> TextStyle {
     style(size, FontFamily::Brand, FontWeight::Semibold, true)
+}
+fn brand_leading(size: f32) -> TextStyle {
+    style(size, FontFamily::Brand, FontWeight::Semibold, false)
 }
 fn brand_regular(size: f32) -> TextStyle {
     style(size, FontFamily::Brand, FontWeight::Normal, true)

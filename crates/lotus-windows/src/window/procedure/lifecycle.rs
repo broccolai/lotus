@@ -22,7 +22,7 @@ use crate::platform::windows::interaction::request_exit;
 
 const SETTINGS_MIN_WIDTH_DIPS: u32 = 780;
 const SETTINGS_MIN_HEIGHT_DIPS: u32 = 540;
-const SETTINGS_DRAG_REGION_LEFT_DIPS: u32 = 220;
+const SETTINGS_SIDEBAR_WIDTH_DIPS: u32 = 209;
 const SETTINGS_DRAG_REGION_HEIGHT_DIPS: u32 = 18;
 
 pub(super) fn dispatch(
@@ -144,8 +144,11 @@ fn settings_header_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         return LRESULT(isize::try_from(HTCLIENT).unwrap_or_default());
     }
     let dpi = DpiScale::from_system(unsafe { GetDpiForWindow(hwnd) });
-    let draggable = client.x >= dpi.physical_i32(SETTINGS_DRAG_REGION_LEFT_DIPS)
-        && client.x < bounds.right
+    let draggable = client.x >= 0
+        && client.x
+            < dpi
+                .physical_i32(SETTINGS_SIDEBAR_WIDTH_DIPS)
+                .min(bounds.right)
         && client.y >= 0
         && client.y < dpi.physical_i32(SETTINGS_DRAG_REGION_HEIGHT_DIPS);
     LRESULT(

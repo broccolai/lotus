@@ -263,7 +263,7 @@ impl SettingsScene {
             }
             SettingsPage::Apps => {
                 let mut controls = vec![SettingsControl::ApplicationSearch];
-                for index in self.filtered_application_indices() {
+                for &index in self.filtered_application_indices() {
                     controls.push(SettingsControl::ApplicationRow(index));
                     if self.application_actions_visible(index) {
                         controls.push(SettingsControl::ChooseApplicationIcon(index));
@@ -341,7 +341,7 @@ impl SettingsScene {
         let mut controls = vec![(SettingsControl::ApplicationSearch, 0)];
         let mut top = ROW_HEIGHT_DIP + ROW_GAP_DIP;
 
-        for index in self.filtered_application_indices() {
+        for &index in self.filtered_application_indices() {
             controls.push((SettingsControl::ApplicationRow(index), top));
             if self.application_actions_visible(index) {
                 controls.push((SettingsControl::ChooseApplicationIcon(index), top));
@@ -363,16 +363,8 @@ impl SettingsScene {
         }
     }
 
-    pub(super) fn filtered_application_indices(&self) -> Vec<usize> {
-        let query = self.application_query.trim().to_ascii_lowercase();
-        self.applications
-            .iter()
-            .enumerate()
-            .filter(|(_, application)| {
-                query.is_empty() || application.name.to_ascii_lowercase().contains(&query)
-            })
-            .map(|(index, _)| index)
-            .collect()
+    pub(super) fn filtered_application_indices(&self) -> &[usize] {
+        &self.filtered_application_indices
     }
 
     pub(super) const fn content_viewport_height_dip() -> u32 {

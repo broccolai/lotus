@@ -335,6 +335,15 @@ pub struct SettingsLayout {
 }
 
 impl SettingsLayout {
+    pub fn content_intersects_viewport(&self, bounds: SettingsRect) -> bool {
+        let translated_top = i64::from(bounds.top) - i64::from(self.content_scroll_offset);
+        let translated_bottom = translated_top + i64::from(bounds.height);
+        let viewport_top = i64::from(self.content_viewport.top);
+        let viewport_bottom = viewport_top + i64::from(self.content_viewport.height);
+
+        translated_bottom > viewport_top && translated_top < viewport_bottom
+    }
+
     pub fn hit_test(&self, x: u32, y: u32) -> Option<SettingsControl> {
         self.controls
             .iter()
@@ -408,6 +417,7 @@ pub struct SettingsScene {
     scroll_offset_dip: u32,
     applications: Vec<SettingsApplicationRecord>,
     application_query: String,
+    filtered_application_indices: Vec<usize>,
     selected_application: Option<usize>,
 }
 
@@ -428,6 +438,7 @@ impl SettingsScene {
             scroll_offset_dip: 0,
             applications: Vec::new(),
             application_query: String::new(),
+            filtered_application_indices: Vec::new(),
             selected_application: None,
         })
     }
@@ -510,6 +521,7 @@ impl SettingsScene {
             return false;
         }
         self.applications = applications;
+        self.refresh_application_filter();
         self.selected_application = None;
         self.scroll_offset_dip = 0;
         true
@@ -521,9 +533,23 @@ impl SettingsScene {
             return false;
         }
         self.application_query = query;
+        self.refresh_application_filter();
         self.selected_application = None;
         self.scroll_offset_dip = 0;
         true
+    }
+
+    fn refresh_application_filter(&mut self) {
+        let query = self.application_query.trim().to_ascii_lowercase();
+        self.filtered_application_indices = self
+            .applications
+            .iter()
+            .enumerate()
+            .filter(|(_, application)| {
+                query.is_empty() || application.name.to_ascii_lowercase().contains(&query)
+            })
+            .map(|(index, _)| index)
+            .collect();
     }
 
     pub fn application_query(&self) -> &str {
@@ -570,6 +596,7 @@ impl SettingsScene {
         };
         self.page = SettingsPage::Apps;
         self.application_query.clear();
+        self.refresh_application_filter();
         self.selected_application = Some(index);
         self.scroll_offset_dip = 0;
         self.focused = Some(SettingsControl::ApplicationRow(index));

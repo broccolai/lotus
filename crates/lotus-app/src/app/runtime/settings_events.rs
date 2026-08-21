@@ -647,11 +647,8 @@ pub(super) fn application_records(
             }
         })
         .collect::<Vec<_>>();
-    applications.sort_by(|left, right| {
-        right
-            .customized
-            .cmp(&left.customized)
-            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    applications.sort_by_cached_key(|application| {
+        (!application.customized, application.name.to_lowercase())
     });
     applications
 }
@@ -665,7 +662,7 @@ pub(super) fn hydrate_application_previews(
     let mut ids = layout
         .controls
         .iter()
-        .filter(|entry| rects_intersect(entry.bounds, layout.content_viewport))
+        .filter(|entry| layout.content_intersects_viewport(entry.bounds))
         .filter_map(|entry| match entry.control {
             lotus_settings::scene::SettingsControl::ApplicationRow(index) => {
                 settings_runtime.scene.applications().get(index)
@@ -699,16 +696,6 @@ pub(super) fn hydrate_application_previews(
         };
         let _ = settings_runtime.scene.set_application_icon(&id, icon);
     }
-}
-
-fn rects_intersect(
-    left: lotus_settings::scene::SettingsRect,
-    right: lotus_settings::scene::SettingsRect,
-) -> bool {
-    left.left < right.left.saturating_add(right.width)
-        && right.left < left.left.saturating_add(left.width)
-        && left.top < right.top.saturating_add(right.height)
-        && right.top < left.top.saturating_add(left.height)
 }
 
 fn application_record_id(entry: &ApplicationEntry) -> String {
