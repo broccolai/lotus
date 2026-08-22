@@ -243,6 +243,10 @@ impl StatusWindow {
         self.window.state_mut().drain()
     }
 
+    pub fn has_pending_events(&self) -> bool {
+        self.window.state().has_pending_events()
+    }
+
     fn presentation_layer(&self) -> WindowLayer {
         if self.fullscreen_occluded.get() {
             WindowLayer::Bottom

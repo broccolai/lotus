@@ -29,6 +29,15 @@ pub(super) struct ContextMenuRuntime {
 }
 
 impl ContextMenuRuntime {
+    pub(super) fn diagnostic_surface_state(&self) -> (bool, bool, bool) {
+        let surface = self.surface.as_ref();
+        (
+            surface.is_some_and(ScheduledSurface::is_dirty),
+            surface.is_some_and(ScheduledSurface::is_animating),
+            self.visible,
+        )
+    }
+
     pub(super) fn new(window: ContextMenuWindow, theme: &Theme) -> Result<Self, AppError> {
         let mut scene = ContextMenuScene::system(window.dpi())
             .ok_or(AppError::InvalidContextMenuScene)?;

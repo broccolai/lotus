@@ -37,6 +37,15 @@ pub(super) struct SwitcherRuntime {
 }
 
 impl SwitcherRuntime {
+    pub(super) fn diagnostic_surface_state(&self) -> (bool, bool, bool) {
+        let surface = self.surface.as_ref();
+        (
+            surface.is_some_and(ScheduledSurface::is_dirty),
+            surface.is_some_and(ScheduledSurface::is_animating),
+            self.session.is_some(),
+        )
+    }
+
     pub(super) fn new(
         window: SwitcherWindow,
         settings: &DockSettings,

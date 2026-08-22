@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lotus_core::launcher_model::SelectionMove;
 use lotus_core::settings::DockSettings;
@@ -20,6 +20,7 @@ use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{DeviceState, SurfaceError, SurfaceSize};
 use lotus_windows::icon_hydrator::{LauncherIconClient, LauncherIconRequest};
+use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::window::{DockWindow, SearchEvent, SearchWindow, SelectionDirection};
 
@@ -90,6 +91,15 @@ impl LauncherRuntime {
 
     pub(super) const fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    pub(super) fn diagnostic_surface_state(&self) -> (bool, bool, bool) {
+        let surface = self.surface.as_ref();
+        (
+            surface.is_some_and(ScheduledSurface::is_dirty),
+            surface.is_some_and(ScheduledSurface::is_animating),
+            self.visible,
+        )
     }
 
     pub(super) fn toggle(
@@ -396,7 +406,10 @@ impl LauncherRuntime {
     pub(super) fn result_at(&self, x: i32, y: i32) -> Option<usize> {
         let x = u32::try_from(x).ok()?;
         let y = u32::try_from(y).ok()?;
-        self.scene.as_ref()?.layout().hit_test_result(x, y)
+        let started = Instant::now();
+        let result = self.scene.as_ref()?.layout().hit_test_result(x, y);
+        METRICS.record_layout(LayoutOperation::LauncherHitTest, started.elapsed());
+        result
     }
 
     pub(super) fn set_hovered_result(&mut self, hovered: Option<usize>) -> bool {
@@ -537,6 +550,10 @@ impl LauncherRuntime {
 
     pub(super) fn drain_events(&mut self) -> Vec<SearchEvent> {
         self.window.drain_events().collect()
+    }
+
+    pub(super) fn has_pending_events(&self) -> bool {
+        self.window.has_pending_events()
     }
 
     pub(super) fn apply_settings(

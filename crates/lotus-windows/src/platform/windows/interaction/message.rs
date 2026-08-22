@@ -1,8 +1,11 @@
 use std::fmt;
 
+use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, MSG, PostQuitMessage, TranslateMessage,
 };
+
+use crate::WindowHandle;
 
 pub struct NativeMessage(MSG);
 
@@ -17,6 +20,14 @@ impl NativeMessage {
 
     pub const fn is_thread_message(&self) -> bool {
         self.0.hwnd.0.is_null()
+    }
+
+    pub const fn target_window(&self) -> Option<WindowHandle> {
+        if self.is_thread_message() {
+            None
+        } else {
+            Some(WindowHandle::from_raw(self.0.hwnd))
+        }
     }
 
     pub fn dispatch(&self) {
@@ -47,4 +58,8 @@ pub fn next_message() -> Result<Option<NativeMessage>, MessagePumpError> {
 
 pub fn request_exit(exit_code: i32) {
     unsafe { PostQuitMessage(exit_code) };
+}
+
+pub fn monotonic_millis() -> u64 {
+    unsafe { GetTickCount64() }
 }

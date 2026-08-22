@@ -7,6 +7,7 @@ use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
+use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::window::{
     DockWindow, PointerEvent, SignedPoint, StatusWindow, WindowEvent,
 };
@@ -39,6 +40,19 @@ struct ZoneSurface {
 }
 
 impl StatusRuntime {
+    pub(super) fn diagnostic_surface_masks(&self) -> (bool, bool, bool) {
+        self.zones
+            .iter()
+            .fold((false, false, false), |state, zone| {
+                let surface = zone.surface.as_ref();
+                (
+                    state.0 || surface.is_some_and(ScheduledSurface::is_dirty),
+                    state.1 || surface.is_some_and(ScheduledSurface::is_animating),
+                    state.2 || zone.zone.is_some(),
+                )
+            })
+    }
+
     pub(super) fn new(
         windows: [StatusWindow; 2],
         settings: &DockSettings,
@@ -153,6 +167,12 @@ impl StatusRuntime {
                 zone.window.drain_events().map(move |event| (index, event))
             })
             .collect()
+    }
+
+    pub(super) fn has_pending_events(&self) -> bool {
+        self.zones
+            .iter()
+            .any(|zone| zone.window.has_pending_events())
     }
 
     pub(super) fn handle_event(
@@ -275,9 +295,13 @@ impl ZoneSurface {
         let x = u32::try_from(x).ok()?;
         let y = u32::try_from(y).ok()?;
         let size = self.scene.desired_size();
-        self.scene
+        let started = Instant::now();
+        let target = self
+            .scene
             .layout(size.width(), size.height())
-            .hit_test(x, y)
+            .hit_test(x, y);
+        METRICS.record_layout(LayoutOperation::StatusHitTest, started.elapsed());
+        target
     }
 
     fn target_anchor(&self, target: DockHitTarget) -> Option<SignedPoint> {
@@ -285,7 +309,9 @@ impl ZoneSurface {
             return None;
         };
         let size = self.scene.desired_size();
+        let started = Instant::now();
         let layout = self.scene.layout(size.width(), size.height());
+        METRICS.record_layout(LayoutOperation::StatusPopup, started.elapsed());
         let bounds = layout
             .status_items
             .iter()
@@ -358,3 +384,4 @@ fn auxiliary_action(target: DockHitTarget) -> Option<AuxiliaryZoneAction> {
         }
     }
 }
+use std::time::Instant;

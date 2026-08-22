@@ -2,15 +2,18 @@ use lotus_core::window::WindowInfo;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
 use lotus_windows::interaction::NativeMessage;
-use lotus_windows::window::{DockWindow, PointerEvent, WindowEvent};
+use lotus_windows::window::{DockWindow, WindowEvent};
 use lotus_windows::window_tracker::{WindowTracker, WindowTrackerEvent};
 
-use super::presentation::{apply_fullscreen_visibility, resize_dock};
+use super::presentation::present_dock_change;
 use super::{dock_events, popup_events, search_events};
-use crate::app::context_menu::ContextMenuRuntime;
 use crate::app::modules::ModuleHost;
-use crate::app::status::AuxiliaryZoneAction;
-use crate::app::{AppError, DockRuntime, RuntimePolicy};
+use crate::app::{AppError, DockRuntime};
+
+pub(super) struct WindowDrainOutcome {
+    pub(super) animation_tick: bool,
+    pub(super) had_events: bool,
+}
 
 pub(super) fn drain_window_events(
     dock: &mut DockWindow,
@@ -19,8 +22,9 @@ pub(super) fn drain_window_events(
     windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
-) -> Result<bool, AppError> {
+) -> Result<WindowDrainOutcome, AppError> {
     let events = dock.drain_events().collect::<Vec<_>>();
+    let mut had_events = !events.is_empty();
     let animation_tick = events
         .iter()
         .any(|event| matches!(event, WindowEvent::AnimationFrame));
@@ -29,37 +33,39 @@ pub(super) fn drain_window_events(
             event, dock, graphics, surface, dock_model, auxiliary,
         )?;
     }
-    search_events::drain_search_events(dock, graphics, dock_model, auxiliary)?;
-    for event in auxiliary.context_menu.drain_events() {
+    had_events |=
+        search_events::drain_search_events(dock, graphics, dock_model, auxiliary)?;
+    for event in auxiliary.drain_context_menu_events() {
+        had_events = true;
         popup_events::handle_context_menu_event(
             event, dock, graphics, surface, windows, dock_model, auxiliary,
         )?;
     }
-    for (zone, event) in auxiliary.status.drain_events() {
-        if matches!(
-            event,
-            WindowEvent::Pointer(PointerEvent::LeftButtonPressed { .. })
-        ) {
-            auxiliary.launcher.hide();
-        }
-        if let Some((action, owner, anchor)) =
-            auxiliary.status.handle_event(zone, event, graphics)?
-        {
-            match action {
-                AuxiliaryZoneAction::Media(target) => {
-                    auxiliary.media.activate(target, dock_model, owner);
+    for (zone, event) in auxiliary.drain_status_events() {
+        had_events = true;
+        auxiliary.hide_launcher_on_status_press(&event);
+        if let Some(activation) = auxiliary.handle_status_event(zone, event, graphics)? {
+            match activation.action {
+                crate::app::status::AuxiliaryZoneAction::Media(target) => {
+                    auxiliary.activate_media(target, dock_model, activation.owner);
                 }
-                AuxiliaryZoneAction::Status(kind) => {
-                    dock_events::activate_system_status(kind, owner, anchor);
+                crate::app::status::AuxiliaryZoneAction::Status(kind) => {
+                    dock_events::activate_system_status(
+                        kind,
+                        activation.owner,
+                        activation.anchor,
+                    );
                 }
             }
         }
     }
-    Ok(animation_tick)
+    Ok(WindowDrainOutcome {
+        animation_tick,
+        had_events,
+    })
 }
 
-pub(super) struct TrackerEventContext<'a, 'runtime> {
-    pub(super) runtime: &'a RuntimePolicy<'runtime>,
+pub(super) struct TrackerEventContext<'a> {
     pub(super) dock: &'a DockWindow,
     pub(super) graphics: &'a mut DeviceState,
     pub(super) surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
@@ -68,105 +74,68 @@ pub(super) struct TrackerEventContext<'a, 'runtime> {
     pub(super) auxiliary: &'a mut ModuleHost,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(super) struct TrackerMessageOutcome {
+    pub(super) monitor_sync: bool,
+    pub(super) frame: bool,
+}
+
 pub(super) fn handle_tracker_message(
     message: &NativeMessage,
-    context: &mut TrackerEventContext<'_, '_>,
-) -> Result<(), AppError> {
+    context: &mut TrackerEventContext<'_>,
+) -> Result<TrackerMessageOutcome, AppError> {
     let Some(event) = context.window_tracker.handle_message(
         message.is_thread_message(),
         message.id(),
         message.parameter(),
     )?
     else {
-        return Ok(());
+        return Ok(TrackerMessageOutcome::default());
     };
     if event == WindowTrackerEvent::FullscreenRefreshed {
         let foreground = lotus_windows::activation::foreground_window();
         context.dock_model.record_foreground(foreground);
-        context.auxiliary.switcher.record_foreground(foreground);
+        context.auxiliary.record_switcher_foreground(foreground);
     }
     if event == WindowTrackerEvent::SnapshotRefreshed {
         let previous_size = context.dock_model.scene().desired_size();
         let windows = context.window_tracker.current_windows();
         let pins_reconciled = context
             .dock_model
-            .reconcile_unpinned_pins(windows, &context.auxiliary.applications)?;
+            .reconcile_unpinned_pins(windows, context.auxiliary.application_catalog())?;
         if pins_reconciled {
-            context
-                .auxiliary
-                .settings
-                .scene
-                .reconcile_application_icon_overrides(context.dock_model.settings());
-            context.auxiliary.launcher.apply_settings(
-                context.dock_model.settings(),
+            context.auxiliary.adapt_to_pin_changes(
                 context.dock,
+                context.dock_model,
                 context.graphics,
             )?;
-            context
-                .auxiliary
-                .context_menu
-                .apply_settings(context.dock_model.settings());
-            context
-                .auxiliary
-                .switcher
-                .apply_settings(context.dock_model.settings());
-            let _changed = context.auxiliary.media.refresh(context.dock_model);
         }
         context.dock_model.rebuild(windows);
         context
             .dock_model
             .record_foreground(lotus_windows::activation::foreground_window());
-        reconcile_visible_picker(
-            context.dock_model,
-            &mut context.auxiliary.context_menu,
-            context.graphics,
-        )?;
+        context
+            .auxiliary
+            .reconcile_visible_window_picker(context.dock_model, context.graphics)?;
         if context.dock_model.scene().desired_size() != previous_size {
-            resize_dock(
+            present_dock_change(
                 context.dock,
                 context.graphics,
                 context.surface,
+                context.auxiliary,
                 context.dock_model,
             )?;
-        }
-        if pins_reconciled {
-            context.auxiliary.status.sync(
+        } else if pins_reconciled {
+            context.auxiliary.sync_status(
                 context.dock,
-                context.dock_model.settings(),
-                context.dock_model.media(),
+                context.dock_model,
                 context.graphics,
             )?;
         }
         context.surface.invalidate();
     }
-    if context.runtime.onboarding_required {
-        Ok(())
-    } else {
-        apply_fullscreen_visibility(
-            context.dock,
-            context.surface,
-            context.window_tracker,
-            context.dock_model,
-            &mut context.auxiliary.launcher,
-            &mut context.auxiliary.status,
-        )
-    }
-}
-
-fn reconcile_visible_picker(
-    dock_model: &mut DockRuntime,
-    popup: &mut ContextMenuRuntime,
-    graphics: &mut DeviceState,
-) -> Result<(), AppError> {
-    let Some(identity) = popup.picker_identity().map(str::to_owned) else {
-        return Ok(());
-    };
-    let Some(source_index) = dock_model.source_index(&identity) else {
-        popup.hide();
-        return Ok(());
-    };
-    let windows = dock_model
-        .picker_windows(source_index, lotus_windows::activation::foreground_window());
-    let style = dock_model.settings().window_picker_style;
-    popup.replace_picker(source_index, style, windows, graphics)
+    Ok(TrackerMessageOutcome {
+        monitor_sync: true,
+        frame: event == WindowTrackerEvent::SnapshotRefreshed,
+    })
 }

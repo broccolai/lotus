@@ -96,6 +96,10 @@ impl WindowState {
     pub fn drain(&self) -> impl Iterator<Item = WindowEvent> {
         std::mem::take(&mut *self.pending.borrow_mut()).into_iter()
     }
+
+    pub fn has_pending_events(&self) -> bool {
+        !self.pending.borrow().is_empty()
+    }
     pub fn set_corner_radius(&self, corner_radius: u32) {
         self.corner_radius.set(corner_radius);
     }

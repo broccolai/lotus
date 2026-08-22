@@ -7,11 +7,30 @@ use lotus_windows::graphics::{
 use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
 
-use crate::app::launcher::LauncherRuntime;
 use crate::app::modules::ModuleHost;
-use crate::app::status::StatusRuntime;
 use crate::app::visuals::surface_size;
 use crate::app::{AppError, DockRuntime, RuntimePolicy};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct MonitorPresentationKey {
+    tracker: u64,
+    dock: u64,
+    topology: u64,
+    launcher_visible: bool,
+}
+
+pub(super) fn monitor_presentation_key(
+    window_tracker: &WindowTracker,
+    dock_model: &DockRuntime,
+    auxiliary: &ModuleHost,
+) -> MonitorPresentationKey {
+    MonitorPresentationKey {
+        tracker: window_tracker.presentation_revision(),
+        dock: dock_model.revision(),
+        topology: auxiliary.monitor_topology_generation(),
+        launcher_visible: auxiliary.launcher_is_visible(),
+    }
+}
 
 pub(super) fn sync_monitor_presentation(
     runtime: &RuntimePolicy<'_>,
@@ -22,20 +41,11 @@ pub(super) fn sync_monitor_presentation(
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
-    auxiliary
-        .monitors
-        .sync(dock, dock_model, graphics, window_tracker)?;
+    auxiliary.sync_monitor_docks(dock, dock_model, graphics, window_tracker)?;
     if runtime.onboarding_required {
         return Ok(());
     }
-    apply_fullscreen_visibility(
-        dock,
-        surface,
-        window_tracker,
-        dock_model,
-        &mut auxiliary.launcher,
-        &mut auxiliary.status,
-    )
+    apply_fullscreen_visibility(dock, surface, window_tracker, dock_model, auxiliary)
 }
 
 pub(crate) fn apply_fullscreen_visibility(
@@ -43,21 +53,20 @@ pub(crate) fn apply_fullscreen_visibility(
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
     tracker: &WindowTracker,
     model: &DockRuntime,
-    launcher: &mut LauncherRuntime,
-    status: &mut StatusRuntime,
+    auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     let fullscreen_present = tracker.fullscreen_on_same_monitor(dock.handle());
-    let temporarily_revealed = launcher.is_visible();
+    let temporarily_revealed = auxiliary.launcher_is_visible();
     let occluded = !dock_visible(
         model.settings().hide_when_fullscreen,
         fullscreen_present && !temporarily_revealed,
     );
     if occluded {
-        launcher.hide();
+        auxiliary.hide_launcher();
         surface.stop_animation();
     }
     let _changed = dock.set_fullscreen_occluded(occluded)?;
-    status.set_fullscreen_occluded(occluded)?;
+    auxiliary.set_status_fullscreen_occluded(occluded)?;
     Ok(())
 }
 
@@ -129,6 +138,19 @@ pub(crate) fn resize_dock(
     let size = model.scene().desired_size();
     dock.resize_content(size.width(), size.height(), model.settings())?;
     resize_surface(graphics, surface.value_mut(), surface_size(size))
+}
+
+pub(crate) fn present_dock_change(
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    surface: &mut ScheduledSurface<CompositionSurfaceState>,
+    host: &mut ModuleHost,
+    model: &mut DockRuntime,
+) -> Result<(), AppError> {
+    resize_dock(dock, graphics, surface, model)?;
+    host.sync_status(dock, model, graphics)?;
+    surface.invalidate();
+    Ok(())
 }
 
 fn recover_graphics(

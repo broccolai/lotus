@@ -6,6 +6,7 @@ use windows::core::Error;
 
 use crate::NativeError;
 use crate::resource_cache::BoundedResourceCache;
+use crate::responsiveness::CacheClass;
 
 mod raster;
 mod source;
@@ -47,7 +48,10 @@ pub struct NativeIconCache {
 impl Default for NativeIconCache {
     fn default() -> Self {
         Self {
-            icons: BoundedResourceCache::new(NATIVE_ICON_CACHE_BYTES),
+            icons: BoundedResourceCache::new(
+                CacheClass::NativeIcons,
+                NATIVE_ICON_CACHE_BYTES,
+            ),
         }
     }
 }

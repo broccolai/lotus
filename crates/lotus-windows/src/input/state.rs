@@ -96,6 +96,14 @@ impl InputSequence {
     pub(super) const fn active_sequence(&self) -> u64 {
         self.sequence
     }
+
+    pub(super) fn has_active_cleanup_state(&self) -> bool {
+        self.windows.is_some()
+            || self.captured.is_some()
+            || self.alt_active
+            || self.pending_windows_replay.is_some()
+            || self.pending_alt_tab_replay.is_some()
+    }
     pub(super) fn defer_replay_pending_windows(
         &mut self,
         event: KeyEvent,

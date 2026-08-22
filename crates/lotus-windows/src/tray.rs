@@ -4,7 +4,7 @@ mod placement;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 use windows::Win32::Foundation::HWND;
@@ -14,7 +14,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 use crate::WindowHandle;
-use crate::responsiveness::METRICS;
+use crate::responsiveness::{FlyoutPhaseMetrics, METRICS};
 use crate::shell_bridge::ShellBridgeLease;
 
 const VK_B: VIRTUAL_KEY = VIRTUAL_KEY(b'B' as u16);
@@ -54,6 +54,7 @@ fn open_overflow_with_anchor(
     submit(TrayRequest::Overflow {
         owner: owner.raw().0.addr(),
         screen_x,
+        submitted: Instant::now(),
     })
 }
 
@@ -99,6 +100,7 @@ fn open_windows_11_panel(
     submit(TrayRequest::Panel {
         owner: owner_window.0.addr(),
         screen_x,
+        submitted: Instant::now(),
     })
     .map(|()| true)
 }
@@ -109,8 +111,16 @@ fn submit(request: TrayRequest) -> Result<(), TrayError> {
 
 #[derive(Clone, Copy)]
 enum TrayRequest {
-    Overflow { owner: usize, screen_x: Option<i32> },
-    Panel { owner: usize, screen_x: Option<i32> },
+    Overflow {
+        owner: usize,
+        screen_x: Option<i32>,
+        submitted: Instant,
+    },
+    Panel {
+        owner: usize,
+        screen_x: Option<i32>,
+        submitted: Instant,
+    },
 }
 
 struct TrayCoordinator {
@@ -152,7 +162,9 @@ impl TrayCoordinator {
             .pending
             .lock()
             .map_err(|_| TrayError::WorkerUnavailable)?;
-        *pending = Some(request);
+        if pending.replace(request).is_some() {
+            METRICS.record_flyout_superseded();
+        }
         self.state.wake.notify_one();
         Ok(())
     }
@@ -180,10 +192,27 @@ fn run_worker(state: &Arc<TrayCoordinatorState>) {
 }
 
 fn process_request(request: TrayRequest) {
-    let started = std::time::Instant::now();
+    let worker_started = Instant::now();
+    let mut discovery_wait = Duration::ZERO;
+    let mut bridge_configuration = Duration::ZERO;
+    let mut positioning = Duration::ZERO;
+    let mut timed_out = false;
+    let mut success = false;
+    let submitted = match request {
+        TrayRequest::Overflow { submitted, .. } | TrayRequest::Panel { submitted, .. } => {
+            submitted
+        }
+    };
+
     match request {
-        TrayRequest::Overflow { owner, screen_x } => {
+        TrayRequest::Overflow {
+            owner,
+            screen_x,
+            submitted: _,
+        } => {
+            let settle_started = Instant::now();
             std::thread::sleep(FOCUS_SETTLE_TIME);
+            discovery_wait = discovery_wait.saturating_add(settle_started.elapsed());
             if let Err(error) = input::send(&[
                 input::key(VK_RETURN, KEYBD_EVENT_FLAGS::default()),
                 input::key(VK_RETURN, KEYEVENTF_KEYUP),
@@ -191,38 +220,60 @@ fn process_request(request: TrayRequest) {
                 log_worker_error(&error);
             }
             let owner = HWND(std::ptr::with_exposed_provenance_mut(owner));
-            let Some(anchor) = discovery::window_anchor(owner) else {
-                return;
-            };
-            placement::place_flyout(
-                screen_x,
-                anchor.0,
-                anchor.1,
-                None,
-                discovery::find_overflow,
-            );
-        }
-        TrayRequest::Panel { owner, screen_x } => {
-            let owner = HWND(std::ptr::with_exposed_provenance_mut(owner));
-            let Some(anchor) = discovery::window_anchor(owner) else {
-                return;
-            };
-            let bridge_window = discovery::find_shell_bridge_window();
-            let bridge =
-                bridge_window.and_then(|window| ShellBridgeLease::attach(window, owner));
-            if let Some(bridge) = bridge.as_ref() {
-                let _ = bridge.configure(screen_x.unwrap_or(anchor.0), anchor.1);
+            if let Some(anchor) = discovery::window_anchor(owner) {
+                let outcome = placement::place_flyout(
+                    screen_x,
+                    anchor.0,
+                    anchor.1,
+                    None,
+                    Duration::ZERO,
+                    discovery::find_overflow,
+                );
+                discovery_wait = discovery_wait.saturating_add(outcome.discovery_wait);
+                bridge_configuration = outcome.bridge_configuration;
+                positioning = outcome.positioning;
+                timed_out = outcome.timed_out;
+                success = outcome.success;
             }
-            placement::place_flyout(
-                screen_x,
-                anchor.0,
-                anchor.1,
-                bridge.as_ref(),
-                discovery::find_shell_panel,
-            );
+        }
+        TrayRequest::Panel {
+            owner,
+            screen_x,
+            submitted: _,
+        } => {
+            let owner = HWND(std::ptr::with_exposed_provenance_mut(owner));
+            if let Some(anchor) = discovery::window_anchor(owner) {
+                let bridge_started = Instant::now();
+                let bridge_window = discovery::find_shell_bridge_window();
+                let bridge = bridge_window
+                    .and_then(|window| ShellBridgeLease::attach(window, owner));
+                let bridge_setup = bridge_started.elapsed();
+                let outcome = placement::place_flyout(
+                    screen_x,
+                    anchor.0,
+                    anchor.1,
+                    bridge.as_ref(),
+                    bridge_setup,
+                    discovery::find_shell_panel,
+                );
+                discovery_wait = outcome.discovery_wait;
+                bridge_configuration = outcome.bridge_configuration;
+                positioning = outcome.positioning;
+                timed_out = outcome.timed_out;
+                success = outcome.success;
+            }
         }
     }
-    METRICS.record_flyout(started.elapsed());
+
+    METRICS.record_flyout_phases(FlyoutPhaseMetrics {
+        worker_start: worker_started.duration_since(submitted),
+        discovery_wait,
+        bridge_configuration,
+        positioning,
+        total: submitted.elapsed(),
+        timeout: timed_out,
+        success,
+    });
 }
 
 fn log_worker_error(error: &dyn std::fmt::Display) {

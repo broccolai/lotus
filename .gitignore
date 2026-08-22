@@ -36,6 +36,7 @@ Thumbs.db
 
 # Local coding-assistant context
 /AGENTS.md
+/.scripts/
 /lotusinfo.txt
 /.agents/
 /.ai/

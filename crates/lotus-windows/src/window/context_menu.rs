@@ -119,6 +119,10 @@ impl ContextMenuWindow {
             .drain()
             .filter_map(context_event_from_window_event)
     }
+
+    pub fn has_pending_events(&self) -> bool {
+        self.window.state().has_pending_events()
+    }
 }
 
 fn context_event_from_window_event(event: WindowEvent) -> Option<ContextMenuEvent> {

@@ -241,6 +241,10 @@ impl DockWindow {
         self.window.state_mut().drain()
     }
 
+    pub fn has_pending_events(&self) -> bool {
+        self.window.state().has_pending_events()
+    }
+
     pub fn set_animation_active(&self, active: bool) -> Result<()> {
         self.window
             .state()

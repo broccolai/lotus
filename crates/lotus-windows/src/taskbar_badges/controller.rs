@@ -37,6 +37,7 @@ const TASKBAR_BUTTON_CLASS: &str = "Taskbar.TaskListButtonAutomationPeer";
 const BADGE_SCAN_MESSAGE: u32 = BADGE_WAKE_MESSAGE + 0x80;
 const BADGE_SHUTDOWN_MESSAGE: u32 = BADGE_WAKE_MESSAGE + 0x81;
 const BADGE_DEBOUNCE_MS: u32 = 120;
+const BADGE_MIN_SCAN_INTERVAL: Duration = Duration::from_millis(500);
 
 pub struct TaskbarBadgeController {
     shared: Arc<SharedState>,
@@ -57,6 +58,15 @@ struct BadgeAutomation {
     root: IUIAutomationElement,
     handler: IUIAutomationPropertyChangedEventHandler,
     _apartment: ComApartment,
+}
+
+struct BadgeScan {
+    sources: Vec<NotificationSource>,
+    enumeration: Duration,
+    property_reads: Duration,
+    elements: usize,
+    supported_elements: usize,
+    provider_reads: usize,
 }
 
 impl TaskbarBadgeController {
@@ -185,11 +195,16 @@ impl BadgeAutomation {
         })
     }
 
-    fn snapshot(&self) -> Result<Vec<NotificationSource>, WindowsError> {
+    fn snapshot(&self) -> Result<BadgeScan, WindowsError> {
+        let enumeration_started = Instant::now();
         let condition = unsafe { self.automation.CreateTrueCondition()? };
         let elements = unsafe { self.root.FindAll(TreeScope_Descendants, &condition)? };
         let length = unsafe { elements.Length()? };
+        let enumeration = enumeration_started.elapsed();
+        let property_started = Instant::now();
         let mut sources = Vec::new();
+        let mut supported_elements = 0;
+        let mut provider_reads = 0;
         for index in 0..length {
             let element = unsafe { elements.GetElement(index)? };
             if unsafe { element.CurrentClassName()? } != TASKBAR_BUTTON_CLASS {
@@ -201,8 +216,10 @@ impl BadgeAutomation {
             if !providers::is_supported_application(&automation_id, &name) {
                 continue;
             }
+            supported_elements += 1;
             let exact_count =
                 providers::discord_badge_count(&self.automation, &automation_id);
+            provider_reads += 1;
             let Some(count) =
                 exact_count.or_else(|| providers::badge_count(&automation_id, &help_text))
             else {
@@ -220,7 +237,14 @@ impl BadgeAutomation {
                     && providers::is_discord(&automation_id),
             });
         }
-        Ok(sources)
+        Ok(BadgeScan {
+            sources,
+            enumeration,
+            property_reads: property_started.elapsed(),
+            elements: usize::try_from(length).unwrap_or(0),
+            supported_elements,
+            provider_reads,
+        })
     }
 }
 
@@ -236,13 +260,21 @@ impl Drop for BadgeAutomation {
 fn worker_message_loop(automation: &BadgeAutomation, shared: &SharedState) {
     let mut message = MSG::default();
     let mut debounce_timer = None;
+    let mut last_scan = Instant::now();
     while unsafe { GetMessageW(&raw mut message, None, 0, 0) }.as_bool() {
         match message.message {
             BADGE_SCAN_MESSAGE => restart_debounce_timer(&mut debounce_timer),
             WM_TIMER if debounce_timer == Some(message.wParam.0) => {
                 cancel_timer(&mut debounce_timer);
+                if let Some(remaining) =
+                    BADGE_MIN_SCAN_INTERVAL.checked_sub(last_scan.elapsed())
+                {
+                    restart_timer(&mut debounce_timer, remaining);
+                    continue;
+                }
                 shared.scan_queued.store(false, Ordering::Release);
                 scan_and_publish(automation, shared);
+                last_scan = Instant::now();
             }
             BADGE_SHUTDOWN_MESSAGE | WM_QUIT => break,
             _ => unsafe {
@@ -256,19 +288,41 @@ fn worker_message_loop(automation: &BadgeAutomation, shared: &SharedState) {
 
 fn scan_and_publish(automation: &BadgeAutomation, shared: &SharedState) {
     let started = Instant::now();
-    let Ok(snapshot) = automation.snapshot() else {
+    let Ok(scan) = automation.snapshot() else {
         METRICS.record_badge_scan(started.elapsed());
         return;
     };
-    METRICS.record_badge_scan(started.elapsed());
+    let comparison_started = Instant::now();
     let Ok(mut latest) = shared.latest.lock() else {
+        METRICS.record_badge_phases(
+            scan.enumeration,
+            scan.property_reads,
+            comparison_started.elapsed(),
+            scan.elements,
+            scan.supported_elements,
+            scan.provider_reads,
+        );
+        METRICS.record_badge_scan(started.elapsed());
         return;
     };
-    if *latest == snapshot {
+    let changed = *latest != scan.sources;
+    if changed {
+        *latest = scan.sources;
+    }
+    drop(latest);
+    METRICS.record_badge_phases(
+        scan.enumeration,
+        scan.property_reads,
+        comparison_started.elapsed(),
+        scan.elements,
+        scan.supported_elements,
+        scan.provider_reads,
+    );
+    METRICS.record_badge_scan(started.elapsed());
+
+    if !changed {
         return;
     }
-    *latest = snapshot;
-    drop(latest);
 
     if shared.running.load(Ordering::Acquire)
         && !shared.ui_wake_queued.swap(true, Ordering::AcqRel)
@@ -282,7 +336,12 @@ fn scan_and_publish(automation: &BadgeAutomation, shared: &SharedState) {
 }
 
 fn restart_debounce_timer(timer: &mut Option<usize>) {
-    let replacement = unsafe { SetTimer(None, 0, BADGE_DEBOUNCE_MS, None) };
+    restart_timer(timer, Duration::from_millis(u64::from(BADGE_DEBOUNCE_MS)));
+}
+
+fn restart_timer(timer: &mut Option<usize>, delay: Duration) {
+    let milliseconds = u32::try_from(delay.as_millis().max(1)).unwrap_or(u32::MAX);
+    let replacement = unsafe { SetTimer(None, 0, milliseconds, None) };
     if replacement == 0 {
         return;
     }

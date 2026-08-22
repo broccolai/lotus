@@ -1,6 +1,5 @@
 use std::time::Instant;
 
-use lotus_core::module::ModuleId;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::launch_target;
@@ -10,7 +9,7 @@ use lotus_windows::window::{
     DockContextRequest, DockWindow, PointerEvent, PopupAlignment, SignedPoint, WindowEvent,
 };
 
-use super::presentation::{resize_dock, resize_surface};
+use super::presentation::{present_dock_change, resize_dock, resize_surface};
 use crate::app::modules::ModuleHost;
 use crate::app::monitors::MonitorDockAction;
 use crate::app::visuals::{DockHitTarget, SystemStatusKind};
@@ -46,27 +45,11 @@ pub(super) fn handle_window_event(
         WindowEvent::DpiChanged { dpi } => {
             dock_model.set_dpi(dpi)?;
             dock_model.set_drag_threshold(dock.drag_threshold());
-            resize_dock(dock, graphics, surface, dock_model)?;
-            auxiliary.status.sync(
-                dock,
-                dock_model.settings(),
-                dock_model.media(),
-                graphics,
-            )?;
-            surface.invalidate();
+            present_dock_change(dock, graphics, surface, auxiliary, dock_model)?;
         }
         WindowEvent::PlacementRefreshRequested => {
             dock.refresh_placement(dock_model.settings())?;
-            auxiliary.monitors.mark_topology_dirty();
-            auxiliary.status.sync(
-                dock,
-                dock_model.settings(),
-                dock_model.media(),
-                graphics,
-            )?;
-            if auxiliary.launcher.is_visible() {
-                auxiliary.launcher.sync_size(dock, graphics)?;
-            }
+            auxiliary.refresh_placement(dock, dock_model, graphics)?;
         }
         WindowEvent::Pointer(event) => {
             handle_dock_pointer(event, dock, graphics, surface, dock_model, auxiliary)?;
@@ -79,7 +62,7 @@ pub(super) fn handle_window_event(
         | WindowEvent::ContextMenu(_)
         | WindowEvent::Switcher(_) => {}
         WindowEvent::AnimationFrame => {
-            auxiliary.launcher.advance_animation();
+            auxiliary.advance_launcher_animation();
             if dock_model.advance_departure(Instant::now()) {
                 resize_dock(dock, graphics, surface, dock_model)?;
             }
@@ -88,7 +71,7 @@ pub(super) fn handle_window_event(
             if dock_model.refresh_status() {
                 surface.invalidate();
             }
-            auxiliary.status.refresh(dock_model.settings());
+            auxiliary.refresh_status(dock_model.settings());
         }
         WindowEvent::RenderRequested => {
             surface.invalidate();
@@ -106,7 +89,7 @@ fn handle_dock_pointer(
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     if matches!(event, PointerEvent::LeftButtonPressed { .. }) {
-        auxiliary.context_menu.hide();
+        auxiliary.hide_context_menu();
     }
     let release_request = match event {
         PointerEvent::LeftButtonReleased { x, y } => {
@@ -126,7 +109,7 @@ fn handle_dock_pointer(
     }
     let Some(target) = activation else {
         if matches!(event, PointerEvent::LeftButtonReleased { .. }) {
-            auxiliary.launcher.hide();
+            auxiliary.hide_launcher();
         }
         return Ok(());
     };
@@ -149,25 +132,18 @@ fn handle_dock_pointer(
             )?;
         }
         DockHitTarget::Jirachi => {
-            if auxiliary.is_enabled(ModuleId::Search) {
-                auxiliary.launcher.toggle(
-                    dock,
-                    dock_model,
-                    &auxiliary.applications,
-                    graphics,
-                )?;
-            }
+            auxiliary.toggle_launcher(dock, dock_model, graphics)?;
         }
         DockHitTarget::Media(target) => {
-            auxiliary.launcher.hide();
-            auxiliary.media.activate(target, dock_model, dock.handle());
+            auxiliary.dismiss_popups_for_activation();
+            auxiliary.activate_media(target, dock_model, dock.handle());
         }
         DockHitTarget::SystemStatus(kind) => {
-            auxiliary.launcher.hide();
+            auxiliary.dismiss_popups_for_activation();
             activate_system_status(kind, dock.handle(), activation_anchor);
         }
         DockHitTarget::ShowDesktop => {
-            auxiliary.launcher.hide();
+            auxiliary.dismiss_popups_for_activation();
             if let Err(error) = lotus_windows::desktop::toggle() {
                 show_error(
                     dock.handle(),
@@ -189,7 +165,7 @@ fn activate_dock_item(
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
-    auxiliary.launcher.hide();
+    auxiliary.hide_launcher();
     let window_count = dock_model
         .item(source_index)
         .map_or(0, |item| item.windows.len());
@@ -202,21 +178,7 @@ fn activate_dock_item(
         return Ok(());
     };
 
-    let entries = dock_model
-        .picker_windows(source_index, lotus_windows::activation::foreground_window());
-    let identity = dock_model
-        .item(source_index)
-        .map(|item| item.id.clone())
-        .unwrap_or_default();
-    let style = dock_model.settings().window_picker_style;
-    auxiliary.context_menu.open_picker(
-        anchor,
-        source_index,
-        identity,
-        style,
-        entries,
-        graphics,
-    )
+    auxiliary.open_window_picker(anchor, source_index, dock_model, graphics)
 }
 
 pub(super) fn activate_system_status(
@@ -285,7 +247,7 @@ fn handle_context_menu(
     let Some((target, anchor, alignment)) = dock_model.popup_target_anchor(request) else {
         return Ok(());
     };
-    auxiliary.launcher.hide();
+    auxiliary.hide_launcher();
     if dock_model.pointer_cancelled() {
         surface.invalidate();
     }
@@ -302,17 +264,13 @@ fn open_context_target(
 ) -> Result<(), AppError> {
     match target {
         DockHitTarget::Jirachi => {
-            auxiliary.context_menu.open(anchor, alignment, graphics)?;
+            auxiliary.open_context_menu(anchor, alignment, graphics)?;
         }
         DockHitTarget::Item(source_index) => {
-            let Some(item) = dock_model.item(source_index) else {
-                return Ok(());
-            };
-            auxiliary.context_menu.open_app(
+            auxiliary.open_application_context_menu(
                 anchor,
                 source_index,
-                item.windows.len(),
-                item.is_pinned,
+                dock_model,
                 graphics,
             )?;
         }
@@ -346,25 +304,18 @@ pub(super) fn handle_monitor_dock_action(
                 auxiliary,
             )?,
             DockHitTarget::Jirachi => {
-                if auxiliary.is_enabled(ModuleId::Search) {
-                    auxiliary.launcher.toggle(
-                        dock,
-                        dock_model,
-                        &auxiliary.applications,
-                        graphics,
-                    )?;
-                }
+                auxiliary.toggle_launcher(dock, dock_model, graphics)?;
             }
             DockHitTarget::Media(target) => {
-                auxiliary.launcher.hide();
-                auxiliary.media.activate(target, dock_model, owner);
+                auxiliary.dismiss_popups_for_activation();
+                auxiliary.activate_media(target, dock_model, owner);
             }
             DockHitTarget::SystemStatus(kind) => {
-                auxiliary.launcher.hide();
+                auxiliary.dismiss_popups_for_activation();
                 activate_system_status(kind, owner, anchor);
             }
             DockHitTarget::ShowDesktop => {
-                auxiliary.launcher.hide();
+                auxiliary.dismiss_popups_for_activation();
                 if let Err(error) = lotus_windows::desktop::toggle() {
                     show_error(
                         owner,
@@ -379,7 +330,7 @@ pub(super) fn handle_monitor_dock_action(
             anchor,
             alignment,
         } => {
-            auxiliary.launcher.hide();
+            auxiliary.hide_launcher();
             open_context_target(
                 target, anchor, alignment, graphics, dock_model, auxiliary,
             )?;

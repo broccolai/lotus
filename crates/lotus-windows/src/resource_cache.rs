@@ -2,11 +2,12 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use crate::responsiveness::METRICS;
+use crate::responsiveness::{CacheClass, METRICS};
 
 pub(crate) struct BoundedResourceCache<K, V> {
     entries: HashMap<K, RasterCacheEntry<V>>,
     byte_budget: usize,
+    class: CacheClass,
     used_bytes: usize,
     next_access: u64,
 }
@@ -21,10 +22,12 @@ impl<K, V> BoundedResourceCache<K, V>
 where
     K: Clone + Eq + Hash,
 {
-    pub(crate) fn new(byte_budget: usize) -> Self {
+    pub(crate) fn new(class: CacheClass, byte_budget: usize) -> Self {
+        METRICS.register_cache(class, byte_budget);
         Self {
             entries: HashMap::new(),
             byte_budget,
+            class,
             used_bytes: 0,
             next_access: 0,
         }
@@ -36,7 +39,11 @@ where
         Q: Eq + Hash + ?Sized,
     {
         let access = self.next_access();
-        let entry = self.entries.get_mut(key)?;
+        let Some(entry) = self.entries.get_mut(key) else {
+            METRICS.record_cache_miss(self.class);
+            return None;
+        };
+        METRICS.record_cache_hit(self.class);
         entry.last_access = access;
         Some(&entry.value)
     }
@@ -47,14 +54,6 @@ where
         Q: Eq + Hash + ?Sized,
     {
         self.entries.get(key).map(|entry| &entry.value)
-    }
-
-    pub(crate) fn contains<Q>(&self, key: &Q) -> bool
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        self.entries.contains_key(key)
     }
 
     pub(crate) fn insert(&mut self, key: K, value: V, bytes: usize) -> Option<V> {
@@ -84,15 +83,15 @@ where
         );
         self.used_bytes = self.used_bytes.saturating_add(bytes);
         if let Some(previous_bytes) = replaced_bytes {
-            METRICS.record_cache_bytes_replaced(previous_bytes, bytes);
+            METRICS.record_cache_replacement(self.class, previous_bytes, bytes);
         } else {
-            METRICS.record_cache_insert(bytes);
+            METRICS.record_cache_insert(self.class, bytes);
         }
         None
     }
 
     pub(crate) fn clear(&mut self) {
-        METRICS.record_cache_remove(self.entries.len(), self.used_bytes);
+        METRICS.record_cache_clear(self.class, self.entries.len(), self.used_bytes);
         self.entries.clear();
         self.used_bytes = 0;
     }
@@ -118,12 +117,13 @@ where
             .remove(&key)
             .expect("least recently used raster cache entry must exist");
         self.used_bytes = self.used_bytes.saturating_sub(entry.bytes);
-        METRICS.record_cache_eviction(entry.bytes);
+        METRICS.record_cache_eviction(self.class, entry.bytes);
     }
 }
 
 impl<K, V> Drop for BoundedResourceCache<K, V> {
     fn drop(&mut self) {
-        METRICS.record_cache_remove(self.entries.len(), self.used_bytes);
+        METRICS.record_cache_remove(self.class, self.entries.len(), self.used_bytes);
+        METRICS.unregister_cache(self.class, self.byte_budget);
     }
 }

@@ -18,6 +18,10 @@ type Result<T> = std::result::Result<T, NativeError>;
 pub struct WindowHandle(HWND);
 
 impl WindowHandle {
+    pub(crate) const fn from_raw(window: HWND) -> Self {
+        Self(window)
+    }
+
     pub(crate) const fn raw(self) -> HWND {
         self.0
     }

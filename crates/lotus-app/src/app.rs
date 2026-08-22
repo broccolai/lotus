@@ -14,16 +14,13 @@ mod visuals;
 use std::fs;
 use std::path::PathBuf;
 
-use context_menu::ContextMenuRuntime;
 use dock::DockRuntime;
-use launcher::LauncherRuntime;
 use lotus_core::search::SearchUsage;
 use lotus_core::settings::{
     CURRENT_ONBOARDING_VERSION, DockSettings, NotificationBadgeStyle, SettingsDecodeError,
     SettingsLoadSource, SettingsStore, SettingsStoreError, decode_settings,
 };
 use lotus_search::usage::SearchUsageStore;
-use lotus_settings::appearance::theme_for;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::activation::ActivationError;
 use lotus_windows::appbar::ShellIntegration;
@@ -31,24 +28,16 @@ use lotus_windows::dpi::enable_per_monitor_v2;
 use lotus_windows::graphics::{
     CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize,
 };
-use lotus_windows::icon_hydrator::IconHydrator;
-use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::single_instance::SingleInstance;
 use lotus_windows::startup::{
     self as startup_registration, RestartWaitError, StartupArgsError, parse_startup_args,
     wait_for_restart_source,
 };
 use lotus_windows::taskbar_badges::TaskbarBadgeController;
-use lotus_windows::update::is_installed;
 use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
-use media::MediaRuntime;
-use modules::{ModuleHost, ModuleRuntime};
-use monitors::MonitorDocks;
+use modules::ModuleHost;
 use runtime::{apply_fullscreen_visibility, flush_frame, resize_dock, run_message_loop};
-use settings::SettingsRuntime;
-use status::StatusRuntime;
-use switcher::SwitcherRuntime;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -158,36 +147,29 @@ pub fn run() -> Result<(), AppError> {
     };
     window_tracker.refresh_fullscreen();
     if !onboarding_required {
-        auxiliary.status.sync(
+        auxiliary.sync_status(&dock, &dock_model, &mut graphics)?;
+        auxiliary.sync_monitor_docks(
             &dock,
-            dock_model.settings(),
-            dock_model.media(),
+            &mut dock_model,
             &mut graphics,
+            &window_tracker,
         )?;
-        auxiliary
-            .monitors
-            .sync(&dock, &mut dock_model, &mut graphics, &window_tracker)?;
     }
     if onboarding_required {
         let _changed = dock.set_visible(false);
-        auxiliary.status.set_visible(false);
-        auxiliary
-            .settings
-            .open_onboarding(dock_model.settings(), true, &mut graphics)?;
+        auxiliary.set_status_visible(false);
+        auxiliary.open_onboarding(dock_model.settings(), true, &mut graphics)?;
     } else {
         apply_fullscreen_visibility(
             &dock,
             &mut surface,
             &window_tracker,
             &dock_model,
-            &mut auxiliary.launcher,
-            &mut auxiliary.status,
+            &mut auxiliary,
         )?;
     }
     if startup.open_settings && !onboarding_required {
-        auxiliary
-            .settings
-            .open(dock_model.settings(), &mut graphics)?;
+        auxiliary.open_settings_without_refresh(dock_model.settings(), &mut graphics)?;
     }
     flush_frame(
         &mut dock,
@@ -219,63 +201,7 @@ fn create_auxiliary_windows(
     usage_store: SearchUsageStore,
     modules_active: bool,
 ) -> Result<ModuleHost, AppError> {
-    let search_window = dock.create_search_window()?;
-    let icon_hydrator = IconHydrator::start()?;
-    lotus_windows::backdrop::apply_search_settings(
-        search_window.handle(),
-        dock_model.settings(),
-    );
-    let launcher = LauncherRuntime::new(
-        search_window,
-        dock_model.settings().clone(),
-        &theme_for(dock_model.settings()),
-        usage,
-        usage_store,
-        icon_hydrator.launcher_client(),
-    );
-    let settings = SettingsRuntime::new(
-        dock.create_settings_window()?,
-        dock_model.settings().clone(),
-        is_installed().unwrap_or(false),
-    )?;
-    let context_menu_window = dock.create_context_menu_window()?;
-    lotus_windows::backdrop::apply_context_menu_settings(
-        context_menu_window.handle(),
-        dock_model.settings(),
-    );
-    let context_menu =
-        ContextMenuRuntime::new(context_menu_window, &theme_for(dock_model.settings()))?;
-    let switcher_window = dock.create_switcher_window()?;
-    lotus_windows::backdrop::apply_popup_settings(
-        switcher_window.handle(),
-        dock_model.settings(),
-    );
-    let switcher = SwitcherRuntime::new(
-        switcher_window,
-        dock_model.settings(),
-        &theme_for(dock_model.settings()),
-        icon_hydrator.switcher_client(),
-    );
-    let media = MediaRuntime::new(false);
-    let status = StatusRuntime::new(
-        [dock.create_status_window()?, dock.create_status_window()?],
-        dock_model.settings(),
-    )?;
-
-    let mut auxiliary = ModuleHost {
-        modules: ModuleRuntime::new(),
-        icon_hydrator,
-        applications: SearchCatalogCache::new(),
-        launcher,
-        settings,
-        context_menu,
-        media,
-        status,
-        monitors: MonitorDocks::new(),
-        switcher,
-    };
-    auxiliary.reconcile(dock, dock_model.settings(), modules_active)?;
-    Ok(auxiliary)
+    ModuleHost::create(dock, dock_model, usage, usage_store, modules_active)
 }
 
 fn sync_startup_preference(enabled: bool) {

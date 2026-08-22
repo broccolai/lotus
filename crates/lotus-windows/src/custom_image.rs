@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::resource_cache::BoundedResourceCache;
+use crate::responsiveness::CacheClass;
 
 const MAX_DIMENSION: u32 = 512;
 const CUSTOM_IMAGE_CACHE_BYTES: usize = 4 * 1024 * 1024;
@@ -47,7 +48,10 @@ pub struct CustomImageCache {
 impl Default for CustomImageCache {
     fn default() -> Self {
         Self {
-            images: BoundedResourceCache::new(CUSTOM_IMAGE_CACHE_BYTES),
+            images: BoundedResourceCache::new(
+                CacheClass::CustomImages,
+                CUSTOM_IMAGE_CACHE_BYTES,
+            ),
         }
     }
 }

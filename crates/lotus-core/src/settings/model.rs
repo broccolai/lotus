@@ -172,6 +172,20 @@ impl DockSettings {
         self
     }
 
+    #[must_use]
+    pub fn retaining_externally_managed(mut self, current: &Self) -> Self {
+        self.notification_disabled_apps
+            .clone_from(&current.notification_disabled_apps);
+        self.application_name_overrides
+            .clone_from(&current.application_name_overrides);
+        self.hidden_executables
+            .clone_from(&current.hidden_executables);
+        self.item_order.clone_from(&current.item_order);
+        self.pinned_apps.clone_from(&current.pinned_apps);
+
+        self
+    }
+
     pub fn dock_height(&self) -> u32 {
         self.icon_size + self.vertical_padding * 2
     }

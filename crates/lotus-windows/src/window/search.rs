@@ -113,6 +113,10 @@ impl SearchWindow {
             .drain()
             .filter_map(search_event_from_window_event)
     }
+
+    pub fn has_pending_events(&self) -> bool {
+        self.window.state().has_pending_events()
+    }
 }
 
 fn search_event_from_window_event(event: WindowEvent) -> Option<SearchEvent> {

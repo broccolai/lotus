@@ -36,6 +36,7 @@ use super::resources::{raster_key, target_bitmap_properties, upload_bgra_pixels}
 use super::surface::SurfaceError;
 use crate::font::BundledFontCollection;
 use crate::resource_cache::BoundedResourceCache;
+use crate::responsiveness::CacheClass;
 
 const BITMAP_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const FRAUNCES_SOFTNESS: DWRITE_FONT_AXIS_TAG =
@@ -93,11 +94,17 @@ impl PresentationRenderer {
             _bundled_fonts: bundled_fonts,
             brand_collection,
             modern_symbol_font,
-            brushes: BoundedResourceCache::new(64),
-            text_formats: BoundedResourceCache::new(32),
+            brushes: BoundedResourceCache::new(CacheClass::D2dBrushes, 64),
+            text_formats: BoundedResourceCache::new(CacheClass::DwriteTextFormats, 32),
             assets: SvgAssetCache::create()?,
-            embedded: BoundedResourceCache::new(BITMAP_CACHE_BYTES),
-            rasters: BoundedResourceCache::new(BITMAP_CACHE_BYTES),
+            embedded: BoundedResourceCache::new(
+                CacheClass::EmbeddedBitmaps,
+                BITMAP_CACHE_BYTES,
+            ),
+            rasters: BoundedResourceCache::new(
+                CacheClass::D2dRasterBitmaps,
+                BITMAP_CACHE_BYTES,
+            ),
         };
         renderer.attach_target(swap_chain)?;
         Ok(renderer)

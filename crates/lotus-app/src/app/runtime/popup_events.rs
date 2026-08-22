@@ -1,5 +1,4 @@
 use lotus_core::window::WindowInfo;
-use lotus_settings::scene::SettingsApplicationRecord;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::{
@@ -10,7 +9,7 @@ use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
 use lotus_windows::interaction::request_exit;
 use lotus_windows::window::{ContextMenuEvent, DockWindow, SelectionDirection};
 
-use super::presentation::resize_dock;
+use super::presentation::present_dock_change;
 use crate::app::modules::ModuleHost;
 use crate::app::visuals::{AppMenuAction, ContextMenuAction, PopupAction, PowerAction};
 use crate::app::{AppError, DockRuntime};
@@ -26,20 +25,20 @@ pub(super) fn handle_context_menu_event(
 ) -> Result<(), AppError> {
     match event {
         ContextMenuEvent::PointerMoved { x, y } => {
-            if auxiliary.context_menu.scene.pointer_move(x, y) {
-                auxiliary.context_menu.invalidate();
+            if auxiliary.context_menu_runtime().scene.pointer_move(x, y) {
+                auxiliary.context_menu_runtime().invalidate();
             }
         }
         ContextMenuEvent::PointerLeft => {
-            if auxiliary.context_menu.scene.pointer_left() {
-                auxiliary.context_menu.invalidate();
+            if auxiliary.context_menu_runtime().scene.pointer_left() {
+                auxiliary.context_menu_runtime().invalidate();
             }
         }
         ContextMenuEvent::PointerReleased { x, y } => {
-            let action = auxiliary.context_menu.scene.pointer_action(x, y);
-            let source_index = auxiliary.context_menu.scene.source_index();
+            let action = auxiliary.context_menu_runtime().scene.pointer_action(x, y);
+            let source_index = auxiliary.context_menu_runtime().scene.source_index();
             if !action.is_some_and(opens_power_menu) {
-                auxiliary.context_menu.hide();
+                auxiliary.context_menu_runtime().hide();
             }
             if let Some(action) = action {
                 let mut context = PopupActionContext {
@@ -54,10 +53,10 @@ pub(super) fn handle_context_menu_event(
             }
         }
         ContextMenuEvent::SelectionRequested => {
-            let action = auxiliary.context_menu.scene.selected_action();
-            let source_index = auxiliary.context_menu.scene.source_index();
+            let action = auxiliary.context_menu_runtime().scene.selected_action();
+            let source_index = auxiliary.context_menu_runtime().scene.source_index();
             if !action.is_some_and(opens_power_menu) {
-                auxiliary.context_menu.hide();
+                auxiliary.context_menu_runtime().hide();
             }
             if let Some(action) = action {
                 let mut context = PopupActionContext {
@@ -73,31 +72,31 @@ pub(super) fn handle_context_menu_event(
         }
         ContextMenuEvent::MoveSelection(direction) => {
             let next = direction == SelectionDirection::Next;
-            if auxiliary.context_menu.scene.move_selection(next) {
-                auxiliary.context_menu.invalidate();
+            if auxiliary.context_menu_runtime().scene.move_selection(next) {
+                auxiliary.context_menu_runtime().invalidate();
             }
         }
         ContextMenuEvent::Scroll(direction) => {
             let next = direction == SelectionDirection::Next;
-            if auxiliary.context_menu.scene.scroll(next) {
-                auxiliary.context_menu.invalidate();
+            if auxiliary.context_menu_runtime().scene.scroll(next) {
+                auxiliary.context_menu_runtime().invalidate();
             }
         }
-        ContextMenuEvent::DismissRequested => auxiliary.context_menu.hide(),
+        ContextMenuEvent::DismissRequested => auxiliary.context_menu_runtime().hide(),
         ContextMenuEvent::Resized { width, height } => {
-            auxiliary.context_menu.resize(width, height)?;
-            auxiliary.context_menu.invalidate();
+            auxiliary.context_menu_runtime().resize(width, height)?;
+            auxiliary.context_menu_runtime().invalidate();
         }
         ContextMenuEvent::DpiChanged { dpi } => {
-            if auxiliary.context_menu.scene.set_dpi(dpi) {
-                let desired = auxiliary.context_menu.scene.desired_size();
-                if let Some(surface) = &mut auxiliary.context_menu.surface {
+            if auxiliary.context_menu_runtime().scene.set_dpi(dpi) {
+                let desired = auxiliary.context_menu_runtime().scene.desired_size();
+                if let Some(surface) = &mut auxiliary.context_menu_runtime().surface {
                     surface.value_mut().resize(desired)?;
                 }
             }
-            auxiliary.context_menu.invalidate();
+            auxiliary.context_menu_runtime().invalidate();
         }
-        ContextMenuEvent::RenderRequested => auxiliary.context_menu.invalidate(),
+        ContextMenuEvent::RenderRequested => auxiliary.context_menu_runtime().invalidate(),
     }
     Ok(())
 }
@@ -196,7 +195,11 @@ fn execute_app_menu_action(
             .dock_model
             .open_new(source_index, context.dock.handle()),
         AppMenuAction::CustomizeIcon => {
-            open_application_icon_manager(source_index, context)?;
+            context.auxiliary.open_application_icon_manager(
+                context.dock_model,
+                source_index,
+                context.graphics,
+            )?;
         }
         AppMenuAction::TogglePin => {
             let pinned = context
@@ -210,7 +213,6 @@ fn execute_app_menu_action(
                     item.windows.first().and_then(|window| {
                         context
                             .auxiliary
-                            .applications
                             .registered_application(window, &item.display_name)
                     })
                 });
@@ -231,19 +233,13 @@ fn execute_app_menu_action(
                 }
             };
             if changed {
-                resize_dock(
+                present_dock_change(
                     context.dock,
                     context.graphics,
                     context.surface,
+                    context.auxiliary,
                     context.dock_model,
                 )?;
-                context.auxiliary.status.sync(
-                    context.dock,
-                    context.dock_model.settings(),
-                    context.dock_model.media(),
-                    context.graphics,
-                )?;
-                context.surface.invalidate();
             }
         }
         AppMenuAction::Close => {
@@ -297,63 +293,6 @@ fn execute_app_menu_action(
     Ok(())
 }
 
-fn open_application_icon_manager(
-    source_index: usize,
-    context: &mut PopupActionContext<'_>,
-) -> Result<(), AppError> {
-    let icon = context.dock_model.application_icon_preview(source_index);
-    let Some(item) = context.dock_model.item(source_index) else {
-        return Ok(());
-    };
-    let custom = context
-        .dock_model
-        .settings()
-        .application_icon_override_for(&item.application_identity());
-    let id = custom.map_or_else(|| item.id.clone(), |override_| override_.id.clone());
-    let record = SettingsApplicationRecord {
-        id: id.clone(),
-        name: item.display_name.clone(),
-        icon,
-        app_user_model_id: item.app_user_model_id.clone(),
-        match_executables: std::path::Path::new(&item.executable_path)
-            .file_name()
-            .and_then(|name| name.to_str().map(str::to_owned))
-            .into_iter()
-            .collect(),
-        customized: custom.is_some(),
-        missing_icon: false,
-    };
-    let mut applications = super::settings_events::application_records(
-        &context.auxiliary.applications,
-        context.dock_model.items(),
-        context.dock_model.settings(),
-    );
-    if !applications.iter().any(|application| application.id == id) {
-        applications.push(record);
-    }
-    context
-        .auxiliary
-        .settings
-        .open(context.dock_model.settings(), context.graphics)?;
-    let _ = context
-        .auxiliary
-        .settings
-        .scene
-        .set_applications(applications);
-    let _ = context
-        .auxiliary
-        .settings
-        .scene
-        .open_application_manager(&id);
-    super::settings_events::hydrate_application_previews(
-        &context.auxiliary.applications,
-        context.dock_model.items(),
-        &mut context.auxiliary.settings,
-    );
-    context.auxiliary.settings.invalidate();
-    Ok(())
-}
-
 fn execute_context_menu_action(
     action: ContextMenuAction,
     graphics: &mut DeviceState,
@@ -361,13 +300,8 @@ fn execute_context_menu_action(
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     match action {
-        ContextMenuAction::OpenSettings => {
-            auxiliary.settings.open(dock_model.settings(), graphics)?;
-            super::search_events::refresh_open_application_manager(dock_model, auxiliary);
-        }
-        ContextMenuAction::RequestShutdown => {
-            auxiliary.context_menu.open_power(graphics)?;
-        }
+        ContextMenuAction::OpenSettings => auxiliary.open_settings(dock_model, graphics)?,
+        ContextMenuAction::RequestShutdown => auxiliary.open_power_menu(graphics)?,
         ContextMenuAction::QuitLotus => request_exit(0),
     }
     Ok(())

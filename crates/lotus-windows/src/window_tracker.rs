@@ -31,6 +31,7 @@ pub struct WindowTracker {
     fullscreen_window: Option<WindowId>,
     window_revision: u64,
     fullscreen_revision: u64,
+    presentation_revision: u64,
     shell_fullscreen_window: Option<WindowId>,
 }
 
@@ -127,6 +128,7 @@ impl WindowTracker {
             fullscreen_window: snapshot.fullscreen_window,
             window_revision: snapshot.window_revision,
             fullscreen_revision: snapshot.fullscreen_revision,
+            presentation_revision: 0,
             shell_fullscreen_window: None,
         })
     }
@@ -158,6 +160,7 @@ impl WindowTracker {
                 self.fullscreen_window =
                     foreground::observe_fullscreen_window(self.own_process_id);
             }
+            self.presentation_revision = self.presentation_revision.wrapping_add(1);
             return;
         }
 
@@ -168,6 +171,11 @@ impl WindowTracker {
         } else {
             foreground::observe_fullscreen_window(self.own_process_id)
         };
+        self.presentation_revision = self.presentation_revision.wrapping_add(1);
+    }
+
+    pub const fn presentation_revision(&self) -> u64 {
+        self.presentation_revision
     }
 
     pub fn handle_message(
@@ -200,6 +208,9 @@ impl WindowTracker {
         self.fullscreen_window = snapshot.fullscreen_window;
         self.window_revision = snapshot.window_revision;
         self.fullscreen_revision = snapshot.fullscreen_revision;
+        if windows_changed || fullscreen_changed {
+            self.presentation_revision = self.presentation_revision.wrapping_add(1);
+        }
 
         Ok(windows_changed
             .then_some(WindowTrackerEvent::SnapshotRefreshed)

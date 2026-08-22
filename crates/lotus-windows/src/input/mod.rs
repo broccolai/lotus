@@ -30,7 +30,7 @@ use self::state::{
 };
 use crate::NativeError;
 use crate::messages::{INPUT_REPLAY, INPUT_WAKE};
-use crate::responsiveness::METRICS;
+use crate::responsiveness::{InputFailOpenReason, METRICS};
 
 const START_TIMEOUT: Duration = Duration::from_secs(2);
 const UI_HEARTBEAT_STALE_MS: u64 = 1_000;
@@ -179,31 +179,13 @@ impl InputController {
         decision.invalid_before = decision.invalid_before.max(sequence.saturating_add(1));
         decision.rejected_sequence = decision.rejected_sequence.max(sequence);
         drop(decision);
-        request_fail_open(&self.shared);
+        let _ = enter_fail_open(&self.shared, InputFailOpenReason::RejectedSequence);
+        let _ = request_cleanup_for_sequence(&self.shared, sequence);
     }
 
     pub fn heartbeat(&self) {
         self.shared.heartbeat.store(tick_count(), Ordering::Release);
-        let _decision = lock_decision(&self.shared);
-        let requested = self.shared.cleanup_requested_epoch.load(Ordering::Acquire);
-        let completed = self.shared.cleanup_completed_epoch.load(Ordering::Acquire);
-        if self.shared.fail_open.load(Ordering::Acquire) && requested == completed {
-            if self
-                .shared
-                .healthy_heartbeats
-                .fetch_add(1, Ordering::AcqRel)
-                >= 2
-            {
-                self.shared.fail_open.store(false, Ordering::Release);
-                if self.shared.cleanup_requested_epoch.load(Ordering::Acquire) != completed
-                {
-                    self.shared.fail_open.store(true, Ordering::Release);
-                }
-                self.shared.healthy_heartbeats.store(0, Ordering::Release);
-            }
-        } else {
-            self.shared.healthy_heartbeats.store(0, Ordering::Release);
-        }
+        try_recover_from_fail_open(&self.shared);
     }
 
     pub fn is_healthy(&self) -> bool {
@@ -223,7 +205,8 @@ pub fn capture_age(captured_at: u64) -> Duration {
 impl Drop for InputController {
     fn drop(&mut self) {
         self.shared.stopping.store(true, Ordering::Release);
-        request_fail_open(&self.shared);
+        let _ = enter_fail_open(&self.shared, InputFailOpenReason::Shutdown);
+        let _ = request_cleanup(&self.shared);
         request_stop(self.thread_id);
         if let Some(thread) = self.thread.take()
             && self.completion.recv_timeout(SHUTDOWN_TIMEOUT).is_ok()
@@ -292,6 +275,7 @@ struct Shared {
     cleanup_requested_epoch: AtomicU64,
     cleanup_completed_epoch: AtomicU64,
     cancelled_sequence: AtomicU64,
+    cleanup_sequence: AtomicU64,
     decision: Mutex<DecisionState>,
     healthy_heartbeats: AtomicU32,
     worker_thread: AtomicU32,
@@ -309,6 +293,7 @@ impl Shared {
             cleanup_requested_epoch: AtomicU64::new(0),
             cleanup_completed_epoch: AtomicU64::new(0),
             cancelled_sequence: AtomicU64::new(0),
+            cleanup_sequence: AtomicU64::new(0),
             decision: Mutex::new(DecisionState::default()),
             healthy_heartbeats: AtomicU32::new(0),
             worker_thread: AtomicU32::new(0),
@@ -327,7 +312,7 @@ fn lock_decision(shared: &Shared) -> std::sync::MutexGuard<'_, DecisionState> {
     match shared.decision.lock() {
         Ok(decision) => decision,
         Err(poisoned) => {
-            request_fail_open(shared);
+            let _ = enter_fail_open(shared, InputFailOpenReason::Panic);
             poisoned.into_inner()
         }
     }
@@ -420,7 +405,8 @@ fn input_thread(
         }
     }
 
-    request_fail_open(&shared);
+    let _ = enter_fail_open(&shared, InputFailOpenReason::Shutdown);
+    let _ = request_cleanup(&shared);
     cleanup_input_state();
     let _ = flush_replay();
     let _ = unsafe { KillTimer(None, watchdog) };
@@ -450,11 +436,12 @@ unsafe extern "system" fn keyboard_hook(
     message: WPARAM,
     data: LPARAM,
 ) -> LRESULT {
-    let started = Instant::now();
-    let result = if code < 0 || data.0 == 0 {
-        call_next(code, message, data)
+    let total_started = Instant::now();
+    let lotus_started = Instant::now();
+    let decision = if code < 0 || data.0 == 0 {
+        HookOutcome::Pass
     } else if let Ok(result) = catch_unwind(AssertUnwindSafe(|| unsafe {
-        keyboard_hook_inner(code, message, data)
+        keyboard_hook_inner(message, data)
     })) {
         result
     } else {
@@ -462,26 +449,36 @@ unsafe extern "system" fn keyboard_hook(
             if let Ok(state) = slot.try_borrow()
                 && let Some(state) = state.as_ref()
             {
-                request_fail_open(&state.shared);
+                let _ = enter_fail_open(&state.shared, InputFailOpenReason::Panic);
             }
         });
-        call_next(code, message, data)
+        HookOutcome::Pass
     };
     METRICS.record_input_callback();
-    METRICS.record_input_callback_duration(started.elapsed());
+    METRICS.record_input_hook_lotus(lotus_started.elapsed());
+    let result = match decision {
+        HookOutcome::Pass => call_next(code, message, data),
+        HookOutcome::Suppress => SUPPRESS,
+    };
+    METRICS.record_input_hook_total(total_started.elapsed());
     result
 }
 
-unsafe fn keyboard_hook_inner(code: i32, message: WPARAM, data: LPARAM) -> LRESULT {
+enum HookOutcome {
+    Pass,
+    Suppress,
+}
+
+unsafe fn keyboard_hook_inner(message: WPARAM, data: LPARAM) -> HookOutcome {
     let keyboard = unsafe { &*(data.0 as *const KBDLLHOOKSTRUCT) };
     let Ok(message_id) = u32::try_from(message.0) else {
-        return call_next(code, message, data);
+        return HookOutcome::Pass;
     };
     let Some(transition) = Transition::from_message(message_id) else {
-        return call_next(code, message, data);
+        return HookOutcome::Pass;
     };
     let Ok(key) = u16::try_from(keyboard.vkCode) else {
-        return call_next(code, message, data);
+        return HookOutcome::Pass;
     };
     let event = KeyEvent {
         key,
@@ -494,41 +491,41 @@ unsafe fn keyboard_hook_inner(code: i32, message: WPARAM, data: LPARAM) -> LRESU
     HOOK_STATE.with(|slot| {
         let mut borrowed = slot.borrow_mut();
         let Some(state) = borrowed.as_mut() else {
-            return call_next(code, message, data);
+            return HookOutcome::Pass;
         };
         if state.shared.fail_open.load(Ordering::Acquire) || heartbeat_stale(&state.shared)
         {
             let captures_release = state.sequence.capture_fail_open_release(event);
-            request_fail_open(&state.shared);
+            let _ = enter_fail_open(&state.shared, InputFailOpenReason::HeartbeatStale);
             return if captures_release {
-                SUPPRESS
+                HookOutcome::Suppress
             } else {
-                call_next(code, message, data)
+                HookOutcome::Pass
             };
         }
         if event.self_injected {
-            return call_next(code, message, data);
+            return HookOutcome::Pass;
         }
         if state
             .sequence
             .defer_replay_pending_windows(event, state.replay_len != 0)
         {
-            return call_next(code, message, data);
+            return HookOutcome::Pass;
         }
 
         match state.sequence.transition(event) {
-            HookDecision::Pass => call_next(code, message, data),
-            HookDecision::Suppress => SUPPRESS,
+            HookDecision::Pass => HookOutcome::Pass,
+            HookDecision::Suppress => HookOutcome::Suppress,
             HookDecision::Effect(effect) => {
                 if accept_effect(state, effect) {
-                    SUPPRESS
+                    HookOutcome::Suppress
                 } else {
-                    call_next(code, message, data)
+                    HookOutcome::Pass
                 }
             }
             HookDecision::EffectAndPass(effect) => {
                 let _ = accept_effect(state, effect);
-                call_next(code, message, data)
+                HookOutcome::Pass
             }
         }
     })
@@ -539,7 +536,7 @@ fn accept_effect(state: &mut HookState, effect: SequenceEffect) -> bool {
         SequenceEffect::Replay(keys) => {
             let key_count = keys.iter().flatten().count();
             if state.replay_len.saturating_add(key_count) > state.replay.len() {
-                request_fail_open(&state.shared);
+                let _ = enter_fail_open(&state.shared, InputFailOpenReason::WakeFailure);
                 return false;
             }
             let replay_start = state.replay_len;
@@ -555,7 +552,7 @@ fn accept_effect(state: &mut HookState, effect: SequenceEffect) -> bool {
                 }
                 state.replay_len = replay_start;
                 METRICS.record_input_replay_failure();
-                request_fail_open(&state.shared);
+                let _ = enter_fail_open(&state.shared, InputFailOpenReason::WakeFailure);
                 false
             }
         }
@@ -592,7 +589,8 @@ fn accept_effect(state: &mut HookState, effect: SequenceEffect) -> bool {
                     false
                 }
                 CyclePush::Exhausted => {
-                    request_fail_open(&state.shared);
+                    let _ =
+                        enter_fail_open(&state.shared, InputFailOpenReason::MailboxFull);
                     false
                 }
             }
@@ -668,7 +666,7 @@ fn enqueue(state: &HookState, action: InputAction) -> bool {
     if state.sender.try_send(action).is_err() {
         state.shared.mailbox_depth.fetch_sub(1, Ordering::AcqRel);
         METRICS.record_input_action_dropped();
-        request_fail_open(&state.shared);
+        let _ = enter_fail_open(&state.shared, InputFailOpenReason::MailboxFull);
         return false;
     }
     METRICS.record_input_action_enqueued();
@@ -684,6 +682,8 @@ fn enqueue(state: &HookState, action: InputAction) -> bool {
     } else {
         state.shared.wake_pending.store(false, Ordering::Release);
         METRICS.record_input_wake_failure();
+        let _ = enter_fail_open(&state.shared, InputFailOpenReason::WakeFailure);
+        return false;
     }
     true
 }
@@ -734,8 +734,12 @@ fn flush_replay() -> bool {
             return true;
         };
         if state.replay_len == 0 && state.alt_fallback.is_none() {
+            let requested = state.shared.cleanup_requested_epoch.load(Ordering::Acquire);
+            mark_cleanup_complete(&state.shared, requested);
             return true;
         }
+        let shared = Arc::clone(&state.shared);
+        let requested = shared.cleanup_requested_epoch.load(Ordering::Acquire);
         let mut keys = [None; REPLAY_CAPACITY];
         let mut inputs = [empty_input(); REPLAY_CAPACITY];
         let replay_len = state.replay_len;
@@ -775,14 +779,18 @@ fn flush_replay() -> bool {
         let delivered = inserted.saturating_add(retried);
         if delivered != expected {
             METRICS.record_input_replay_failure();
-            compensate_replay(&keys[..replay_len]);
+            let delivered_count = usize::try_from(delivered)
+                .unwrap_or_default()
+                .min(replay_len);
+            compensate_replay(&keys[..delivered_count]);
             let mut borrowed = slot.borrow_mut();
             if let Some(state) = borrowed.as_mut() {
+                retain_undelivered_replay(state, &keys[..replay_len], delivered_count);
                 state
                     .shared
                     .cancelled_sequence
                     .store(state.sequence.active_sequence(), Ordering::Release);
-                request_fail_open(&state.shared);
+                let _ = enter_fail_open(&state.shared, InputFailOpenReason::WakeFailure);
                 let _ = enqueue(
                     state,
                     InputAction::ReplayIncomplete {
@@ -799,7 +807,7 @@ fn flush_replay() -> bool {
             METRICS.record_input_replay_failure();
             let mut borrowed = slot.borrow_mut();
             if let Some(state) = borrowed.as_mut() {
-                request_fail_open(&state.shared);
+                let _ = enter_fail_open(&state.shared, InputFailOpenReason::WakeFailure);
             }
             return false;
         }
@@ -807,8 +815,20 @@ fn flush_replay() -> bool {
         if let Some(state) = borrowed.as_mut() {
             state.alt_fallback = None;
         }
+        mark_cleanup_complete(&shared, requested);
         true
     })
+}
+
+fn retain_undelivered_replay(
+    state: &mut HookState,
+    replay: &[Option<ReplayKey>],
+    delivered: usize,
+) {
+    let pending = &replay[delivered.min(replay.len())..];
+    state.replay = [None; REPLAY_CAPACITY];
+    state.replay[..pending.len()].copy_from_slice(pending);
+    state.replay_len = pending.len();
 }
 
 fn replay_alt_fallback(fallback: AltFallback) -> bool {
@@ -994,20 +1014,59 @@ fn heartbeat_stale(shared: &Shared) -> bool {
         > UI_HEARTBEAT_STALE_MS
 }
 
-fn request_fail_open(shared: &Shared) {
+fn enter_fail_open(shared: &Shared, reason: InputFailOpenReason) -> bool {
     let was_open = shared.fail_open.swap(true, Ordering::AcqRel);
-    if !was_open || cleanup_is_complete(shared) {
-        shared
-            .cleanup_requested_epoch
-            .fetch_add(1, Ordering::AcqRel);
-    }
     if !was_open {
-        METRICS.record_input_fail_open();
+        METRICS.record_input_fail_open(reason);
+        let _ = request_cleanup(shared);
     }
     shared.healthy_heartbeats.store(0, Ordering::Release);
     for slot in &shared.cycle_slots {
         slot.store(0, Ordering::Release);
     }
+    !was_open
+}
+
+fn request_cleanup(shared: &Shared) -> bool {
+    let mut requested = shared.cleanup_requested_epoch.load(Ordering::Acquire);
+    loop {
+        if shared.cleanup_completed_epoch.load(Ordering::Acquire) != requested {
+            METRICS.record_input_cleanup_redundant_suppressed();
+            return false;
+        }
+        match shared.cleanup_requested_epoch.compare_exchange_weak(
+            requested,
+            requested.saturating_add(1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                METRICS.record_input_cleanup_requested();
+                return true;
+            }
+            Err(current) => requested = current,
+        }
+    }
+}
+
+fn request_cleanup_for_sequence(shared: &Shared, sequence: u64) -> bool {
+    if sequence == 0 {
+        return false;
+    }
+    let mut covered = shared.cleanup_sequence.load(Ordering::Acquire);
+    while sequence > covered {
+        match shared.cleanup_sequence.compare_exchange_weak(
+            covered,
+            sequence,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return request_cleanup(shared),
+            Err(current) => covered = current,
+        }
+    }
+    METRICS.record_input_cleanup_redundant_suppressed();
+    false
 }
 
 fn cleanup_is_complete(shared: &Shared) -> bool {
@@ -1015,11 +1074,28 @@ fn cleanup_is_complete(shared: &Shared) -> bool {
         == shared.cleanup_requested_epoch.load(Ordering::Acquire)
 }
 
+fn try_recover_from_fail_open(shared: &Shared) {
+    let _decision = lock_decision(shared);
+    let requested = shared.cleanup_requested_epoch.load(Ordering::Acquire);
+    let completed = shared.cleanup_completed_epoch.load(Ordering::Acquire);
+    if shared.fail_open.load(Ordering::Acquire) && requested == completed {
+        if shared.healthy_heartbeats.fetch_add(1, Ordering::AcqRel) >= 2 {
+            shared.fail_open.store(false, Ordering::Release);
+            if shared.cleanup_requested_epoch.load(Ordering::Acquire) != completed {
+                shared.fail_open.store(true, Ordering::Release);
+            }
+            shared.healthy_heartbeats.store(0, Ordering::Release);
+        }
+    } else {
+        shared.healthy_heartbeats.store(0, Ordering::Release);
+    }
+}
+
 fn watchdog_tick() {
     if heartbeat_stale_shared() {
         HOOK_STATE.with(|slot| {
             if let Some(state) = slot.borrow().as_ref() {
-                request_fail_open(&state.shared);
+                let _ = enter_fail_open(&state.shared, InputFailOpenReason::HeartbeatStale);
             }
         });
     }
@@ -1035,7 +1111,7 @@ fn heartbeat_stale_shared() -> bool {
 }
 
 fn cleanup_input_state() {
-    let mut direct_replay = None;
+    let mut direct_replay = false;
     HOOK_STATE.with(|slot| {
         let mut borrowed = slot.borrow_mut();
         let Some(state) = borrowed.as_mut() else {
@@ -1046,7 +1122,12 @@ fn cleanup_input_state() {
             return;
         }
 
+        let active_cleanup_state = state.sequence.has_active_cleanup_state();
         let sequence = state.sequence.invalidate();
+        state
+            .shared
+            .cleanup_sequence
+            .fetch_max(sequence, Ordering::AcqRel);
         let (acknowledged, rejected) = {
             let mut decision = lock_decision(&state.shared);
             decision.invalid_before =
@@ -1069,34 +1150,38 @@ fn cleanup_input_state() {
         for slot in &state.shared.cycle_slots {
             slot.store(0, Ordering::Release);
         }
-        state
-            .shared
-            .cancelled_sequence
-            .store(sequence, Ordering::Release);
-        METRICS.record_input_sequence_cancel();
-        signal_input_wake(state);
-        let replay_required = state.replay_len != 0 || state.alt_fallback.is_some();
-        if !replay_required
-            || queue_replay(state.shared.worker_thread.load(Ordering::Acquire))
-        {
-            mark_cleanup_complete(&state.shared, requested);
+        if active_cleanup_state {
+            state
+                .shared
+                .cancelled_sequence
+                .store(sequence, Ordering::Release);
+            METRICS.record_input_sequence_cancel();
+            METRICS.record_input_cleanup_active_sequence_cancel();
+            signal_input_wake(state);
         } else {
-            direct_replay = Some((Arc::clone(&state.shared), requested));
+            METRICS.record_input_cleanup_idle();
+        }
+        let replay_required = state.replay_len != 0 || state.alt_fallback.is_some();
+        if !replay_required {
+            mark_cleanup_complete(&state.shared, requested);
+        } else if !queue_replay(state.shared.worker_thread.load(Ordering::Acquire)) {
+            direct_replay = true;
         }
     });
-    if let Some((shared, requested)) = direct_replay
-        && flush_replay()
-    {
-        mark_cleanup_complete(&shared, requested);
+    if direct_replay {
+        let _ = flush_replay();
     }
 }
 
 fn mark_cleanup_complete(shared: &Shared, epoch: u64) {
     let _decision = lock_decision(shared);
-    if shared.cleanup_requested_epoch.load(Ordering::Acquire) == epoch {
+    if shared.cleanup_requested_epoch.load(Ordering::Acquire) == epoch
+        && shared.cleanup_completed_epoch.load(Ordering::Acquire) != epoch
+    {
         shared
             .cleanup_completed_epoch
             .store(epoch, Ordering::Release);
+        METRICS.record_input_cleanup_completed();
     }
 }
 
@@ -1120,4 +1205,206 @@ fn request_stop(thread_id: u32) {
 }
 fn call_next(code: i32, message: WPARAM, data: LPARAM) -> LRESULT {
     unsafe { CallNextHookEx(None, code, message, data) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_hook_state(config: InputConfig, test: impl FnOnce(&Arc<Shared>)) {
+        let (sender, _receiver) = mpsc::sync_channel(MAILBOX_CAPACITY);
+        let shared = Arc::new(Shared::new());
+        HOOK_STATE.with(|slot| {
+            *slot.borrow_mut() = Some(HookState {
+                sequence: InputSequence::new(config),
+                sender,
+                shared: Arc::clone(&shared),
+                ui_thread: 0,
+                replay: [None; REPLAY_CAPACITY],
+                replay_len: 0,
+                alt_fallback: None,
+            });
+        });
+
+        test(&shared);
+
+        HOOK_STATE.with(|slot| *slot.borrow_mut() = None);
+    }
+
+    fn make_heartbeat_stale(shared: &Shared) {
+        shared
+            .heartbeat
+            .store(tick_count().saturating_sub(10_000), Ordering::Release);
+    }
+
+    #[test]
+    fn prolonged_stale_heartbeat_requests_one_cleanup_episode() {
+        with_hook_state(InputConfig::default(), |shared| {
+            make_heartbeat_stale(shared);
+            for _ in 0..134 {
+                watchdog_tick();
+            }
+
+            assert!(shared.fail_open.load(Ordering::Acquire));
+            assert_eq!(shared.cleanup_requested_epoch.load(Ordering::Acquire), 1);
+            assert_eq!(shared.cleanup_completed_epoch.load(Ordering::Acquire), 1);
+            assert_eq!(shared.cancelled_sequence.load(Ordering::Acquire), 0);
+        });
+    }
+
+    #[test]
+    fn stale_heartbeat_while_idle_neither_cancels_nor_wakes() {
+        with_hook_state(InputConfig::default(), |shared| {
+            make_heartbeat_stale(shared);
+            watchdog_tick();
+
+            assert_eq!(shared.cancelled_sequence.load(Ordering::Acquire), 0);
+            assert!(!shared.wake_pending.load(Ordering::Acquire));
+        });
+    }
+
+    #[test]
+    fn recovered_heartbeat_allows_a_second_stale_episode() {
+        with_hook_state(InputConfig::default(), |shared| {
+            make_heartbeat_stale(shared);
+            watchdog_tick();
+            for _ in 0..3 {
+                try_recover_from_fail_open(shared);
+            }
+            assert!(!shared.fail_open.load(Ordering::Acquire));
+
+            make_heartbeat_stale(shared);
+            watchdog_tick();
+
+            assert!(shared.fail_open.load(Ordering::Acquire));
+            assert_eq!(shared.cleanup_requested_epoch.load(Ordering::Acquire), 2);
+            assert_eq!(shared.cleanup_completed_epoch.load(Ordering::Acquire), 2);
+        });
+    }
+
+    #[test]
+    fn queued_cleanup_cannot_recover_before_replay_completion() {
+        let shared = Shared::new();
+        let _ = enter_fail_open(&shared, InputFailOpenReason::HeartbeatStale);
+
+        for _ in 0..4 {
+            try_recover_from_fail_open(&shared);
+        }
+        assert!(shared.fail_open.load(Ordering::Acquire));
+
+        mark_cleanup_complete(&shared, 1);
+        for _ in 0..3 {
+            try_recover_from_fail_open(&shared);
+        }
+        assert!(!shared.fail_open.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn new_rejected_sequence_can_request_a_later_cleanup_generation() {
+        let shared = Shared::new();
+        let _ = enter_fail_open(&shared, InputFailOpenReason::RejectedSequence);
+        mark_cleanup_complete(&shared, 1);
+
+        assert!(request_cleanup_for_sequence(&shared, 1));
+        mark_cleanup_complete(&shared, 2);
+        assert!(!request_cleanup_for_sequence(&shared, 1));
+        assert!(request_cleanup_for_sequence(&shared, 2));
+        assert_eq!(shared.cleanup_requested_epoch.load(Ordering::Acquire), 3);
+    }
+
+    #[test]
+    fn stale_heartbeat_cancels_a_captured_windows_sequence_once() {
+        with_hook_state(
+            InputConfig {
+                windows_key_search: true,
+                custom_alt_tab: false,
+            },
+            |shared| {
+                HOOK_STATE.with(|slot| {
+                    let mut borrowed = slot.borrow_mut();
+                    let state = borrowed.as_mut().expect("test hook state");
+                    let _ = state.sequence.transition(KeyEvent {
+                        key: 0x5B,
+                        transition: Transition::Down,
+                        extended: true,
+                        alt_down: false,
+                        self_injected: false,
+                    });
+                    let _ = state.sequence.transition(KeyEvent {
+                        key: 0x5B,
+                        transition: Transition::Up,
+                        extended: true,
+                        alt_down: false,
+                        self_injected: false,
+                    });
+                });
+                make_heartbeat_stale(shared);
+                watchdog_tick();
+                watchdog_tick();
+
+                assert_eq!(shared.cancelled_sequence.load(Ordering::Acquire), 1);
+                assert_eq!(shared.cleanup_requested_epoch.load(Ordering::Acquire), 1);
+            },
+        );
+    }
+
+    #[test]
+    fn fail_open_extracts_one_alt_tab_fallback_and_clears_the_sequence() {
+        let mut sequence = InputSequence::new(InputConfig {
+            windows_key_search: false,
+            custom_alt_tab: true,
+        });
+        let _ = sequence.transition(KeyEvent {
+            key: 0xA4,
+            transition: Transition::Down,
+            extended: false,
+            alt_down: true,
+            self_injected: false,
+        });
+        let _ = sequence.transition(KeyEvent {
+            key: 0x09,
+            transition: Transition::Down,
+            extended: false,
+            alt_down: true,
+            self_injected: false,
+        });
+
+        let (_, _, fallback) = sequence.fail_open_replay(0);
+        let fallback = fallback.expect("captured Alt+Tab must retain a native fallback");
+        assert_eq!(fallback.steps, 1);
+        assert!(fallback.alt_is_held);
+        assert!(!sequence.has_active_cleanup_state());
+
+        let (_, _, repeated) = sequence.fail_open_replay(0);
+        assert!(repeated.is_none());
+    }
+
+    #[test]
+    fn partial_replay_retries_only_the_undelivered_suffix() {
+        with_hook_state(InputConfig::default(), |_| {
+            HOOK_STATE.with(|slot| {
+                let mut borrowed = slot.borrow_mut();
+                let state = borrowed.as_mut().expect("test hook state");
+                let replay = [
+                    Some(ReplayKey {
+                        key: 0x5B,
+                        transition: Transition::Down,
+                        extended: true,
+                    }),
+                    Some(ReplayKey {
+                        key: 0x5B,
+                        transition: Transition::Up,
+                        extended: true,
+                    }),
+                ];
+
+                retain_undelivered_replay(state, &replay, 1);
+
+                assert_eq!(state.replay_len, 1);
+                let pending = state.replay[0].expect("key-up suffix must remain pending");
+                assert_eq!(pending.key, 0x5B);
+                assert_eq!(pending.transition, Transition::Up);
+            });
+        });
+    }
 }

@@ -101,6 +101,10 @@ impl SettingsWindow {
             .drain()
             .filter_map(settings_event_from_window_event)
     }
+
+    pub fn has_pending_events(&self) -> bool {
+        self.window.state().has_pending_events()
+    }
 }
 
 fn settings_event_from_window_event(event: WindowEvent) -> Option<SettingsEvent> {
@@ -121,8 +125,10 @@ fn settings_event_from_window_event(event: WindowEvent) -> Option<SettingsEvent>
         WindowEvent::Pointer(PointerEvent::LeftButtonReleased { x, y }) => {
             Some(SettingsEvent::PointerReleased { x, y })
         }
-        WindowEvent::Pointer(PointerEvent::Cancelled)
-        | WindowEvent::ContextMenuRequested(_)
+        WindowEvent::Pointer(PointerEvent::Cancelled) => {
+            Some(SettingsEvent::PointerCancelled)
+        }
+        WindowEvent::ContextMenuRequested(_)
         | WindowEvent::ContextMenu(_)
         | WindowEvent::Switcher(_)
         | WindowEvent::Search(_)

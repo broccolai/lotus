@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Instant;
 
 use lotus_core::activation::ActivationDecision;
 use lotus_core::window::WindowId;
@@ -8,6 +9,7 @@ use lotus_windows::WindowHandle;
 use lotus_windows::activation::{ActivationError, execute_activation, foreground_window};
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::assets::SvgAsset;
+use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::window::{DockContextRequest, PopupAlignment, SignedPoint};
 
 use super::projection::{media_source_matches_item, popup_overlap, status_popup_center};
@@ -20,9 +22,13 @@ impl DockRuntime {
         let x = u32::try_from(x).ok()?;
         let y = u32::try_from(y).ok()?;
         let size = self.scene.desired_size();
-        self.scene
+        let started = Instant::now();
+        let target = self
+            .scene
             .layout(size.width(), size.height())
-            .hit_test(x, y)
+            .hit_test(x, y);
+        METRICS.record_layout(LayoutOperation::DockHitTest, started.elapsed());
+        target
     }
 
     pub(in crate::app) fn popup_target_anchor(
@@ -34,7 +40,9 @@ impl DockRuntime {
         };
         let target = self.hit_test(client.x, client.y)?;
         let size = self.scene.desired_size();
+        let started = Instant::now();
         let layout = self.scene.layout(size.width(), size.height());
+        METRICS.record_layout(LayoutOperation::DockPopup, started.elapsed());
         let bounds = match target {
             DockHitTarget::Item(source_index) => layout
                 .items
@@ -264,10 +272,12 @@ impl DockRuntime {
         if let Some(drag) = self.scene.drag() {
             changed |= self.scene.update_drag(x, y);
             let size = self.scene.desired_size();
+            let started = Instant::now();
             let insertion_slot =
                 self.scene.drag_insertion_slot(size.width(), size.height());
             let source_index = drag.source_index;
             let layout = self.scene.layout(size.width(), size.height());
+            METRICS.record_layout(LayoutOperation::DockDrag, started.elapsed());
             let visible_sources = layout
                 .items
                 .iter()

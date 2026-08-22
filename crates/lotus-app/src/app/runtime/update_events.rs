@@ -6,7 +6,7 @@ use lotus_windows::update::{UpdateResult, UpdateStatus, is_installed, launch_ins
 use crate::app::settings::SettingsRuntime;
 
 pub(super) fn start_update_check(settings: &mut SettingsRuntime) {
-    let owner = settings.window.handle();
+    let owner = settings.owner();
     match settings.start_update_check() {
         Ok(true) => {
             settings.invalidate();
@@ -35,7 +35,7 @@ fn handle_update_check(
     result: Result<UpdateStatus, lotus_windows::update::UpdateError>,
     settings: &mut SettingsRuntime,
 ) {
-    let owner = settings.window.handle();
+    let owner = settings.owner();
     let installed = match is_installed() {
         Ok(installed) => installed,
         Err(error) => {
@@ -90,7 +90,7 @@ fn offer_update(
     release: lotus_windows::update::Release,
     installed: bool,
 ) {
-    let owner = settings.window.handle();
+    let owner = settings.owner();
     if !confirm_install_update(owner, &release.version, installed) {
         reset_update_activity(settings);
         return;
@@ -112,7 +112,7 @@ fn handle_staged_update(
     result: Result<lotus_windows::update::StagedUpdate, lotus_windows::update::UpdateError>,
     settings: &mut SettingsRuntime,
 ) {
-    let owner = settings.window.handle();
+    let owner = settings.owner();
     match result {
         Ok(staged) => match launch_installer(&staged) {
             Ok(()) => request_exit(0),
@@ -133,8 +133,6 @@ fn handle_staged_update(
 }
 
 fn reset_update_activity(settings: &mut SettingsRuntime) {
-    let _ = settings
-        .scene
-        .set_update_activity(SettingsUpdateActivity::Idle);
+    settings.set_update_activity(SettingsUpdateActivity::Idle);
     settings.invalidate();
 }

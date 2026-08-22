@@ -7,6 +7,7 @@ use thiserror::Error;
 use tiny_skia::{Pixmap, Transform};
 
 use crate::resource_cache::BoundedResourceCache;
+use crate::responsiveness::CacheClass;
 
 const LOTUS_PIXEL_SVG: &[u8] = include_bytes!("../../assets/ui/lotus-pixel.svg");
 const FLUENT_CALCULATOR_SVG: &[u8] =
@@ -231,7 +232,10 @@ impl SvgAssetCache {
         }
         Ok(Self {
             trees,
-            rasters: BoundedResourceCache::new(SVG_RASTER_CACHE_BYTES),
+            rasters: BoundedResourceCache::new(
+                CacheClass::SvgRasters,
+                SVG_RASTER_CACHE_BYTES,
+            ),
             transient_raster: None,
         })
     }
@@ -244,9 +248,9 @@ impl SvgAssetCache {
     ) -> Result<&RasterImage, AssetError> {
         let tint = asset.is_interface_symbol().then_some(tint);
         let key = (asset, size, tint);
-        if self.rasters.contains(&key) {
+        if let Some(raster) = self.rasters.get(&key) {
             self.transient_raster = None;
-            return self.rasters.get(&key).ok_or(AssetError::CacheInvariant);
+            return Ok(raster);
         }
 
         let tree = self.trees.get(&asset).ok_or(AssetError::CacheInvariant)?;

@@ -12,7 +12,7 @@ use lotus_windows::window::{
     CursorMove as WindowCursorMove, DockWindow, SearchEdit, SearchEvent,
 };
 
-use super::presentation::{resize_dock, resize_launcher_surface};
+use super::presentation::{present_dock_change, resize_launcher_surface};
 use crate::app::launcher::{LauncherRuntime, LauncherSubmission};
 use crate::app::modules::ModuleHost;
 use crate::app::{AppError, DockRuntime};
@@ -24,75 +24,25 @@ pub(super) fn refresh_catalog(
     windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
-) -> Result<(), AppError> {
-    let catalog_changed = auxiliary.launcher.refresh_catalog_if_ready(
-        dock,
-        dock_model,
-        &auxiliary.applications,
-        graphics,
-    )?;
-    let pins_upgraded = dock_model.upgrade_legacy_pins(&auxiliary.applications)?;
+) -> Result<bool, AppError> {
+    let catalog_changed = auxiliary.refresh_catalog(dock, dock_model, graphics)?;
+    let pins_upgraded = dock_model.upgrade_legacy_pins(auxiliary.application_catalog())?;
     let pins_reconciled =
-        dock_model.reconcile_unpinned_pins(windows, &auxiliary.applications)?;
+        dock_model.reconcile_unpinned_pins(windows, auxiliary.application_catalog())?;
     let pins_changed = pins_upgraded || pins_reconciled;
     if !catalog_changed && !pins_changed {
-        return Ok(());
+        return Ok(false);
     }
     if pins_changed {
-        auxiliary
-            .settings
-            .scene
-            .reconcile_application_icon_overrides(dock_model.settings());
-        auxiliary
-            .launcher
-            .apply_settings(dock_model.settings(), dock, graphics)?;
-        auxiliary.context_menu.apply_settings(dock_model.settings());
-        auxiliary.switcher.apply_settings(dock_model.settings());
-        let _changed = auxiliary.media.refresh(dock_model);
+        auxiliary.adapt_to_pin_changes(dock, dock_model, graphics)?;
         dock_model.rebuild(windows);
-        resize_dock(dock, graphics, surface, dock_model)?;
-        surface.invalidate();
-        auxiliary
-            .status
-            .sync(dock, dock_model.settings(), dock_model.media(), graphics)?;
+        present_dock_change(dock, graphics, surface, auxiliary, dock_model)?;
     }
-    refresh_open_application_manager(dock_model, auxiliary);
-    if catalog_changed && let Some(surface) = &mut auxiliary.launcher.surface {
-        surface.invalidate();
+    auxiliary.refresh_open_application_manager(dock_model.items());
+    if catalog_changed {
+        auxiliary.invalidate_launcher_surface();
     }
-    Ok(())
-}
-
-pub(super) fn refresh_open_application_manager(
-    dock_model: &DockRuntime,
-    auxiliary: &mut ModuleHost,
-) {
-    if !auxiliary.settings.visible
-        || auxiliary.settings.scene.page() != lotus_settings::scene::SettingsPage::Apps
-    {
-        return;
-    }
-    let selected = auxiliary
-        .settings
-        .scene
-        .selected_application()
-        .map(|application| application.id.clone());
-    let settings_draft = auxiliary.settings.scene.draft().clone();
-    let applications = super::settings_events::application_records(
-        &auxiliary.applications,
-        dock_model.items(),
-        &settings_draft,
-    );
-    let _ = auxiliary.settings.scene.set_applications(applications);
-    if let Some(selected) = selected {
-        let _ = auxiliary.settings.scene.open_application_manager(&selected);
-    }
-    super::settings_events::hydrate_application_previews(
-        &auxiliary.applications,
-        dock_model.items(),
-        &mut auxiliary.settings,
-    );
-    auxiliary.settings.invalidate();
+    Ok(true)
 }
 
 pub(super) fn drain_search_events(
@@ -100,15 +50,21 @@ pub(super) fn drain_search_events(
     graphics: &mut DeviceState,
     dock_model: &DockRuntime,
     auxiliary: &mut ModuleHost,
-) -> Result<(), AppError> {
-    for event in auxiliary.launcher.drain_events() {
-        if let Some(submission) =
-            handle_search_event(event, dock, graphics, dock_model, &mut auxiliary.launcher)?
-        {
+) -> Result<bool, AppError> {
+    let events = auxiliary.drain_launcher_events();
+    let had_events = !events.is_empty();
+    for event in events {
+        if let Some(submission) = handle_search_event(
+            event,
+            dock,
+            graphics,
+            dock_model,
+            auxiliary.launcher_runtime(),
+        )? {
             execute_search_submission(submission, dock, graphics, dock_model, auxiliary)?;
         }
     }
-    Ok(())
+    Ok(had_events)
 }
 
 pub(crate) fn handle_search_event(
@@ -235,10 +191,7 @@ fn execute_search_command(
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     match command {
-        CommandId::OpenSettings => {
-            auxiliary.settings.open(dock_model.settings(), graphics)?;
-            refresh_open_application_manager(dock_model, auxiliary);
-        }
+        CommandId::OpenSettings => auxiliary.open_settings(dock_model, graphics)?,
         CommandId::OpenVolumeMixer => {
             if let Err(error) = launch_target("sndvol.exe", None) {
                 show_error(

@@ -4,6 +4,7 @@ use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_windows::WindowHandle;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
+use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::window::{
     DockContextRequest, DockWindow, PointerEvent, PopupAlignment, SignedPoint,
     StatusWindow, WindowEvent,
@@ -29,10 +30,16 @@ pub(super) enum MonitorDockAction {
     },
 }
 
+pub(super) struct MonitorDockEventDrain {
+    pub(super) actions: Vec<MonitorDockAction>,
+    pub(super) had_events: bool,
+}
+
 pub(super) struct MonitorDocks {
     docks: Vec<MonitorDock>,
     rendered_revision: u64,
     topology_dirty: bool,
+    topology_generation: u64,
 }
 
 struct MonitorDock {
@@ -43,11 +50,22 @@ struct MonitorDock {
 }
 
 impl MonitorDocks {
+    pub(super) fn owns_window(&self, window: WindowHandle) -> bool {
+        self.docks.iter().any(|dock| dock.window.handle() == window)
+    }
+
+    pub(super) fn has_pending_events(&self) -> bool {
+        self.docks
+            .iter()
+            .any(|dock| dock.window.has_pending_events())
+    }
+
     pub(super) const fn new() -> Self {
         Self {
             docks: Vec::new(),
             rendered_revision: u64::MAX,
             topology_dirty: true,
+            topology_generation: 0,
         }
     }
 
@@ -76,6 +94,27 @@ impl MonitorDocks {
 
     pub(super) fn mark_topology_dirty(&mut self) {
         self.topology_dirty = true;
+        self.topology_generation = self.topology_generation.wrapping_add(1);
+    }
+
+    pub(super) const fn topology_generation(&self) -> u64 {
+        self.topology_generation
+    }
+
+    pub(super) fn replica_count(&self) -> usize {
+        self.docks.len()
+    }
+
+    pub(super) fn diagnostic_surface_masks(&self) -> (bool, bool, bool) {
+        self.docks
+            .iter()
+            .fold((false, false, false), |state, dock| {
+                (
+                    state.0 || dock.surface.is_dirty(),
+                    state.1 || dock.surface.is_animating(),
+                    state.2 || !self.docks.is_empty(),
+                )
+            })
     }
 
     pub(super) fn render_frame(
@@ -114,11 +153,13 @@ impl MonitorDocks {
     pub(super) fn drain_events(
         &mut self,
         graphics: &mut DeviceState,
-    ) -> Result<Vec<MonitorDockAction>, AppError> {
+    ) -> Result<MonitorDockEventDrain, AppError> {
         let mut actions = Vec::new();
         let mut refresh = false;
+        let mut had_events = false;
         for replica in &mut self.docks {
             let events = replica.window.drain_events().collect::<Vec<_>>();
+            had_events |= !events.is_empty();
             for event in events {
                 match event {
                     WindowEvent::Pointer(pointer) => {
@@ -157,9 +198,12 @@ impl MonitorDocks {
             }
         }
         if refresh {
-            self.topology_dirty = true;
+            self.mark_topology_dirty();
         }
-        Ok(actions)
+        Ok(MonitorDockEventDrain {
+            actions,
+            had_events,
+        })
     }
 
     fn recreate(
@@ -259,7 +303,9 @@ impl MonitorDock {
     ) -> Option<SignedPoint> {
         let (x, y) = if let DockHitTarget::SystemStatus(kind) = target {
             let size = self.scene.desired_size();
+            let started = Instant::now();
             let layout = self.scene.layout(size.width(), size.height());
+            METRICS.record_layout(LayoutOperation::MonitorPopup, started.elapsed());
             let bounds = layout
                 .status_items
                 .iter()
@@ -286,7 +332,9 @@ impl MonitorDock {
         };
         let target = hit_test(&self.scene, client.x, client.y)?;
         let size = self.scene.desired_size();
+        let started = Instant::now();
         let layout = self.scene.layout(size.width(), size.height());
+        METRICS.record_layout(LayoutOperation::MonitorPopup, started.elapsed());
         let bounds = match target {
             DockHitTarget::Item(source_index) => layout
                 .items
@@ -364,5 +412,9 @@ fn hit_test(scene: &DockScene, x: i32, y: i32) -> Option<DockHitTarget> {
     let x = u32::try_from(x).ok()?;
     let y = u32::try_from(y).ok()?;
     let size = scene.desired_size();
-    scene.layout(size.width(), size.height()).hit_test(x, y)
+    let started = Instant::now();
+    let target = scene.layout(size.width(), size.height()).hit_test(x, y);
+    METRICS.record_layout(LayoutOperation::MonitorHitTest, started.elapsed());
+    target
 }
+use std::time::Instant;

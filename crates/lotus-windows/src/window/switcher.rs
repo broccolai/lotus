@@ -101,6 +101,10 @@ impl SwitcherWindow {
     pub fn drain_events(&mut self) -> impl Iterator<Item = SwitcherEvent> + '_ {
         self.window.state_mut().drain().filter_map(switcher_event)
     }
+
+    pub fn has_pending_events(&self) -> bool {
+        self.window.state().has_pending_events()
+    }
 }
 
 fn switcher_event(event: WindowEvent) -> Option<SwitcherEvent> {
