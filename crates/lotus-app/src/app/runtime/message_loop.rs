@@ -74,6 +74,13 @@ pub(crate) fn flush_frame(
     }
 
     dock.set_animation_active(pass.animation_active())?;
+    let mascot_visible = (dock.is_visible() && !dock.is_fullscreen_occluded())
+        || auxiliary.has_visible_monitor_dock();
+    dock.set_mascot_animation_delay(
+        mascot_visible
+            .then(|| dock_model.mascot_animation_delay())
+            .flatten(),
+    )?;
     Ok(())
 }
 

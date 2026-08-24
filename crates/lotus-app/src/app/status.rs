@@ -221,6 +221,7 @@ impl StatusRuntime {
             WindowEvent::DpiChanged { dpi } => (None, zone.scene.set_dpi(dpi)),
             WindowEvent::RenderRequested => (None, true),
             WindowEvent::AnimationFrame
+            | WindowEvent::MascotAnimationDeadline
             | WindowEvent::PlacementRefreshRequested
             | WindowEvent::ContextMenuRequested(_)
             | WindowEvent::Search(_)

@@ -131,6 +131,7 @@ fn switcher_event(event: WindowEvent) -> Option<SwitcherEvent> {
         | WindowEvent::Settings(_)
         | WindowEvent::ContextMenu(_)
         | WindowEvent::AnimationFrame
+        | WindowEvent::MascotAnimationDeadline
         | WindowEvent::StatusRefreshRequested => None,
     }
 }

@@ -259,16 +259,6 @@ pub(in crate::app) fn metrics(settings: &DockSettings) -> Result<DockMetrics, Ap
     .ok_or(AppError::InvalidScene)
 }
 
-pub(in crate::app) fn mascot(settings: &DockSettings) -> DockIcon {
-    settings
-        .mascot_image_path
-        .as_deref()
-        .and_then(|path| {
-            lotus_windows::custom_image::load_custom_image(Path::new(path)).ok()
-        })
-        .map_or(DockIcon::Embedded(SvgAsset::LotusPixel), DockIcon::Raster)
-}
-
 pub(in crate::app) const fn dock_anchor(zone: DockZone) -> DockAnchor {
     match zone {
         DockZone::Left => DockAnchor::Left,

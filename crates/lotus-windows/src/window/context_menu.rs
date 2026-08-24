@@ -150,6 +150,7 @@ fn context_event_from_window_event(event: WindowEvent) -> Option<ContextMenuEven
         | WindowEvent::Switcher(_)
         | WindowEvent::PlacementRefreshRequested
         | WindowEvent::AnimationFrame
+        | WindowEvent::MascotAnimationDeadline
         | WindowEvent::StatusRefreshRequested => None,
     }
 }

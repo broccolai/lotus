@@ -134,6 +134,7 @@ fn settings_event_from_window_event(event: WindowEvent) -> Option<SettingsEvent>
         | WindowEvent::Search(_)
         | WindowEvent::PlacementRefreshRequested
         | WindowEvent::AnimationFrame
+        | WindowEvent::MascotAnimationDeadline
         | WindowEvent::StatusRefreshRequested => None,
     }
 }

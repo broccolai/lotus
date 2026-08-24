@@ -3,8 +3,9 @@ use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows::Win32::UI::WindowsAndMessaging::{WM_PAINT, WM_TIMER};
 
 use super::{
-    ANIMATION_TIMER, DOCK_STATUS_TIMER, SEARCH_CLOCK_TIMER, SEARCH_FOCUS_TIMER,
-    WindowEvent, is_dock_window, is_search_window, push_window_event, with_window_state,
+    ANIMATION_TIMER, DOCK_STATUS_TIMER, MASCOT_ANIMATION_TIMER, SEARCH_CLOCK_TIMER,
+    SEARCH_FOCUS_TIMER, WindowEvent, is_dock_window, is_search_window, push_window_event,
+    with_window_state,
 };
 
 pub(super) fn dispatch_timer(hwnd: HWND, message: u32, wparam: WPARAM) -> Option<LRESULT> {
@@ -17,6 +18,12 @@ pub(super) fn dispatch_timer(hwnd: HWND, message: u32, wparam: WPARAM) -> Option
         if active {
             push_window_event(hwnd, WindowEvent::AnimationFrame);
         }
+        return Some(LRESULT(0));
+    }
+    if MASCOT_ANIMATION_TIMER.matches(wparam.0) && is_dock_window(hwnd) {
+        with_window_state(hwnd, |state| state.mascot_animation_delay_ms.set(None));
+        MASCOT_ANIMATION_TIMER.stop(hwnd);
+        push_window_event(hwnd, WindowEvent::MascotAnimationDeadline);
         return Some(LRESULT(0));
     }
     if DOCK_STATUS_TIMER.matches(wparam.0) && is_dock_window(hwnd) {

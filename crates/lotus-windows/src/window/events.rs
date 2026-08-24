@@ -10,6 +10,7 @@ pub enum WindowEvent {
     ContextMenu(ContextMenuEvent),
     Switcher(SwitcherEvent),
     AnimationFrame,
+    MascotAnimationDeadline,
     StatusRefreshRequested,
     RenderRequested,
 }

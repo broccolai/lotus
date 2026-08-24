@@ -15,13 +15,14 @@ use lotus_dock::model::{DockModel, SettingsImpact};
 use lotus_dock::scene::DockPresenter;
 use lotus_media::MediaSnapshot;
 use lotus_settings::appearance::theme_for;
-use lotus_windows::custom_image::CustomImageCache;
+use lotus_windows::custom_image::{
+    CustomImageCache, MascotAnimation, MascotLoopCount, load_mascot_image,
+};
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::media::decode_artwork;
 use lotus_windows::native_icon::NativeIconCache;
 use projection::{
-    departure_transition, docked_status_items, mascot, media_source_matches_item,
-    projected_items,
+    departure_transition, docked_status_items, media_source_matches_item, projected_items,
 };
 pub(super) use projection::{
     dock_anchor, metrics, popup_overlap, status_items, status_popup_center,
@@ -49,6 +50,13 @@ pub(super) struct DockRuntime {
     transient_unpinned: HashMap<String, (usize, DockItem)>,
     revision: u64,
     presenter: DockPresenter,
+    mascot_animation: Option<MascotPlayback>,
+}
+
+struct MascotPlayback {
+    animation: MascotAnimation,
+    frame_index: usize,
+    completed_loops: u32,
 }
 
 impl DockRuntime {
@@ -78,7 +86,9 @@ impl DockRuntime {
             transient_unpinned: HashMap::new(),
             revision: 0,
             presenter: DockPresenter::default(),
+            mascot_animation: None,
         };
+        runtime.reset_mascot_animation();
         runtime.refresh_scene_items();
         Ok(runtime)
     }
@@ -88,7 +98,12 @@ impl DockRuntime {
         settings: &DockSettings,
         metrics: DockMetrics,
     ) -> Option<DockScene> {
-        let mut scene = DockScene::new(dpi, metrics, mascot(settings), Vec::new())?;
+        let mut scene = DockScene::new(
+            dpi,
+            metrics,
+            DockIcon::Embedded(SvgAsset::LotusPixel),
+            Vec::new(),
+        )?;
         scene.set_anchor(dock_anchor(settings.dock_zone));
         scene.set_launcher_button_visible(settings.show_app_dock);
         let _ = scene.set_theme(theme_for(settings));
@@ -223,6 +238,7 @@ impl DockRuntime {
             }
             scene.replace_status_items(docked_status_items(self.model.settings()));
             self.scene = scene;
+            self.reset_mascot_animation();
             self.refresh_scene_items();
         }
         Ok(impact)
@@ -254,6 +270,48 @@ impl DockRuntime {
 
     pub(super) fn media(&self) -> Option<&MediaItem> {
         self.media.as_ref()
+    }
+
+    pub(super) fn mascot_animation_delay(&self) -> Option<Duration> {
+        self.mascot_animation
+            .as_ref()
+            .map(|playback| playback.animation.frames[playback.frame_index].delay)
+    }
+
+    pub(super) fn advance_mascot_animation(&mut self) -> bool {
+        let Some(playback) = &mut self.mascot_animation else {
+            return false;
+        };
+        let Some(frame_index) = advance_mascot_playback(playback) else {
+            self.mascot_animation = None;
+            return false;
+        };
+        self.scene.set_mascot(DockIcon::Raster(
+            playback.animation.frames[frame_index].icon.clone(),
+        ));
+        self.mark_changed();
+        true
+    }
+
+    fn reset_mascot_animation(&mut self) {
+        let mascot = self
+            .model
+            .settings()
+            .mascot_image_path
+            .as_deref()
+            .and_then(|path| load_mascot_image(Path::new(path)).ok());
+        if let Some(mascot) = mascot {
+            self.scene.set_mascot(DockIcon::Raster(mascot.icon));
+            self.mascot_animation = mascot.animation.map(|animation| MascotPlayback {
+                animation,
+                frame_index: 0,
+                completed_loops: 0,
+            });
+        } else {
+            self.scene
+                .set_mascot(DockIcon::Embedded(SvgAsset::LotusPixel));
+            self.mascot_animation = None;
+        }
     }
 
     fn media_item(&mut self, snapshot: &MediaSnapshot) -> MediaItem {
@@ -307,4 +365,19 @@ impl DockRuntime {
                 .map(DockIcon::Raster)
         })
     }
+}
+
+fn advance_mascot_playback(playback: &mut MascotPlayback) -> Option<usize> {
+    let next = playback.frame_index + 1;
+    if next < playback.animation.frames.len() {
+        playback.frame_index = next;
+        return Some(next);
+    }
+    if matches!(playback.animation.loop_count, MascotLoopCount::Finite(count) if playback.completed_loops + 1 >= count)
+    {
+        return None;
+    }
+    playback.frame_index = 0;
+    playback.completed_loops = playback.completed_loops.saturating_add(1);
+    Some(0)
 }

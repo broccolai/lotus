@@ -105,6 +105,12 @@ impl MonitorDocks {
         self.docks.len()
     }
 
+    pub(super) fn has_visible_dock(&self) -> bool {
+        self.docks
+            .iter()
+            .any(|dock| dock.window.is_visible() && !dock.window.is_fullscreen_occluded())
+    }
+
     pub(super) fn diagnostic_surface_masks(&self) -> (bool, bool, bool) {
         self.docks
             .iter()
@@ -189,6 +195,7 @@ impl MonitorDocks {
                         replica.surface.invalidate();
                     }
                     WindowEvent::AnimationFrame
+                    | WindowEvent::MascotAnimationDeadline
                     | WindowEvent::StatusRefreshRequested
                     | WindowEvent::Search(_)
                     | WindowEvent::Settings(_)

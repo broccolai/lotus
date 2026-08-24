@@ -251,6 +251,13 @@ impl DockWindow {
             .set_animation_active(self.hwnd(), active)
     }
 
+    pub fn set_mascot_animation_delay(
+        &self,
+        delay: Option<std::time::Duration>,
+    ) -> Result<()> {
+        super::procedure::set_dock_mascot_animation_delay(self.hwnd(), delay)
+    }
+
     pub fn set_status_refresh_active(&self, active: bool) -> Result<()> {
         super::procedure::set_dock_status_timer(self.hwnd(), active)
     }

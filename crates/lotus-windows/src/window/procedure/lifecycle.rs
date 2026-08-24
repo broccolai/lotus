@@ -192,6 +192,7 @@ fn apply_configured_region(hwnd: HWND) {
 fn stop_animation_timer(hwnd: HWND) {
     with_window_state(hwnd, |state| {
         let _ = state.set_animation_active(hwnd, false);
+        let _ = state.set_mascot_animation_delay(hwnd, None);
     });
 }
 fn size_from_lparam(lparam: LPARAM) -> (u32, u32) {

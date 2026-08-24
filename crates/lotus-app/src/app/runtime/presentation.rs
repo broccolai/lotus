@@ -43,9 +43,18 @@ pub(super) fn sync_monitor_presentation(
 ) -> Result<(), AppError> {
     auxiliary.sync_monitor_docks(dock, dock_model, graphics, window_tracker)?;
     if runtime.onboarding_required {
+        dock.set_mascot_animation_delay(None)?;
         return Ok(());
     }
-    apply_fullscreen_visibility(dock, surface, window_tracker, dock_model, auxiliary)
+    apply_fullscreen_visibility(dock, surface, window_tracker, dock_model, auxiliary)?;
+    let mascot_visible = (dock.is_visible() && !dock.is_fullscreen_occluded())
+        || auxiliary.has_visible_monitor_dock();
+    dock.set_mascot_animation_delay(
+        mascot_visible
+            .then(|| dock_model.mascot_animation_delay())
+            .flatten(),
+    )?;
+    Ok(())
 }
 
 pub(crate) fn apply_fullscreen_visibility(

@@ -143,6 +143,7 @@ fn search_event_from_window_event(event: WindowEvent) -> Option<SearchEvent> {
         | WindowEvent::Switcher(_)
         | WindowEvent::PlacementRefreshRequested
         | WindowEvent::AnimationFrame
+        | WindowEvent::MascotAnimationDeadline
         | WindowEvent::StatusRefreshRequested => None,
     }
 }

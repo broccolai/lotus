@@ -239,6 +239,10 @@ impl StatusWindow {
         self.fullscreen_occluded.get()
     }
 
+    pub fn is_visible(&self) -> bool {
+        self.window.is_visible()
+    }
+
     pub fn drain_events(&mut self) -> impl Iterator<Item = WindowEvent> + '_ {
         self.window.state_mut().drain()
     }

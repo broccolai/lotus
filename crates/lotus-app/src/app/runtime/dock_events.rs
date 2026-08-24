@@ -67,6 +67,14 @@ pub(super) fn handle_window_event(
                 resize_dock(dock, graphics, surface, dock_model)?;
             }
         }
+        WindowEvent::MascotAnimationDeadline => {
+            if dock_model.advance_mascot_animation()
+                && dock.is_visible()
+                && !dock.is_fullscreen_occluded()
+            {
+                surface.invalidate();
+            }
+        }
         WindowEvent::StatusRefreshRequested => {
             if dock_model.refresh_status() {
                 surface.invalidate();

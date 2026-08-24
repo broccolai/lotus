@@ -262,6 +262,10 @@ impl ModuleHost {
         self.monitors.replica_count()
     }
 
+    pub(super) fn has_visible_monitor_dock(&self) -> bool {
+        self.monitors.has_visible_dock()
+    }
+
     pub(super) fn diagnostic_surface_masks(&self) -> (u32, u32, u32) {
         let states = [
             self.launcher.diagnostic_surface_state(),

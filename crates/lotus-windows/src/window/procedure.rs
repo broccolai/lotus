@@ -29,6 +29,7 @@ type Result<T> = std::result::Result<T, NativeError>;
 
 pub(super) use crate::messages::SEARCH_OUTSIDE_CLICK as SEARCH_OUTSIDE_CLICK_MESSAGE;
 pub(super) const ANIMATION_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5455, 16);
+pub(super) const MASCOT_ANIMATION_TIMER: WindowTimer = WindowTimer::new(0x4C4F_544D, 1);
 pub(super) const DOCK_STATUS_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5453, 30_000);
 pub(super) const SEARCH_CLOCK_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5443, 30_000);
 pub(super) const SEARCH_FOCUS_TIMER: WindowTimer = WindowTimer::new(0x4C4F_5446, 50);
@@ -53,6 +54,7 @@ pub struct WindowState {
     pub(super) tracking_mouse_leave: Cell<bool>,
     pub(super) left_button_pressed: Cell<bool>,
     pub(super) animation_active: Cell<bool>,
+    pub(super) mascot_animation_delay_ms: Cell<Option<u32>>,
     pub(super) pending_high_surrogate: Cell<Option<u16>>,
     pub(super) pointer_cursor: Cell<PointerCursor>,
     pub(super) kind: WindowKind,
@@ -124,6 +126,25 @@ impl WindowState {
             self.animation_active.set(false);
             ANIMATION_TIMER.stop(hwnd);
         }
+        Ok(())
+    }
+
+    pub fn set_mascot_animation_delay(
+        &self,
+        hwnd: HWND,
+        delay: Option<std::time::Duration>,
+    ) -> Result<()> {
+        let delay =
+            delay.map(|delay| u32::try_from(delay.as_millis()).unwrap_or(u32::MAX).max(1));
+        if self.mascot_animation_delay_ms.get() == delay {
+            return Ok(());
+        }
+        if let Some(delay) = delay {
+            MASCOT_ANIMATION_TIMER.start_with_interval(hwnd, delay)?;
+        } else {
+            MASCOT_ANIMATION_TIMER.stop(hwnd);
+        }
+        self.mascot_animation_delay_ms.set(delay);
         Ok(())
     }
 }
@@ -232,6 +253,16 @@ pub fn set_dock_status_timer(hwnd: HWND, active: bool) -> Result<()> {
         DOCK_STATUS_TIMER.stop(hwnd);
         Ok(())
     }
+}
+pub fn set_dock_mascot_animation_delay(
+    hwnd: HWND,
+    delay: Option<std::time::Duration>,
+) -> Result<()> {
+    let mut result = Ok(());
+    with_window_state(hwnd, |state| {
+        result = state.set_mascot_animation_delay(hwnd, delay);
+    });
+    result
 }
 pub fn stop_search_clock_timer(hwnd: HWND) {
     SEARCH_CLOCK_TIMER.stop(hwnd);

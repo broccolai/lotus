@@ -19,7 +19,15 @@ impl WindowTimer {
     }
 
     pub(crate) fn start(self, hwnd: HWND) -> Result<(), NativeError> {
-        if unsafe { SetTimer(Some(hwnd), self.id, self.interval_ms, None) } == 0 {
+        self.start_with_interval(hwnd, self.interval_ms)
+    }
+
+    pub(crate) fn start_with_interval(
+        self,
+        hwnd: HWND,
+        interval_ms: u32,
+    ) -> Result<(), NativeError> {
+        if unsafe { SetTimer(Some(hwnd), self.id, interval_ms, None) } == 0 {
             return Err(windows::core::Error::from_thread().into());
         }
         Ok(())
