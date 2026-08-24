@@ -129,10 +129,14 @@ impl SettingsScene {
             });
         }
         for (control, relative_top) in content.controls {
-            let top = if control == SettingsControl::ReplaySetup {
-                HEIGHT_DIP - FOOTER_HEIGHT_DIP - ROW_HEIGHT_DIP - 22
-            } else {
-                CONTENT_TOP_DIP.saturating_add(relative_top)
+            let top = match control {
+                SettingsControl::RestartIntegration => {
+                    HEIGHT_DIP - FOOTER_HEIGHT_DIP - 2 * ROW_HEIGHT_DIP - ROW_GAP_DIP - 22
+                }
+                SettingsControl::ReplaySetup => {
+                    HEIGHT_DIP - FOOTER_HEIGHT_DIP - ROW_HEIGHT_DIP - 22
+                }
+                _ => CONTENT_TOP_DIP.saturating_add(relative_top),
             };
             let bounds = self.page_control_bounds(control, top, content_width);
             controls.push(SettingsControlLayout { control, bounds });
@@ -278,7 +282,10 @@ impl SettingsScene {
                 }
                 controls
             }
-            SettingsPage::About => vec![SettingsControl::ReplaySetup],
+            SettingsPage::About => vec![
+                SettingsControl::RestartIntegration,
+                SettingsControl::ReplaySetup,
+            ],
             SettingsPage::Taskbar | SettingsPage::Status | SettingsPage::Search => self
                 .page_groups()
                 .into_iter()

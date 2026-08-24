@@ -69,6 +69,12 @@ pub(super) fn dispatch(
             Some(LRESULT(0))
         }
         WM_DPICHANGED => Some(apply_dpi_change(hwnd, wparam, lparam)),
+        message
+            if is_dock_window(hwnd)
+                && crate::appbar::queue_taskbar_created_recovery(hwnd, message) =>
+        {
+            Some(LRESULT(0))
+        }
         message if is_dock_window(hwnd) && requests_placement_refresh(message, wparam) => {
             push_window_event(hwnd, WindowEvent::PlacementRefreshRequested);
             Some(LRESULT(0))

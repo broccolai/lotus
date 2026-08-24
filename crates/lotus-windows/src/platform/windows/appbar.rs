@@ -1,4 +1,5 @@
 use std::mem::size_of;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use lotus_core::fullscreen::ScreenRect;
 use lotus_core::settings::DockSettings;
@@ -13,9 +14,9 @@ use windows::Win32::UI::Shell::{
     APPBARDATA, DefSubclassProc, RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, PostThreadMessageW, RegisterWindowMessageW,
-    SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WINDOW_EX_STYLE, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_POPUP,
+    CreateWindowExW, DestroyWindow, PostMessageW, PostThreadMessageW,
+    RegisterWindowMessageW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WINDOW_EX_STYLE,
+    WM_NULL, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::core::w;
 
@@ -26,6 +27,33 @@ use crate::messages::FULLSCREEN_NOTIFICATION as FULLSCREEN_NOTIFICATION_MESSAGE;
 use crate::taskbar_state::{TaskbarStateError, TaskbarStateGuard};
 use crate::window::{AppBarLayout, DockWindow};
 const RESERVATION_SUBCLASS_ID: usize = 0x4C4F_5455;
+static TASKBAR_CREATED_MESSAGE: AtomicU32 = AtomicU32::new(0);
+static RECOVERY_QUEUED: AtomicBool = AtomicBool::new(false);
+static RECOVERY_WAKE_FAILED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShellIntegrationHealth {
+    Disabled,
+    Healthy,
+    Degraded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShellRecoverySource {
+    Startup,
+    TaskbarCreated,
+    Settings,
+}
+
+impl ShellRecoverySource {
+    const fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::Startup => "startup",
+            Self::TaskbarCreated => "taskbar_created",
+            Self::Settings => "settings",
+        }
+    }
+}
 
 pub fn fullscreen_notification(
     is_thread_message: bool,
@@ -58,53 +86,314 @@ impl From<windows::core::Error> for ShellIntegrationError {
     }
 }
 
+impl ShellIntegrationError {
+    fn recovery_stage(&self) -> &'static str {
+        match self {
+            Self::Taskbar(_) | Self::ExclusiveTaskbar(_) => "taskbar_ownership",
+            Self::AppBarRejected("ABM_REMOVE") => "appbar_release",
+            Self::Native(_)
+            | Self::Geometry(_)
+            | Self::AppBarRejected(_)
+            | Self::CallbackRegistration => "appbar_setup",
+        }
+    }
+}
+
 pub struct ShellIntegration {
-    appbar: AppBarController,
-    taskbar: Option<TaskbarOwnership>,
+    taskbar_created_message: u32,
+    recovery_enabled: bool,
+    active: Option<ActiveShellIntegration>,
+    health: ShellIntegrationHealth,
 }
 
 impl ShellIntegration {
-    pub fn setup(
-        settings: &DockSettings,
-        dock: &DockWindow,
-    ) -> Result<Option<Self>, ShellIntegrationError> {
-        if !settings.replace_windows_taskbar {
-            return Ok(None);
+    pub fn new(settings: &DockSettings, dock: &DockWindow, enabled: bool) -> Self {
+        let taskbar_created_message = register_taskbar_created_message();
+        let mut integration = Self {
+            taskbar_created_message,
+            recovery_enabled: enabled,
+            active: None,
+            health: ShellIntegrationHealth::Disabled,
+        };
+        if enabled {
+            integration.recover(settings, dock, ShellRecoverySource::Startup);
+        }
+        integration
+    }
+
+    pub const fn health(&self) -> ShellIntegrationHealth {
+        self.health
+    }
+
+    pub fn take_recovery_request(&self, is_thread_message: bool, message: u32) -> bool {
+        let private_wake =
+            is_thread_message && message == crate::messages::SHELL_INTEGRATION_RECOVERY;
+        let wake_failed = RECOVERY_WAKE_FAILED.swap(false, Ordering::AcqRel);
+        if !private_wake && !wake_failed {
+            return false;
+        }
+        if wake_failed {
+            crate::diagnostics::record_diagnostic(
+                "shell_integration.recovery_wake_failed",
+                "the private thread wake failed; recovery resumed on the fallback window wake",
+            );
         }
 
+        let queued = RECOVERY_QUEUED.swap(false, Ordering::AcqRel);
+        self.recovery_enabled && queued
+    }
+
+    pub fn recover(
+        &mut self,
+        settings: &DockSettings,
+        dock: &DockWindow,
+        source: ShellRecoverySource,
+    ) {
+        if self.taskbar_created_message == 0 {
+            self.taskbar_created_message = register_taskbar_created_message();
+        }
+        crate::diagnostics::record_diagnostic(
+            "shell_integration.recovery_requested",
+            &format!("source={}", source.diagnostic_name()),
+        );
+
+        if !settings.replace_windows_taskbar {
+            if self.active.is_none() {
+                self.health = ShellIntegrationHealth::Disabled;
+                crate::diagnostics::record_diagnostic(
+                    "shell_integration.recovery_succeeded",
+                    &format!("source={} health=disabled", source.diagnostic_name()),
+                );
+            } else {
+                self.health = ShellIntegrationHealth::Degraded;
+                crate::diagnostics::record_diagnostic(
+                    "shell_integration.recovery_degraded",
+                    &format!(
+                        "source={} stage=configuration_mismatch",
+                        source.diagnostic_name()
+                    ),
+                );
+            }
+            return;
+        }
+
+        if self.active.is_none() {
+            match ActiveShellIntegration::start(settings, dock) {
+                Ok(active) => self.active = Some(active),
+                Err(error) => {
+                    self.record_recovery_failure(source, &error);
+                    return;
+                }
+            }
+        }
+        let outcome = self
+            .active
+            .as_mut()
+            .expect("active shell integration was initialized above")
+            .recover(settings, dock, source);
+        match outcome {
+            Ok(active_healthy) => {
+                self.health = if self.taskbar_created_message != 0 && active_healthy {
+                    ShellIntegrationHealth::Healthy
+                } else {
+                    ShellIntegrationHealth::Degraded
+                };
+                crate::diagnostics::record_diagnostic(
+                    "shell_integration.recovery_succeeded",
+                    &format!(
+                        "source={} health={}",
+                        source.diagnostic_name(),
+                        health_name(self.health)
+                    ),
+                );
+                if self.health == ShellIntegrationHealth::Degraded {
+                    crate::diagnostics::record_diagnostic(
+                        "shell_integration.recovery_degraded",
+                        &format!("source={} health=degraded", source.diagnostic_name()),
+                    );
+                }
+            }
+            Err(error) => {
+                self.record_recovery_failure(source, &error);
+            }
+        }
+    }
+
+    fn record_recovery_failure(
+        &mut self,
+        source: ShellRecoverySource,
+        error: &ShellIntegrationError,
+    ) {
+        self.health = ShellIntegrationHealth::Degraded;
+        crate::diagnostics::record_error("shell_integration.recovery_degraded", error);
+        crate::diagnostics::record_diagnostic(
+            "shell_integration.recovery_failed",
+            &format!(
+                "source={} stage={}",
+                source.diagnostic_name(),
+                error.recovery_stage()
+            ),
+        );
+    }
+}
+
+fn register_taskbar_created_message() -> u32 {
+    let registered = TASKBAR_CREATED_MESSAGE.load(Ordering::Acquire);
+    if registered != 0 {
+        return registered;
+    }
+
+    let registered = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
+    if registered != 0 {
+        let _ = TASKBAR_CREATED_MESSAGE.compare_exchange(
+            0,
+            registered,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+    TASKBAR_CREATED_MESSAGE.load(Ordering::Acquire)
+}
+
+pub(crate) fn queue_taskbar_created_recovery(hwnd: HWND, message: u32) -> bool {
+    let taskbar_created = TASKBAR_CREATED_MESSAGE.load(Ordering::Acquire);
+    if taskbar_created == 0 || message != taskbar_created {
+        return false;
+    }
+    if RECOVERY_QUEUED.swap(true, Ordering::AcqRel) {
+        return true;
+    }
+
+    let thread_id = unsafe { GetCurrentThreadId() };
+    if unsafe {
+        PostThreadMessageW(
+            thread_id,
+            crate::messages::SHELL_INTEGRATION_RECOVERY,
+            WPARAM(0),
+            LPARAM(0),
+        )
+    }
+    .is_err()
+    {
+        RECOVERY_WAKE_FAILED.store(true, Ordering::Release);
+        let _ = unsafe { PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0)) };
+    }
+    true
+}
+
+struct ActiveShellIntegration {
+    appbar: Option<AppBarController>,
+    taskbar: Option<TaskbarOwnership>,
+    taskbar_needs_refresh: bool,
+}
+
+impl ActiveShellIntegration {
+    fn start(
+        settings: &DockSettings,
+        dock: &DockWindow,
+    ) -> Result<Self, ShellIntegrationError> {
         let taskbar = if settings.exclusive_taskbar_replacement {
+            let bridge = ExplorerBridgeLease::attach(dock.hwnd());
+            if bridge.is_none() {
+                crate::diagnostics::record_diagnostic(
+                    "shell_integration.bridge_attachment_failed",
+                    "mode=exclusive",
+                );
+            }
             TaskbarOwnership::Exclusive {
-                _bridge: ExplorerBridgeLease::attach(dock.hwnd()),
+                bridge,
                 _guard: ExclusiveTaskbarGuard::start()?,
             }
         } else {
             TaskbarOwnership::Autohide {
-                _guard: TaskbarStateGuard::enable_autohide()?,
+                guard: TaskbarStateGuard::enable_autohide()?,
             }
         };
-        let appbar = AppBarController::register(dock, settings)?;
-        Ok(Some(Self {
-            appbar,
+        let taskbar_needs_refresh = !taskbar.is_healthy();
+        Ok(Self {
+            appbar: None,
             taskbar: Some(taskbar),
-        }))
+            taskbar_needs_refresh,
+        })
     }
-}
 
-impl Drop for ShellIntegration {
-    fn drop(&mut self) {
-        self.appbar.remove();
-        let _ = self.taskbar.take();
+    fn is_healthy(&self) -> bool {
+        self.taskbar
+            .as_ref()
+            .is_some_and(TaskbarOwnership::is_healthy)
+    }
+
+    fn recover(
+        &mut self,
+        settings: &DockSettings,
+        dock: &DockWindow,
+        source: ShellRecoverySource,
+    ) -> Result<bool, ShellIntegrationError> {
+        if let Some(appbar) = self.appbar.as_mut() {
+            appbar.release_for_recovery(source)?;
+            drop(self.appbar.take());
+            self.taskbar_needs_refresh = true;
+        }
+        let ownership_healthy = if self.taskbar_needs_refresh {
+            let healthy = self
+                .taskbar
+                .as_mut()
+                .map_or(Ok(false), |taskbar| taskbar.refresh(dock))?;
+            self.taskbar_needs_refresh = !healthy;
+            healthy
+        } else {
+            self.is_healthy()
+        };
+        self.appbar = Some(AppBarController::register(dock, settings)?);
+        Ok(ownership_healthy)
     }
 }
 
 enum TaskbarOwnership {
     Autohide {
-        _guard: TaskbarStateGuard,
+        guard: TaskbarStateGuard,
     },
     Exclusive {
-        _bridge: Option<ExplorerBridgeLease>,
+        bridge: Option<ExplorerBridgeLease>,
         _guard: ExclusiveTaskbarGuard,
     },
+}
+
+impl TaskbarOwnership {
+    const fn is_healthy(&self) -> bool {
+        match self {
+            Self::Autohide { .. } => true,
+            Self::Exclusive { bridge, .. } => bridge.is_some(),
+        }
+    }
+
+    fn refresh(&mut self, dock: &DockWindow) -> Result<bool, ShellIntegrationError> {
+        match self {
+            Self::Autohide { guard } => {
+                guard.ensure_autohide()?;
+                Ok(true)
+            }
+            Self::Exclusive { bridge, .. } => {
+                drop(bridge.take());
+                *bridge = ExplorerBridgeLease::attach(dock.hwnd());
+                if bridge.is_none() {
+                    crate::diagnostics::record_diagnostic(
+                        "shell_integration.bridge_attachment_failed",
+                        "mode=exclusive",
+                    );
+                }
+                Ok(bridge.is_some())
+            }
+        }
+    }
+}
+
+const fn health_name(health: ShellIntegrationHealth) -> &'static str {
+    match health {
+        ShellIntegrationHealth::Disabled => "disabled",
+        ShellIntegrationHealth::Healthy => "healthy",
+        ShellIntegrationHealth::Degraded => "degraded",
+    }
 }
 
 struct AppBarController {
@@ -155,13 +444,27 @@ impl AppBarController {
         Ok(negotiated)
     }
 
-    fn remove(&mut self) {
+    fn release_for_recovery(
+        &mut self,
+        source: ShellRecoverySource,
+    ) -> Result<(), ShellIntegrationError> {
+        if source == ShellRecoverySource::TaskbarCreated {
+            self.registered = false;
+            return Ok(());
+        }
+        self.remove()
+    }
+
+    fn remove(&mut self) -> Result<(), ShellIntegrationError> {
         if !self.registered {
-            return;
+            return Ok(());
         }
         let mut data = appbar_data(self.reservation.hwnd());
-        let _ = unsafe { SHAppBarMessage(ABM_REMOVE, &raw mut data) };
+        if unsafe { SHAppBarMessage(ABM_REMOVE, &raw mut data) } == 0 {
+            return Err(ShellIntegrationError::AppBarRejected("ABM_REMOVE"));
+        }
         self.registered = false;
+        Ok(())
     }
 }
 
@@ -282,7 +585,7 @@ unsafe extern "system" fn reservation_subclass_proc(
 
 impl Drop for AppBarController {
     fn drop(&mut self) {
-        self.remove();
+        let _ = self.remove();
     }
 }
 

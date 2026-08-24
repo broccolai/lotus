@@ -11,3 +11,4 @@ pub(crate) const WINDOW_TRACKER_REFRESH: u32 = WM_APP + 0x4CE;
 pub(crate) const INPUT_WAKE: u32 = WM_APP + 0x4CF;
 pub(crate) const INPUT_REPLAY: u32 = WM_APP + 0x4D0;
 pub(crate) const ICON_HYDRATION_WAKE: u32 = WM_APP + 0x4D1;
+pub(crate) const SHELL_INTEGRATION_RECOVERY: u32 = WM_APP + 0x4D2;

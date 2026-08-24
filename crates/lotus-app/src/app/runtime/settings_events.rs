@@ -1,6 +1,7 @@
 use lotus_core::settings::DockSettings;
 use lotus_settings::scene::SettingsAction;
 use lotus_ui::frame::ScheduledSurface;
+use lotus_windows::appbar::{ShellIntegration, ShellRecoverySource};
 use lotus_windows::clipboard::read_text;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
@@ -25,6 +26,7 @@ pub(super) struct SettingsEventContext<'a> {
     pub(super) window_tracker: &'a WindowTracker,
     pub(super) dock_model: &'a mut DockRuntime,
     pub(super) auxiliary: &'a mut ModuleHost,
+    pub(super) shell_integration: &'a mut ShellIntegration,
 }
 
 pub(super) fn handle_settings_event(
@@ -232,6 +234,14 @@ fn apply_settings_action(
         }
         SettingsAction::CheckForUpdates => {
             update_events::start_update_check(context.auxiliary.settings_runtime());
+            Ok(())
+        }
+        SettingsAction::RestartIntegration => {
+            context.shell_integration.recover(
+                context.dock_model.settings(),
+                context.dock,
+                ShellRecoverySource::Settings,
+            );
             Ok(())
         }
         SettingsAction::ReplaySetup => context.auxiliary.open_onboarding(

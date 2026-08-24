@@ -9,7 +9,7 @@ use lotus_windows::window_tracker::WindowTracker;
 
 use crate::app::modules::ModuleHost;
 use crate::app::visuals::surface_size;
-use crate::app::{AppError, DockRuntime, RuntimePolicy};
+use crate::app::{AppError, DockRuntime, RuntimeServices};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct MonitorPresentationKey {
@@ -33,7 +33,7 @@ pub(super) fn monitor_presentation_key(
 }
 
 pub(super) fn sync_monitor_presentation(
-    runtime: &RuntimePolicy<'_>,
+    runtime: &RuntimeServices<'_>,
     dock: &DockWindow,
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
     graphics: &mut DeviceState,

@@ -210,8 +210,11 @@ impl DockRuntime {
         &mut self,
     ) -> (lotus_ui::presentation::Presentation<SvgAsset>, bool) {
         let size = self.scene.desired_size();
-        self.presenter
-            .present(&self.scene, size.width(), size.height())
+        let departure_pending = self.exit_deadline.is_some();
+        let (presentation, needs_animation) =
+            self.presenter
+                .present(&self.scene, size.width(), size.height());
+        (presentation, needs_animation || departure_pending)
     }
 
     pub(super) fn apply_settings(

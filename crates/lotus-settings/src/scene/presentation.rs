@@ -323,6 +323,14 @@ impl SettingsScene {
                 self.update_activity() == SettingsUpdateActivity::Idle,
                 false,
             ),
+            SettingsControl::RestartIntegration => self.present_button(
+                output,
+                bounds,
+                control,
+                "Restart Lotus integration",
+                true,
+                false,
+            ),
             SettingsControl::ReplaySetup => self.present_button(
                 output,
                 bounds,

@@ -425,6 +425,7 @@ impl SettingsScene {
             {
                 SettingsAction::CheckForUpdates
             }
+            SettingsControl::RestartIntegration => SettingsAction::RestartIntegration,
             SettingsControl::ReplaySetup => SettingsAction::ReplaySetup,
             SettingsControl::OnboardingModule(module) => {
                 self.draft.set_onboarding_module(

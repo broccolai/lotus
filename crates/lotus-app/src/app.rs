@@ -87,9 +87,10 @@ enum RestartError {
     Launch(#[from] ActivationError),
 }
 
-struct RuntimePolicy<'a> {
+struct RuntimeServices<'a> {
     taskbar_badges: Option<&'a TaskbarBadgeController>,
     onboarding_required: bool,
+    shell_integration: &'a mut ShellIntegration,
 }
 
 pub fn run() -> Result<(), AppError> {
@@ -141,11 +142,8 @@ pub fn run() -> Result<(), AppError> {
         !onboarding_required,
     )?;
     resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
-    let _shell_integration = if onboarding_required {
-        None
-    } else {
-        ShellIntegration::setup(dock_model.settings(), &dock).unwrap_or(None)
-    };
+    let mut shell_integration =
+        ShellIntegration::new(dock_model.settings(), &dock, !onboarding_required);
     window_tracker.refresh_fullscreen();
     if !onboarding_required {
         auxiliary.sync_status(&dock, &dock_model, &mut graphics)?;
@@ -180,12 +178,13 @@ pub fn run() -> Result<(), AppError> {
         &mut auxiliary,
         lotus_ui::frame::FrameTrigger::Changes,
     )?;
-    let runtime = RuntimePolicy {
+    let mut runtime = RuntimeServices {
         taskbar_badges: taskbar_badges.as_ref(),
         onboarding_required,
+        shell_integration: &mut shell_integration,
     };
     run_message_loop(
-        &runtime,
+        &mut runtime,
         &mut dock,
         &mut graphics,
         &mut surface,

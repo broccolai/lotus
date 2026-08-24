@@ -220,6 +220,7 @@ pub enum SettingsControl {
     ChooseApplicationIcon(usize),
     ResetApplicationIcon(usize),
     CheckForUpdates,
+    RestartIntegration,
     ReplaySetup,
     OnboardingModule(OnboardingModule),
     OnboardingZone(OnboardingModule),
@@ -244,6 +245,7 @@ pub enum SettingsAction {
     ChooseApplicationIcon(String),
     ResetApplicationIcon(String),
     CheckForUpdates,
+    RestartIntegration,
     ReplaySetup,
     CompleteOnboarding(Box<DockSettings>),
     Apply(Box<DockSettings>),
@@ -754,6 +756,7 @@ impl SettingsScene {
             | SettingsControl::ChooseApplicationIcon(_)
             | SettingsControl::ResetApplicationIcon(_)
             | SettingsControl::CheckForUpdates
+            | SettingsControl::RestartIntegration
             | SettingsControl::ReplaySetup
             | SettingsControl::OnboardingModule(_)
             | SettingsControl::OnboardingZone(_)
@@ -953,6 +956,7 @@ fn is_page_content(control: SettingsControl) -> bool {
             | SettingsControl::ApplicationRow(_)
             | SettingsControl::ChooseApplicationIcon(_)
             | SettingsControl::ResetApplicationIcon(_)
+            | SettingsControl::RestartIntegration
             | SettingsControl::ReplaySetup
     )
 }

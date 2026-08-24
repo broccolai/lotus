@@ -1,5 +1,5 @@
 use lotus_ui::frame::{FrameOutcome, FramePass, FrameTrigger, ScheduledSurface};
-use lotus_windows::appbar::fullscreen_notification;
+use lotus_windows::appbar::{ShellRecoverySource, fullscreen_notification};
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
 use lotus_windows::icon_hydrator::is_icon_hydration_wake;
 use lotus_windows::input::{UiHeartbeatTimer, is_input_wake};
@@ -18,10 +18,10 @@ use super::{
     settings_events, update_events, window_events,
 };
 use crate::app::modules::ModuleHost;
-use crate::app::{AppError, DockRuntime, RuntimePolicy};
+use crate::app::{AppError, DockRuntime, RuntimeServices};
 
 pub(crate) fn run_message_loop(
-    runtime: &RuntimePolicy<'_>,
+    runtime: &mut RuntimeServices<'_>,
     dock: &mut DockWindow,
     graphics: &mut DeviceState,
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
@@ -86,7 +86,7 @@ pub(crate) fn flush_frame(
 
 struct MessageLoop<'a, 'runtime> {
     heartbeat: UiHeartbeatTimer,
-    runtime: &'a RuntimePolicy<'runtime>,
+    runtime: &'a mut RuntimeServices<'runtime>,
     dock: &'a mut DockWindow,
     graphics: &'a mut DeviceState,
     surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
@@ -203,6 +203,7 @@ impl MessageLoop<'_, '_> {
         let started = std::time::Instant::now();
         message.dispatch();
         timing.record(UiMessagePhase::Dispatch, started.elapsed());
+        self.recover_taskbar_created(message);
         self.include_pending_event_work(&mut work);
         let drained = self.drain_events_until_idle(work, timing)?;
         if drained.changed {
@@ -428,6 +429,7 @@ impl MessageLoop<'_, '_> {
                     window_tracker: self.window_tracker,
                     dock_model: self.dock_model,
                     auxiliary: self.auxiliary,
+                    shell_integration: self.runtime.shell_integration,
                 },
             )?;
         }
@@ -445,6 +447,20 @@ impl MessageLoop<'_, '_> {
             self.auxiliary,
             trigger,
         )
+    }
+
+    fn recover_taskbar_created(&mut self, message: &NativeMessage) {
+        if self
+            .runtime
+            .shell_integration
+            .take_recovery_request(message.is_thread_message(), message.id())
+        {
+            self.runtime.shell_integration.recover(
+                self.dock_model.settings(),
+                self.dock,
+                ShellRecoverySource::TaskbarCreated,
+            );
+        }
     }
 
     fn record_slow_message(
@@ -550,7 +566,7 @@ impl WakeEvents {
             || self.icon_hydration
     }
 
-    fn from_message(runtime: &RuntimePolicy<'_>, message: u32) -> Self {
+    fn from_message(runtime: &RuntimeServices<'_>, message: u32) -> Self {
         Self {
             search_catalog: is_search_catalog_wake(message),
             update: is_update_wake(message),
