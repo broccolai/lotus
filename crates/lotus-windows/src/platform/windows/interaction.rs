@@ -5,7 +5,7 @@ mod pointer;
 mod timer;
 
 pub use focus::PointerCursor;
-pub(crate) use focus::{activate_window, claim_keyboard_focus};
+pub(crate) use focus::{activate_exact_window, claim_keyboard_focus};
 pub use message::{
     MessagePumpError, NativeMessage, monotonic_millis, next_message, request_exit,
 };

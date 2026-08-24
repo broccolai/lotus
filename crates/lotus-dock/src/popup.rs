@@ -1,5 +1,5 @@
 use lotus_core::settings::WindowPickerStyle;
-use lotus_core::window::{WindowId, WindowInfo};
+use lotus_core::window::{TrackedWindowKey, WindowInfo};
 use lotus_ui::geometry::{
     DpiScale, NonZeroPhysicalSize, PhysicalRect, PhysicalUnsignedPoint, physical_rect,
 };
@@ -28,19 +28,23 @@ const MAX_THUMBNAIL_CARDS: usize = 3;
 
 pub fn order_picker_windows(
     windows: &[WindowInfo],
-    foreground: Option<WindowId>,
-    recent: &[WindowId],
+    foreground: Option<TrackedWindowKey>,
+    recent: &[TrackedWindowKey],
 ) -> Vec<WindowInfo> {
     let mut ordered = Vec::with_capacity(windows.len());
     for window in foreground
+        .and_then(|key| windows.iter().find(|window| window.key() == key))
         .into_iter()
-        .chain(recent.iter().copied())
-        .filter_map(|id| windows.iter().find(|window| window.id == id))
+        .chain(
+            recent
+                .iter()
+                .filter_map(|key| windows.iter().find(|window| window.key() == *key)),
+        )
         .chain(windows.iter())
     {
         if !ordered
             .iter()
-            .any(|existing: &WindowInfo| existing.id == window.id)
+            .any(|existing: &WindowInfo| existing.key() == window.key())
         {
             ordered.push(window.clone());
         }
@@ -65,13 +69,16 @@ pub enum PowerAction {
     Cancel,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PopupAction {
     System(SystemAction),
     Power(PowerAction),
-    App(AppMenuAction),
-    Activate(WindowId),
-    CloseWindow(WindowId),
+    App {
+        action: AppMenuAction,
+        identity: String,
+    },
+    Activate(TrackedWindowKey),
+    CloseWindow(TrackedWindowKey),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,7 +99,7 @@ pub enum PopupSymbol {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PickerWindow<Asset> {
-    pub id: WindowId,
+    pub key: TrackedWindowKey,
     pub title: String,
     pub icon: Icon<Asset>,
     pub active: bool,
@@ -131,6 +138,7 @@ enum PopupKind<Asset> {
     Power,
     App {
         source_index: usize,
+        identity: String,
         entries: Vec<AppEntry>,
     },
     Picker {
@@ -161,6 +169,7 @@ impl<Asset: Clone> DockPopup<Asset> {
     pub fn app(
         dpi: u32,
         source_index: usize,
+        identity: String,
         running_windows: usize,
         pinned: bool,
     ) -> Option<Self> {
@@ -209,6 +218,7 @@ impl<Asset: Clone> DockPopup<Asset> {
             scale: DpiScale::new(dpi)?,
             kind: PopupKind::App {
                 source_index,
+                identity,
                 entries: [Some(open), Some(customize), Some(pin), close, force_close]
                     .into_iter()
                     .flatten()
@@ -354,11 +364,16 @@ impl<Asset: Clone> DockPopup<Asset> {
                     close_highlighted: false,
                 })
                 .collect(),
-            PopupKind::App { entries, .. } => entries
+            PopupKind::App {
+                identity, entries, ..
+            } => entries
                 .iter()
                 .enumerate()
                 .map(|(index, entry)| PopupEntry {
-                    action: PopupAction::App(entry.action),
+                    action: PopupAction::App {
+                        action: entry.action,
+                        identity: identity.clone(),
+                    },
                     label: entry.label.to_owned(),
                     icon: PopupIcon::Symbol(entry.symbol),
                     bounds: self.vertical_row(index, APP_WIDTH_DIP, APP_ROW_DIP),
@@ -426,7 +441,7 @@ impl<Asset: Clone> DockPopup<Asset> {
         if close {
             entry.close.map(|_| match entry.action {
                 PopupAction::Activate(window) => PopupAction::CloseWindow(window),
-                action => action,
+                ref action => action.clone(),
             })
         } else {
             Some(entry.action)
@@ -438,7 +453,9 @@ impl<Asset: Clone> DockPopup<Asset> {
             PopupKind::Power => self.selected?,
             _ => self.selected.unwrap_or(0),
         };
-        self.entries().get(selected).map(|entry| entry.action)
+        self.entries()
+            .get(selected)
+            .map(|entry| entry.action.clone())
     }
 
     pub fn move_selection(&mut self, next: bool) -> bool {
@@ -480,7 +497,7 @@ impl<Asset: Clone> DockPopup<Asset> {
         true
     }
 
-    pub fn picker_previews(&self) -> Vec<(WindowId, PhysicalRect)> {
+    pub fn picker_previews(&self) -> Vec<(TrackedWindowKey, PhysicalRect)> {
         self.entries()
             .into_iter()
             .filter_map(|entry| match (entry.action, entry.preview) {
@@ -734,7 +751,7 @@ impl<Asset: Clone> DockPopup<Asset> {
                 };
                 let close_highlighted = self.hovered == Some((index, true));
                 PopupEntry {
-                    action: PopupAction::Activate(entry.id),
+                    action: PopupAction::Activate(entry.key),
                     label: entry.title.clone(),
                     icon: PopupIcon::Artwork(entry.icon.clone()),
                     bounds,

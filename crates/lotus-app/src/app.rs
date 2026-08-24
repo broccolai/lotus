@@ -1,3 +1,4 @@
+mod activation;
 mod context_menu;
 mod dock;
 mod icon_override;

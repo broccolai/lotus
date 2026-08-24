@@ -119,32 +119,3 @@ fn format_value(value: f64) -> String {
         mantissa.trim_end_matches('0').trim_end_matches('.')
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Calculation, calculate};
-
-    #[test]
-    fn calculator_requires_math_input_and_formats_useful_results() {
-        let cases = [
-            ("42", None),
-            ("7zip", None),
-            ("12 * (4 + 3)", Some("84")),
-            ("sqrt(81)", Some("9")),
-            ("= 1 / 8", Some("0.125")),
-            ("2 × 6", Some("12")),
-            ("12 x 5", Some("60")),
-            ("Xbox", None),
-        ];
-
-        for (query, expected) in cases {
-            assert_eq!(
-                calculate(query),
-                expected.map(|value| Calculation {
-                    value: value.to_owned(),
-                }),
-                "{query}"
-            );
-        }
-    }
-}

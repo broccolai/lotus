@@ -95,11 +95,18 @@ pub(super) fn handle_tracker_message(
     if event == WindowTrackerEvent::FullscreenRefreshed {
         let foreground = lotus_windows::activation::foreground_window();
         context.dock_model.record_foreground(foreground);
-        context.auxiliary.record_switcher_foreground(foreground);
+        context.auxiliary.record_switcher_foreground(
+            foreground,
+            context.window_tracker.current_windows(),
+        );
     }
     if event == WindowTrackerEvent::SnapshotRefreshed {
         let previous_size = context.dock_model.scene().desired_size();
         let windows = context.window_tracker.current_windows();
+        context.dock_model.prune_recent_windows(windows);
+        context
+            .auxiliary
+            .reconcile_switcher_windows(windows, context.graphics)?;
         let pins_reconciled = context
             .dock_model
             .reconcile_unpinned_pins(windows, context.auxiliary.application_catalog())?;

@@ -1,4 +1,4 @@
-use lotus_core::window::WindowId;
+use lotus_core::window::{TrackedWindowKey, WindowId};
 use lotus_ui::geometry::{
     DpiScale, NonZeroPhysicalSize, PhysicalRect, PhysicalUnsignedPoint, physical_rect,
 };
@@ -19,13 +19,13 @@ const CLOSE_INSET_DIP: u32 = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SwitcherHitTarget {
-    Item(WindowId),
-    Close(WindowId),
+    Item(TrackedWindowKey),
+    Close(TrackedWindowKey),
 }
 
 #[derive(Clone)]
 pub struct SwitcherItem<Asset> {
-    pub window: WindowId,
+    pub key: TrackedWindowKey,
     pub title: String,
     pub icon: Option<Asset>,
 }
@@ -83,7 +83,7 @@ impl<Asset> SwitcherScene<Asset> {
     }
 
     pub fn set_icon(&mut self, window: WindowId, icon: Option<Asset>) -> bool {
-        let Some(item) = self.items.iter_mut().find(|item| item.window == window) else {
+        let Some(item) = self.items.iter_mut().find(|item| item.key.id == window) else {
             return false;
         };
         if item.icon.is_none() && icon.is_none() {
@@ -126,11 +126,11 @@ impl<Asset> SwitcherScene<Asset> {
             PhysicalUnsignedPoint::new(u32::try_from(x).ok()?, u32::try_from(y).ok()?);
         self.layout().items.into_iter().find_map(|item| {
             if item.close.contains(point) {
-                Some(SwitcherHitTarget::Close(item.item.window))
+                Some(SwitcherHitTarget::Close(item.item.key))
             } else {
                 item.bounds
                     .contains(point)
-                    .then_some(SwitcherHitTarget::Item(item.item.window))
+                    .then_some(SwitcherHitTarget::Item(item.item.key))
             }
         })
     }
@@ -256,7 +256,7 @@ impl<Asset: Clone> SwitcherScene<Icon<Asset>> {
                 width: self.scaled(1.0),
                 color: theme.border_strong,
             });
-        } else if self.item_is_hovered(item.item.window) {
+        } else if self.item_is_hovered(item.item.key) {
             presentation.push(PresentationPrimitive::FillRoundedRect {
                 bounds,
                 radius: self.scaled(theme.radii.control),
@@ -338,12 +338,12 @@ impl<Asset: Clone> SwitcherScene<Icon<Asset>> {
         item: &LaidOutItem<'_, Icon<Asset>>,
         dismiss: Asset,
     ) {
-        if item.source_index != self.selected() && !self.item_is_hovered(item.item.window) {
+        if item.source_index != self.selected() && !self.item_is_hovered(item.item.key) {
             return;
         }
 
         let bounds = presentation_rect(item.close);
-        if self.hovered() == Some(SwitcherHitTarget::Close(item.item.window)) {
+        if self.hovered() == Some(SwitcherHitTarget::Close(item.item.key)) {
             presentation.push(PresentationPrimitive::FillRoundedRect {
                 bounds,
                 radius: self.scaled(self.theme().radii.compact),
@@ -361,11 +361,11 @@ impl<Asset: Clone> SwitcherScene<Icon<Asset>> {
         });
     }
 
-    fn item_is_hovered(&self, window: WindowId) -> bool {
+    fn item_is_hovered(&self, key: TrackedWindowKey) -> bool {
         matches!(
             self.hovered(),
             Some(SwitcherHitTarget::Item(hovered) | SwitcherHitTarget::Close(hovered))
-                if hovered == window
+                if hovered == key
         )
     }
 

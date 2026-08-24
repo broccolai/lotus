@@ -16,16 +16,38 @@ impl WindowId {
     }
 }
 
+/// An ephemeral identity for a window published by the tracker.
+///
+/// `WindowId` is an HWND value and can be recycled after a window closes. Delayed
+/// operations must carry this key to ensure the HWND still has the tracker
+/// incarnation that was presented to the user.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TrackedWindowKey {
+    pub id: WindowId,
+    pub process_id: u32,
+    pub incarnation: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WindowInfo {
     pub id: WindowId,
     pub process_id: u32,
+    /// Minted by the platform tracker whenever this HWND enters its registry.
+    pub incarnation: u64,
     pub title: String,
     pub executable_path: PathBuf,
     pub app_user_model_id: Option<String>,
 }
 
 impl WindowInfo {
+    pub const fn key(&self) -> TrackedWindowKey {
+        TrackedWindowKey {
+            id: self.id,
+            process_id: self.process_id,
+            incarnation: self.incarnation,
+        }
+    }
+
     pub fn executable_name(&self) -> Option<&Path> {
         self.executable_path.file_name().map(Path::new)
     }

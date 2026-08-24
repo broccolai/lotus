@@ -1,12 +1,11 @@
 use lotus_core::application::{ApplicationIdentity, is_reliable_registered_id};
 use lotus_core::settings::DockSettings;
-use lotus_core::window::WindowInfo;
+use lotus_core::window::{TrackedWindowKey, WindowInfo};
 use lotus_settings::appearance::theme_for;
-use lotus_switcher::model::{RecentOrder, SwitcherSession};
+use lotus_switcher::model::{RecentOrder, ReconcileOutcome, SwitcherSession};
 use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::theme::Theme;
-use lotus_windows::activation::{request_window_close, switch_window};
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::surface::FrameResult;
@@ -16,8 +15,8 @@ use lotus_windows::icon_hydrator::{SwitcherIconClient, SwitcherIconRequest};
 use lotus_windows::interaction::PointerCursor;
 use lotus_windows::window::{SwitcherEvent, SwitcherWindow};
 
-use crate::app::AppError;
 use crate::app::visuals::{DockIcon, SwitcherHitTarget, SwitcherItem, SwitcherScene};
+use crate::app::{AppError, activation};
 
 const SWITCHER_ICON_DIP: u32 = 38;
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
@@ -32,7 +31,7 @@ pub(super) struct SwitcherRuntime {
     icon_generation: u64,
     icon_settings_revision: u64,
     pub(super) name_overrides: std::collections::BTreeMap<String, String>,
-    recent_windows: RecentOrder<lotus_core::window::WindowId>,
+    recent_windows: RecentOrder<TrackedWindowKey>,
     theme: Theme,
 }
 
@@ -80,8 +79,13 @@ impl SwitcherRuntime {
             .filter(|window| !executable_is_hidden(window, &settings.hidden_executables))
             .cloned()
             .collect::<Vec<_>>();
-        self.record_foreground(foreground);
-        let windows = self.recent_windows.arrange(windows, |window| window.id);
+        self.record_foreground(foreground.and_then(|id| {
+            windows
+                .iter()
+                .find(|window| window.id == id)
+                .map(WindowInfo::key)
+        }));
+        let windows = self.recent_windows.arrange(windows, WindowInfo::key);
         let Some(session) = SwitcherSession::begin(windows, direction) else {
             return Ok(());
         };
@@ -118,13 +122,89 @@ impl SwitcherRuntime {
         Ok(())
     }
 
-    pub(super) fn record_foreground(
-        &mut self,
-        foreground: Option<lotus_core::window::WindowId>,
-    ) {
+    pub(super) fn record_foreground(&mut self, foreground: Option<TrackedWindowKey>) {
         if let Some(foreground) = foreground {
             self.recent_windows.record(foreground);
         }
+    }
+
+    pub(super) fn reconcile_windows(
+        &mut self,
+        windows: &[WindowInfo],
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        self.recent_windows
+            .retain(windows.iter().map(WindowInfo::key));
+        let Some(session) = &mut self.session else {
+            return Ok(());
+        };
+        let latest = windows
+            .iter()
+            .filter(|window| {
+                !executable_is_hidden(window, &self.icon_settings.hidden_executables)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let outcome = session.reconcile(&latest, WindowInfo::key);
+        match outcome {
+            ReconcileOutcome::Unchanged => {}
+            ReconcileOutcome::Empty { removed } => {
+                lotus_windows::diagnostics::record_diagnostic(
+                    "activation.switcher_entries_pruned",
+                    &format!("{removed} Alt+Tab entries disappeared before commit"),
+                );
+                self.hide();
+            }
+            ReconcileOutcome::Pruned { removed } => {
+                lotus_windows::diagnostics::record_diagnostic(
+                    "activation.switcher_entries_pruned",
+                    &format!(
+                        "{removed} Alt+Tab entries disappeared during an active session"
+                    ),
+                );
+                self.icon_generation = self.icon_generation.wrapping_add(1);
+                self.rebuild_scene(self.window.dpi())?;
+                self.recenter_visible_window()?;
+                self.ensure_surface(graphics)?;
+                self.request_visible_icons();
+                self.invalidate();
+            }
+            ReconcileOutcome::Refreshed => {
+                self.icon_generation = self.icon_generation.wrapping_add(1);
+                self.rebuild_scene(self.window.dpi())?;
+                self.recenter_visible_window()?;
+                self.ensure_surface(graphics)?;
+                self.request_visible_icons();
+                self.invalidate();
+            }
+        }
+        Ok(())
+    }
+
+    fn recenter_visible_window(&mut self) -> Result<(), AppError> {
+        let size = self
+            .scene
+            .as_ref()
+            .ok_or(AppError::InvalidSwitcherScene)?
+            .desired_size();
+        let foreground = lotus_windows::activation::foreground_window();
+        let dpi = self.window.show_centered(foreground, size)?;
+        if self
+            .scene
+            .as_ref()
+            .ok_or(AppError::InvalidSwitcherScene)?
+            .dpi()
+            != dpi
+        {
+            self.rebuild_scene(dpi)?;
+            let size = self
+                .scene
+                .as_ref()
+                .ok_or(AppError::InvalidSwitcherScene)?
+                .desired_size();
+            let _ = self.window.show_centered(foreground, size)?;
+        }
+        Ok(())
     }
 
     pub(super) fn cycle_by(&mut self, delta: i32) {
@@ -140,18 +220,39 @@ impl SwitcherRuntime {
     }
 
     pub(super) fn commit(&mut self) {
-        let selected = self.session.as_ref().map(|session| session.selected().id);
+        let selected = self
+            .session
+            .as_ref()
+            .map(|session| session.selected().key());
         self.hide();
         if let Some(selected) = selected {
-            self.recent_windows.record(selected);
-            if let Err(error) = switch_window(selected) {
-                lotus_windows::diagnostics::record_error("alt_tab.switch_window", &error);
+            match activation::activate_exact(selected) {
+                Ok(outcome) => {
+                    if let Some(key) = outcome.focused_key() {
+                        self.recent_windows.record(key);
+                    } else if matches!(
+                        outcome,
+                        activation::ActivationOutcome::ForegroundDenied
+                    ) {
+                        lotus_windows::diagnostics::record_diagnostic(
+                            "activation.switcher_foreground_denied",
+                            "Windows denied the committed Alt+Tab foreground change",
+                        );
+                    }
+                }
+                Err(error) => {
+                    lotus_windows::diagnostics::record_error(
+                        "alt_tab.switch_window",
+                        &error,
+                    );
+                }
             }
         }
     }
 
     pub(super) fn hide(&mut self) {
         self.window.hide();
+        self.icon_hydrator.request_switcher(Vec::new());
         self.scene = None;
         self.session = None;
     }
@@ -198,8 +299,20 @@ impl SwitcherRuntime {
             SwitcherEvent::PointerReleased { x, y } => {
                 let target = self.scene.as_ref().and_then(|scene| scene.hit_test(x, y));
                 if let Some(SwitcherHitTarget::Close(window)) = target {
+                    let key = self
+                        .session
+                        .as_ref()
+                        .and_then(|session| {
+                            session
+                                .items()
+                                .iter()
+                                .find(|candidate| candidate.key() == window)
+                        })
+                        .map(WindowInfo::key);
                     self.hide();
-                    if let Err(error) = request_window_close(window) {
+                    if let Some(key) = key
+                        && let Err(error) = activation::request_close(key, false)
+                    {
                         show_error(
                             self.window.handle(),
                             "Lotus",
@@ -232,7 +345,7 @@ impl SwitcherRuntime {
             .items()
             .iter()
             .map(|window| SwitcherItem {
-                window: window.id,
+                key: window.key(),
                 title: switcher_title(window, &self.name_overrides),
                 icon: None,
             })

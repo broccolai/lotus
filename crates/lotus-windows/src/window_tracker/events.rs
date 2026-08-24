@@ -15,6 +15,7 @@ pub(super) use crate::messages::WINDOW_TRACKER_REFRESH as REFRESH_MESSAGE;
 pub(super) const REFRESH_DELAY_MS: u32 = 120;
 pub(super) const RECONCILE_INTERVAL_MS: u32 = 1_000;
 pub(super) const SHUTDOWN_MESSAGE: u32 = REFRESH_MESSAGE + 1;
+pub(super) const IMMEDIATE_RECONCILE_MESSAGE: u32 = REFRESH_MESSAGE + 2;
 
 const TRACKED_EVENTS: [u32; 6] = [
     EVENT_SYSTEM_FOREGROUND,
@@ -55,6 +56,15 @@ pub(super) fn release_callback_thread(thread_id: u32) {
 
 pub(super) fn clear_refresh_notification() {
     REFRESH_QUEUED.store(false, Ordering::Release);
+}
+
+pub(super) fn request_immediate_reconcile() {
+    let thread_id = callback_thread();
+    if thread_id != 0 {
+        let _ = unsafe {
+            PostThreadMessageW(thread_id, IMMEDIATE_RECONCILE_MESSAGE, WPARAM(0), LPARAM(0))
+        };
+    }
 }
 
 pub(super) fn install_hooks() -> Result<Vec<OwnedWinEventHook>, NativeError> {

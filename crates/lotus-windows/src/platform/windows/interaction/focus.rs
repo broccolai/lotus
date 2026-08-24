@@ -60,8 +60,12 @@ pub(crate) fn claim_keyboard_focus(hwnd: HWND) -> FocusClaim {
     }
 }
 
-pub(crate) fn activate_window(hwnd: HWND) -> FocusClaim {
-    if owns_foreground_application(hwnd) {
+/// Claims a particular top-level window for delayed exact-window actions.
+///
+/// This deliberately does not treat a sibling owned by the same process as success:
+/// picker and Alt+Tab must claim their presented HWND.
+pub(crate) fn activate_exact_window(hwnd: HWND) -> FocusClaim {
+    if owns_exact_foreground(hwnd) {
         return FocusClaim::Owned;
     }
 
@@ -73,11 +77,8 @@ pub(crate) fn activate_window(hwnd: HWND) -> FocusClaim {
         InputQueueAttachment::new(current_thread, foreground_thread);
     let _target_attachment = InputQueueAttachment::new(current_thread, target_thread);
 
-    if request_activation(hwnd) || owns_foreground_application(hwnd) {
-        FocusClaim::Owned
-    } else {
-        FocusClaim::Denied
-    }
+    let _requested = request_activation(hwnd);
+    exact_foreground_claim(hwnd, unsafe { GetForegroundWindow() })
 }
 
 fn window_thread(hwnd: HWND) -> u32 {
@@ -107,22 +108,16 @@ fn request_activation(hwnd: HWND) -> bool {
     }
 }
 
-fn owns_foreground_application(hwnd: HWND) -> bool {
-    let foreground = unsafe { GetForegroundWindow() };
-    if foreground == hwnd {
-        return true;
-    }
-    let target_process = window_process(hwnd);
-    target_process != 0 && target_process == window_process(foreground)
+fn owns_exact_foreground(hwnd: HWND) -> bool {
+    unsafe { GetForegroundWindow() == hwnd }
 }
 
-fn window_process(hwnd: HWND) -> u32 {
-    if hwnd.is_invalid() {
-        return 0;
+fn exact_foreground_claim(requested: HWND, foreground: HWND) -> FocusClaim {
+    if requested == foreground {
+        FocusClaim::Owned
+    } else {
+        FocusClaim::Denied
     }
-    let mut process_id = 0;
-    unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut process_id)) };
-    process_id
 }
 
 fn owns_keyboard_focus(hwnd: HWND) -> bool {

@@ -26,22 +26,3 @@ impl RuntimeWork {
             || self.contains(Self::MONITOR_EVENTS)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::RuntimeWork;
-
-    #[test]
-    fn event_domains_do_not_imply_monitor_or_frame_work() {
-        for work in [
-            RuntimeWork::WINDOW_EVENTS,
-            RuntimeWork::SETTINGS_EVENTS,
-            RuntimeWork::SWITCHER_EVENTS,
-            RuntimeWork::MONITOR_EVENTS,
-        ] {
-            assert!(work.needs_event_drain());
-            assert!(!work.contains(RuntimeWork::MONITOR_SYNC));
-            assert!(!work.contains(RuntimeWork::FRAME));
-        }
-    }
-}

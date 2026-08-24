@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use std::ffi::c_void;
 
-use lotus_core::window::WindowId;
+use lotus_core::window::TrackedWindowKey;
 use lotus_ui::geometry::PhysicalRect;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Dwm::{
@@ -14,7 +13,7 @@ use crate::WindowHandle;
 
 pub struct DwmThumbnailHost {
     destination: HWND,
-    thumbnails: HashMap<WindowId, DwmThumbnail>,
+    thumbnails: HashMap<TrackedWindowKey, DwmThumbnail>,
 }
 
 impl DwmThumbnailHost {
@@ -25,16 +24,21 @@ impl DwmThumbnailHost {
         }
     }
 
-    pub fn reconcile(&mut self, previews: &[(WindowId, PhysicalRect)]) {
-        self.thumbnails
-            .retain(|window, _| previews.iter().any(|(candidate, _)| candidate == window));
+    pub fn reconcile(&mut self, previews: &[(TrackedWindowKey, PhysicalRect)]) {
+        self.thumbnails.retain(|window, _| {
+            previews.iter().any(|(candidate, _)| candidate == window)
+                && crate::window_tracker::is_live_tracked_window(*window)
+        });
 
         for (window, bounds) in previews {
+            if !crate::window_tracker::is_live_tracked_window(*window) {
+                continue;
+            }
             let thumbnail = self.thumbnails.entry(*window).or_insert_with(|| {
                 DwmThumbnail::register(self.destination, *window)
                     .unwrap_or_else(DwmThumbnail::unavailable)
             });
-            thumbnail.update(*bounds);
+            thumbnail.update(*window, *bounds);
         }
     }
 
@@ -48,9 +52,11 @@ struct DwmThumbnail {
 }
 
 impl DwmThumbnail {
-    fn register(destination: HWND, source: WindowId) -> Option<Self> {
-        let source = hwnd(source)?;
-        let handle = unsafe { DwmRegisterThumbnail(destination, source) }.ok()?;
+    fn register(destination: HWND, source: TrackedWindowKey) -> Option<Self> {
+        let handle =
+            crate::window_tracker::with_live_tracked_window(source, |source| unsafe {
+                DwmRegisterThumbnail(destination, source).ok()
+            })??;
         Some(Self {
             handle: Some(handle),
         })
@@ -60,7 +66,7 @@ impl DwmThumbnail {
         Self { handle: None }
     }
 
-    fn update(&self, bounds: PhysicalRect) {
+    fn update(&self, source: TrackedWindowKey, bounds: PhysicalRect) {
         let Some(handle) = self.handle else {
             return;
         };
@@ -80,7 +86,9 @@ impl DwmThumbnail {
             fSourceClientAreaOnly: false.into(),
             ..DWM_THUMBNAIL_PROPERTIES::default()
         };
-        let _ = unsafe { DwmUpdateThumbnailProperties(handle, &raw const properties) };
+        let _ = crate::window_tracker::with_live_tracked_window(source, |_| unsafe {
+            DwmUpdateThumbnailProperties(handle, &raw const properties)
+        });
     }
 }
 
@@ -90,9 +98,4 @@ impl Drop for DwmThumbnail {
             let _ = unsafe { DwmUnregisterThumbnail(handle) };
         }
     }
-}
-
-fn hwnd(window: WindowId) -> Option<HWND> {
-    let address = usize::try_from(window.get()).ok()?;
-    (address != 0).then(|| HWND(std::ptr::with_exposed_provenance_mut::<c_void>(address)))
 }

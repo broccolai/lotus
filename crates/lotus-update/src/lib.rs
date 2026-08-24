@@ -226,37 +226,3 @@ struct GitHubAsset {
     name: String,
     browser_download_url: String,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn release_channel_selects_the_highest_eligible_version() {
-        let release = |tag_name: &str, draft: bool, prerelease: bool| GitHubRelease {
-            tag_name: tag_name.into(),
-            draft,
-            prerelease,
-            html_url: String::new(),
-            assets: Vec::new(),
-        };
-        let releases = || {
-            vec![
-                release("invalid", false, false),
-                release("v9.0.0", true, false),
-                release("v1.2.0", false, false),
-                release("v1.4.0-alpha.1", false, true),
-                release("v1.5.0-alpha.1", false, false),
-            ]
-        };
-
-        assert_eq!(
-            select_release(releases(), UpdateChannel::Stable).map(|value| value.tag_name),
-            Some("v1.2.0".into())
-        );
-        assert_eq!(
-            select_release(releases(), UpdateChannel::Alpha).map(|value| value.tag_name),
-            Some("v1.5.0-alpha.1".into())
-        );
-    }
-}

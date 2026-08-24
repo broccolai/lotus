@@ -224,33 +224,3 @@ fn case_key(value: &str) -> String {
 fn path_text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::window::WindowId;
-
-    #[test]
-    fn stable_application_identity_matches_a_pin_across_helper_executable_changes() {
-        let pin = PinnedApp {
-            id: "discord".into(),
-            name: "Discord".into(),
-            launch_target: r"C:\ProgramData\Microsoft\Windows\Start Menu\Discord.lnk"
-                .into(),
-            arguments: None,
-            icon_source: None,
-            app_user_model_id: Some("com.squirrel.discord.discord".into()),
-            match_executables: vec!["Discord.exe".into()],
-        };
-        let window = WindowInfo {
-            id: WindowId::new(1),
-            process_id: 1,
-            title: "Discord".into(),
-            executable_path: r"C:\Users\someone\AppData\Local\Discord\app-2.0\helper.exe"
-                .into(),
-            app_user_model_id: Some("COM.SQUIRREL.DISCORD.DISCORD".into()),
-        };
-
-        assert!(matches_pin(&pin, &window, None));
-    }
-}

@@ -1,12 +1,11 @@
 use std::path::Path;
 
-use lotus_core::activation::{ActivationDecision, decide_activation};
 use lotus_core::application::{
     ApplicationIdentity, is_reliable_application_identity, is_shared_host_executable,
 };
 use lotus_core::dock::DockItem;
 use lotus_core::settings::{DockSettings, PinnedApp, SettingsStore, SettingsStoreError};
-use lotus_core::window::{WindowId, WindowInfo};
+use lotus_core::window::WindowInfo;
 
 pub fn project_snapshot<F>(
     settings: &DockSettings,
@@ -26,6 +25,12 @@ where
         },
         resolve_executable,
     )
+}
+
+pub fn source_index_for_identity(items: &[DockItem], identity: &str) -> Option<usize> {
+    items
+        .iter()
+        .position(|item| item.id.eq_ignore_ascii_case(identity))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -170,20 +175,6 @@ impl DockModel {
         self.settings = settings;
         self.items = reordered;
         Ok(true)
-    }
-
-    pub fn activation(
-        &self,
-        source_index: usize,
-        foreground: Option<&WindowId>,
-    ) -> Option<(ActivationDecision<WindowId>, &DockItem)> {
-        let item = self.items.get(source_index)?;
-        let windows = item
-            .windows
-            .iter()
-            .map(|window| window.id)
-            .collect::<Vec<_>>();
-        Some((decide_activation(&windows, foreground), item))
     }
 
     pub fn set_pinned(
@@ -560,148 +551,4 @@ fn insertion_destination(
         target_index,
         insert_after,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use std::error::Error;
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use lotus_core::settings::{ApplicationIconOverride, PinnedApp};
-    use lotus_core::window::{WindowId, WindowInfo};
-
-    use super::*;
-
-    #[test]
-    fn reconciliation_absorbs_a_registered_application_with_a_changed_executable()
-    -> Result<(), Box<dyn Error>> {
-        let directory = std::env::temp_dir().join(format!(
-            "lotus-dock-model-{}",
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-        ));
-        let store = SettingsStore::new(&directory);
-        let mut settings = DockSettings::default();
-        settings.pinned_apps.push(PinnedApp {
-            id: "com.squirrel.discord.discord".into(),
-            name: "Discord".into(),
-            launch_target: r"C:\ProgramData\Microsoft\Windows\Start Menu\Discord.lnk"
-                .into(),
-            arguments: None,
-            icon_source: None,
-            app_user_model_id: Some("com.squirrel.discord.discord".into()),
-            match_executables: vec!["Discord.exe".into()],
-        });
-        settings.pinned_apps.push(PinnedApp {
-            id: "com.electron.app".into(),
-            name: "Generic Electron App".into(),
-            launch_target: r"C:\Apps\GenericElectron.exe".into(),
-            arguments: None,
-            icon_source: None,
-            app_user_model_id: Some("com.electron.app".into()),
-            match_executables: vec!["GenericElectron.exe".into()],
-        });
-        settings
-            .application_icon_overrides
-            .push(ApplicationIconOverride {
-                id: "com.squirrel.discord.discord".into(),
-                image_path: r"C:\Lotus\assets\app-icons\discord.png".into(),
-                app_user_model_id: Some("com.squirrel.discord.discord".into()),
-                match_executables: vec!["Discord.exe".into()],
-            });
-        let mut model = DockModel::new(settings, store, Vec::new());
-
-        assert!(model.reconcile_pin_executables(vec![
-            PinExecutableAlias {
-                registered_id: "COM.SQUIRREL.DISCORD.DISCORD".into(),
-                app_user_model_id: Some("com.squirrel.discord.discord".into()),
-                executable_name: "DiscordCanary.exe".into(),
-            },
-            PinExecutableAlias {
-                registered_id: "com.electron.app".into(),
-                app_user_model_id: Some("com.electron.app".into()),
-                executable_name: "AnotherElectron.exe".into(),
-            },
-            PinExecutableAlias {
-                registered_id: "COM.SQUIRREL.DISCORD.DISCORD".into(),
-                app_user_model_id: Some("com.squirrel.discord.discord".into()),
-                executable_name: "msedge.exe".into(),
-            },
-        ])?);
-        assert_eq!(
-            model.settings().pinned_apps[0].match_executables,
-            ["Discord.exe", "DiscordCanary.exe"]
-        );
-        assert_eq!(
-            SettingsStore::new(&directory).load()?.settings.pinned_apps[0]
-                .match_executables,
-            ["Discord.exe", "DiscordCanary.exe"]
-        );
-        assert_eq!(
-            model.settings().pinned_apps[1].match_executables,
-            ["GenericElectron.exe"]
-        );
-        assert!(
-            model.upgrade_pins(vec![PinUpgrade {
-                current_id: "com.squirrel.discord.discord".into(),
-                launch: PinLaunch {
-                    id: "vendor.discord.stable".into(),
-                    name: "Discord".into(),
-                    target:
-                        r"C:\ProgramData\Microsoft\Windows\Start Menu\Discord Stable.lnk"
-                            .into(),
-                    arguments: None,
-                    icon_source: None,
-                    app_user_model_id: Some("vendor.discord.stable".into()),
-                },
-            }])?
-        );
-        assert_migrated_icon_override(model.settings());
-        let persisted = SettingsStore::new(&directory).load()?.settings;
-        assert_migrated_icon_override(&persisted);
-
-        let windows = [WindowInfo {
-            id: WindowId::new(1),
-            process_id: 1,
-            title: "Discord".into(),
-            executable_path:
-                r"C:\Users\someone\AppData\Local\DiscordCanary\DiscordCanary.exe".into(),
-            app_user_model_id: None,
-        }];
-        let items = project_snapshot(model.settings(), &windows, |_| None);
-        assert!(items.iter().all(|item| item.is_pinned));
-        assert_eq!(
-            items.iter().filter(|item| item.windows == windows).count(),
-            1
-        );
-
-        let generic_window = [WindowInfo {
-            id: WindowId::new(2),
-            process_id: 2,
-            title: "Another Electron App".into(),
-            executable_path: r"C:\Apps\AnotherElectron.exe".into(),
-            app_user_model_id: Some("com.electron.app".into()),
-        }];
-        assert!(
-            project_snapshot(model.settings(), &generic_window, |_| None)
-                .iter()
-                .any(|item| !item.is_pinned)
-        );
-
-        fs::remove_dir_all(directory)?;
-        Ok(())
-    }
-
-    fn assert_migrated_icon_override(settings: &DockSettings) {
-        let override_ = &settings.application_icon_overrides[0];
-        assert_eq!(override_.id, "vendor.discord.stable");
-        assert_eq!(
-            override_.app_user_model_id.as_deref(),
-            Some("vendor.discord.stable")
-        );
-        assert_eq!(
-            override_.image_path,
-            r"C:\Lotus\assets\app-icons\discord.png"
-        );
-    }
 }

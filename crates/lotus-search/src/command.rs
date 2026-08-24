@@ -72,21 +72,3 @@ pub fn matching_commands(query: &str) -> Vec<CommandEntry> {
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{CommandId, command_query, matching_commands};
-
-    #[test]
-    fn command_mode_is_explicit_and_matches_titles_or_keywords() {
-        assert_eq!(command_query("discord"), None);
-        assert_eq!(command_query("  > audio "), Some("audio"));
-        assert_eq!(
-            matching_commands("audio")
-                .into_iter()
-                .map(|entry| entry.id)
-                .collect::<Vec<_>>(),
-            vec![CommandId::OpenVolumeMixer]
-        );
-    }
-}

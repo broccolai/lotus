@@ -1,12 +1,12 @@
 use std::path::Path;
 use std::time::Instant;
 
-use lotus_core::activation::ActivationDecision;
-use lotus_core::window::WindowId;
+use lotus_core::dock::DockItem;
+use lotus_core::window::{TrackedWindowKey, WindowId, WindowInfo};
 use lotus_dock::interaction::map_visual_insertion_slot;
 use lotus_dock::popup::order_picker_windows;
 use lotus_windows::WindowHandle;
-use lotus_windows::activation::{ActivationError, execute_activation, foreground_window};
+use lotus_windows::activation::foreground_window;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
@@ -14,8 +14,8 @@ use lotus_windows::window::{DockContextRequest, PopupAlignment, SignedPoint};
 
 use super::projection::{media_source_matches_item, popup_overlap, status_popup_center};
 use super::{DockRuntime, NATIVE_ICON_SAMPLE_SCALE};
-use crate::app::AppError;
 use crate::app::visuals::{DockAnchor, DockHitTarget, DockIcon, NativePickerWindow};
+use crate::app::{AppError, activation};
 
 impl DockRuntime {
     pub(in crate::app) fn hit_test(&self, x: i32, y: i32) -> Option<DockHitTarget> {
@@ -88,25 +88,41 @@ impl DockRuntime {
         ))
     }
 
-    pub(in crate::app) fn item(
-        &self,
-        source_index: usize,
-    ) -> Option<&lotus_core::dock::DockItem> {
+    pub(in crate::app) fn item(&self, source_index: usize) -> Option<&DockItem> {
         self.model.items().get(source_index)
     }
 
     pub(in crate::app) fn source_index(&self, identity: &str) -> Option<usize> {
+        lotus_dock::model::source_index_for_identity(self.model.items(), identity)
+    }
+
+    pub(in crate::app) fn source_index_for_key(
+        &self,
+        key: TrackedWindowKey,
+    ) -> Option<usize> {
         self.model
             .items()
             .iter()
-            .position(|item| item.id.eq_ignore_ascii_case(identity))
+            .position(|item| item.windows.iter().any(|window| window.key() == key))
+    }
+
+    pub(in crate::app) fn tracked_key_for_window_id(
+        &self,
+        id: WindowId,
+    ) -> Option<TrackedWindowKey> {
+        self.model
+            .items()
+            .iter()
+            .flat_map(|item| item.windows.iter())
+            .find(|window| window.id == id)
+            .map(WindowInfo::key)
     }
 
     pub(in crate::app) fn open_new(&self, source_index: usize, owner: WindowHandle) {
         let Some(item) = self.model.items().get(source_index) else {
             return;
         };
-        if let Err(error) = execute_activation(ActivationDecision::Launch, item) {
+        if let Err(error) = activation::launch(item) {
             show_error(
                 owner,
                 "Lotus",
@@ -118,7 +134,7 @@ impl DockRuntime {
     pub(in crate::app) fn picker_windows(
         &mut self,
         source_index: usize,
-        foreground: Option<WindowId>,
+        foreground: Option<TrackedWindowKey>,
     ) -> Vec<NativePickerWindow> {
         let Some(item) = self.model.items().get(source_index) else {
             return Vec::new();
@@ -156,15 +172,18 @@ impl DockRuntime {
         .map_or(DockIcon::Embedded(SvgAsset::FluentOpen), DockIcon::Raster);
         ordered
             .into_iter()
-            .map(|window| NativePickerWindow {
-                id: window.id,
-                title: if window.title.trim().is_empty() {
-                    display_name.clone()
-                } else {
-                    window.title
-                },
-                icon: icon.clone(),
-                active: Some(window.id) == foreground,
+            .map(|window| {
+                let key = window.key();
+                NativePickerWindow {
+                    key,
+                    title: if window.title.trim().is_empty() {
+                        display_name.clone()
+                    } else {
+                        window.title
+                    },
+                    icon: icon.clone(),
+                    active: Some(key) == foreground,
+                }
             })
             .collect()
     }
@@ -200,7 +219,7 @@ impl DockRuntime {
     pub(in crate::app) fn record_window_activation(
         &mut self,
         source_index: usize,
-        window: WindowId,
+        window: TrackedWindowKey,
     ) {
         let Some(item) = self.model.items().get(source_index) else {
             return;
@@ -214,32 +233,46 @@ impl DockRuntime {
         let Some(window) = window else {
             return;
         };
-        let source_index =
-            self.model.items().iter().position(|item| {
-                item.windows.iter().any(|candidate| candidate.id == window)
-            });
-        if let Some(source_index) = source_index {
-            self.record_window_activation(source_index, window);
+        let key = self.model.items().iter().find_map(|item| {
+            item.windows
+                .iter()
+                .find(|candidate| candidate.id == window)
+                .map(WindowInfo::key)
+        });
+        if let Some(key) = key
+            && let Some(source_index) = self.model.items().iter().position(|item| {
+                item.windows.iter().any(|candidate| candidate.key() == key)
+            })
+        {
+            self.record_window_activation(source_index, key);
         }
     }
 
-    pub(in crate::app) fn media_window(&self, source_id: &str) -> Option<WindowId> {
-        let item = self
-            .model
+    pub(in crate::app) fn prune_recent_windows(&mut self, windows: &[WindowInfo]) {
+        self.recent_windows.retain(|_, recent| {
+            recent.retain(|key| windows.iter().any(|window| window.key() == *key));
+            !recent.is_empty()
+        });
+    }
+
+    pub(in crate::app) fn media_application(
+        &self,
+        source_id: &str,
+    ) -> Option<(usize, DockItem, Option<TrackedWindowKey>)> {
+        self.model
             .items()
             .iter()
-            .find(|item| media_source_matches_item(source_id, item))?;
-        self.recent_windows
-            .get(&item.id)
-            .and_then(|recent| {
-                recent.iter().find(|window| {
-                    item.windows
+            .enumerate()
+            .find(|(_, item)| media_source_matches_item(source_id, item))
+            .map(|(index, item)| {
+                let preferred = self.recent_windows.get(&item.id).and_then(|recent| {
+                    recent
                         .iter()
-                        .any(|candidate| candidate.id == **window)
-                })
+                        .copied()
+                        .find(|key| item.windows.iter().any(|window| window.key() == *key))
+                });
+                (index, item.clone(), preferred)
             })
-            .copied()
-            .or_else(|| item.windows.first().map(|window| window.id))
     }
 
     pub(in crate::app) fn pointer_moved(&mut self, x: i32, y: i32) -> bool {
@@ -308,19 +341,16 @@ impl DockRuntime {
             return;
         };
         let foreground = foreground_window();
-        let Some((decision, item)) =
-            self.model.activation(source_index, foreground.as_ref())
-        else {
+        let Some(item) = self.model.items().get(source_index).cloned() else {
             return;
         };
         let display_name = item.display_name.clone();
-        match execute_activation(decision, item) {
-            Ok(()) => {
-                if let ActivationDecision::Focus(window) = decision {
+        match activation::activate_application(&item, foreground) {
+            Ok(outcome) => {
+                if let Some(window) = outcome.focused_key() {
                     self.record_window_activation(source_index, window);
                 }
             }
-            Err(ActivationError::ForegroundDenied(_)) => {}
             Err(error) => show_error(
                 owner,
                 "Lotus",

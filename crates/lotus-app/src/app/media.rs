@@ -1,8 +1,8 @@
 use lotus_media::{MediaHitTarget, MediaModel, MediaWidgetAction};
-use lotus_windows::activation::switch_window;
 use lotus_windows::dialog::show_error;
 use lotus_windows::media::{MediaCommand, MediaController, MediaEvent};
 
+use crate::app::activation;
 use crate::app::dock::DockRuntime;
 
 pub(super) struct MediaRuntime {
@@ -54,7 +54,7 @@ impl MediaRuntime {
     pub(super) fn activate(
         &self,
         target: MediaHitTarget,
-        dock: &DockRuntime,
+        dock: &mut DockRuntime,
         owner: lotus_windows::WindowHandle,
     ) {
         let Some(action) = self.model.action(target) else {
@@ -65,15 +65,35 @@ impl MediaRuntime {
                 let Some(snapshot) = self.model.snapshot() else {
                     return;
                 };
-                let Some(window) = dock.media_window(&snapshot.source_id) else {
+                let Some((source_index, item, preferred)) =
+                    dock.media_application(&snapshot.source_id)
+                else {
                     return;
                 };
-                if let Err(error) = switch_window(window) {
-                    show_error(
-                        owner,
-                        "Lotus media",
-                        &format!("Lotus could not focus the media application.\n\n{error}"),
-                    );
+                match activation::focus_application(&item, preferred) {
+                    Ok(outcome) => {
+                        if let Some(window) = outcome.focused_key() {
+                            dock.record_window_activation(source_index, window);
+                        } else if matches!(
+                            outcome,
+                            activation::ActivationOutcome::ForegroundDenied
+                        ) {
+                            show_error(
+                                owner,
+                                "Lotus media",
+                                "Windows prevented Lotus from focusing the media application.",
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        show_error(
+                            owner,
+                            "Lotus media",
+                            &format!(
+                                "Lotus could not focus the media application.\n\n{error}"
+                            ),
+                        );
+                    }
                 }
             }
             MediaWidgetAction::Previous => self.execute(MediaCommand::Previous),

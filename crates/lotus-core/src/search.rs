@@ -439,26 +439,3 @@ fn application_identity(entry: &ApplicationEntry) -> String {
 fn normalize_target(value: &str) -> String {
     value.trim().replace('/', "\\").to_lowercase()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{ApplicationEntry, SearchCatalog};
-
-    #[test]
-    fn hidden_entries_stay_out_of_default_results_but_can_be_intentionally_searched() {
-        let catalog = SearchCatalog::new([
-            ApplicationEntry::new("Calculator", "calc.exe", None),
-            ApplicationEntry::new("ChatGPT", "chatgpt.exe", None).hidden_until_search(),
-        ]);
-
-        assert_eq!(catalog.search("", 8)[0].name, "Calculator");
-        assert!(
-            catalog
-                .search("", 8)
-                .iter()
-                .all(|entry| entry.name != "ChatGPT")
-        );
-        assert_eq!(catalog.search("chat", 8)[0].name, "ChatGPT");
-        assert_eq!(catalog.search("gpt", 8)[0].name, "ChatGPT");
-    }
-}

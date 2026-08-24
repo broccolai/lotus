@@ -86,6 +86,7 @@ fn window_info(
     Some(WindowInfo {
         id,
         process_id,
+        incarnation: 0,
         title,
         executable_path,
         app_user_model_id: application_identity

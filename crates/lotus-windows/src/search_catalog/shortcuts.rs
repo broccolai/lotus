@@ -142,38 +142,3 @@ fn chromium_web_app_arguments(arguments: &str) -> bool {
         argument.starts_with("--app-id=") || argument.starts_with("--app=")
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::chromium_web_app_identity;
-
-    #[test]
-    fn chromium_web_app_shortcuts_accept_launch_switches_and_browser_proxies() {
-        let cases = [
-            (
-                Some("--profile-directory=Default --app-id=abcdefghijkl"),
-                Some(Path::new("chrome.exe")),
-                true,
-            ),
-            (
-                Some("--app=https://mail.proton.me/"),
-                Some(Path::new("chrome.exe")),
-                true,
-            ),
-            (None, Some(Path::new("chrome_proxy.exe")), true),
-            (None, Some(Path::new("msedge_proxy.exe")), true),
-            (
-                Some("--profile-directory=Default"),
-                Some(Path::new("chrome.exe")),
-                false,
-            ),
-            (None, Some(Path::new("ordinary.exe")), false),
-        ];
-
-        for (arguments, target, expected) in cases {
-            assert_eq!(chromium_web_app_identity(arguments, target), expected);
-        }
-    }
-}

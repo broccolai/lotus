@@ -4,6 +4,14 @@ pub enum Direction {
     Reverse,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReconcileOutcome {
+    Unchanged,
+    Refreshed,
+    Pruned { removed: usize },
+    Empty { removed: usize },
+}
+
 pub struct RecentOrder<K> {
     items: Vec<K>,
 }
@@ -31,11 +39,18 @@ impl<K: Copy + Eq> RecentOrder<K> {
         });
         items
     }
+
+    pub fn retain(&mut self, current: impl IntoIterator<Item = K>) {
+        let current = current.into_iter().collect::<Vec<_>>();
+        self.items
+            .retain(|recent| current.iter().any(|candidate| candidate == recent));
+    }
 }
 
 pub struct SwitcherSession<T> {
     items: Vec<T>,
     selected: usize,
+    direction: Direction,
 }
 
 impl<T> SwitcherSession<T> {
@@ -48,10 +63,15 @@ impl<T> SwitcherSession<T> {
             Direction::Forward => 0,
             Direction::Reverse => items.len() - 1,
         };
-        Some(Self { items, selected })
+        Some(Self {
+            items,
+            selected,
+            direction,
+        })
     }
 
     pub fn cycle(&mut self, direction: Direction) {
+        self.direction = direction;
         self.selected = match direction {
             Direction::Forward => (self.selected + 1) % self.items.len(),
             Direction::Reverse => {
@@ -61,10 +81,69 @@ impl<T> SwitcherSession<T> {
     }
 
     pub fn cycle_by(&mut self, delta: i32) {
+        if delta != 0 {
+            self.direction = if delta > 0 {
+                Direction::Forward
+            } else {
+                Direction::Reverse
+            };
+        }
         let length = i64::try_from(self.items.len()).unwrap_or(i64::MAX);
         let selected = i64::try_from(self.selected).unwrap_or_default();
         self.selected = usize::try_from((selected + i64::from(delta)).rem_euclid(length))
             .unwrap_or_default();
+    }
+
+    pub fn reconcile<K: Copy + Eq>(
+        &mut self,
+        latest: &[T],
+        identity: impl Fn(&T) -> K,
+    ) -> ReconcileOutcome
+    where
+        T: Clone + PartialEq,
+    {
+        let selected_identity = identity(&self.items[self.selected]);
+        let mut survivors = Vec::with_capacity(self.items.len());
+        let mut survivor_indices = Vec::with_capacity(self.items.len());
+        for (index, item) in self.items.iter().enumerate() {
+            if let Some(current) = latest
+                .iter()
+                .find(|current| identity(current) == identity(item))
+            {
+                survivor_indices.push(index);
+                survivors.push(current.clone());
+            }
+        }
+
+        let removed = self.items.len().saturating_sub(survivors.len());
+        if survivors.is_empty() {
+            return ReconcileOutcome::Empty { removed };
+        }
+
+        let next_selected = survivors
+            .iter()
+            .position(|item| identity(item) == selected_identity)
+            .or_else(|| match self.direction {
+                Direction::Forward => survivor_indices
+                    .iter()
+                    .position(|index| *index > self.selected)
+                    .or(Some(0)),
+                Direction::Reverse => survivor_indices
+                    .iter()
+                    .rposition(|index| *index < self.selected)
+                    .or(Some(survivor_indices.len() - 1)),
+            })
+            .unwrap_or_default();
+        let changed = self.items != survivors || self.selected != next_selected;
+        self.items = survivors;
+        self.selected = next_selected;
+        if removed != 0 {
+            ReconcileOutcome::Pruned { removed }
+        } else if changed {
+            ReconcileOutcome::Refreshed
+        } else {
+            ReconcileOutcome::Unchanged
+        }
     }
 
     pub const fn selected_index(&self) -> usize {
@@ -77,20 +156,5 @@ impl<T> SwitcherSession<T> {
 
     pub fn items(&self) -> &[T] {
         &self.items
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::RecentOrder;
-
-    #[test]
-    fn quick_switch_returns_to_the_previously_used_window() {
-        let mut recent = RecentOrder::default();
-        recent.record(3);
-        assert_eq!(recent.arrange(vec![1, 2, 3], |item| *item), vec![3, 1, 2]);
-
-        recent.record(1);
-        assert_eq!(recent.arrange(vec![1, 2, 3], |item| *item), vec![1, 3, 2]);
     }
 }

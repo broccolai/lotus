@@ -3,7 +3,7 @@ use std::ptr;
 
 use lotus_core::activation::ActivationDecision;
 use lotus_core::dock::DockItem;
-use lotus_core::window::WindowId;
+use lotus_core::window::{TrackedWindowKey, WindowId};
 use thiserror::Error;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Shell::{SHELLEXECUTEINFOW, ShellExecuteExW};
@@ -15,7 +15,7 @@ use windows::core::{BOOL, PCWSTR};
 
 use super::launch::expand_environment_variables;
 use crate::NativeError;
-use crate::interaction::activate_window;
+use crate::interaction::activate_exact_window;
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -28,6 +28,19 @@ pub enum ActivationError {
     InvalidWindowId(WindowId),
     #[error("window {0:?} no longer exists")]
     MissingWindow(WindowId),
+    #[error("window {key:?} now belongs to process {actual_process_id}")]
+    IdentityMismatch {
+        key: TrackedWindowKey,
+        actual_process_id: u32,
+    },
+    #[error("window {0:?} is no longer the tracker-published incarnation")]
+    RetiredWindow(TrackedWindowKey),
+    #[error("Windows could not deliver the close request to {window:?}: {source}")]
+    CloseDelivery {
+        window: TrackedWindowKey,
+        #[source]
+        source: windows::core::Error,
+    },
     #[error("Windows refused to force close {0:?}")]
     ForceCloseDenied(WindowId),
     #[error("Windows denied foreground activation for {0:?}")]
@@ -55,7 +68,7 @@ pub fn foreground_window() -> Option<WindowId> {
 }
 
 pub fn execute_activation(
-    decision: ActivationDecision<WindowId>,
+    decision: ActivationDecision<TrackedWindowKey>,
     item: &DockItem,
 ) -> Result<(), ActivationError> {
     match decision {
@@ -65,71 +78,137 @@ pub fn execute_activation(
     }
 }
 
-fn minimize(window: WindowId) -> Result<(), ActivationError> {
-    let hwnd = existing_window(window)?;
-    let _was_visible = unsafe { ShowWindow(hwnd, SW_MINIMIZE) };
+fn minimize(window: TrackedWindowKey) -> Result<(), ActivationError> {
+    let existing = existing_window(window)?;
+    let _was_visible = unsafe { ShowWindow(existing.hwnd, SW_MINIMIZE) };
+    drop(existing);
+    ensure_current(window)?;
     Ok(())
 }
 
-fn focus(window: WindowId) -> Result<(), ActivationError> {
-    let hwnd = existing_window(window)?;
-    if unsafe { IsIconic(hwnd) }.as_bool() {
-        let _was_visible = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+fn focus(window: TrackedWindowKey) -> Result<(), ActivationError> {
+    let existing = existing_window(window)?;
+    if unsafe { IsIconic(existing.hwnd) }.as_bool() {
+        let _was_visible = unsafe { ShowWindow(existing.hwnd, SW_RESTORE) };
     }
+    drop(existing);
 
-    if activate_window(hwnd).is_owned() {
+    ensure_current(window)?;
+    let existing = existing_window(window)?;
+    let activated = activate_exact_window(existing.hwnd).is_owned();
+    drop(existing);
+    if activated {
+        ensure_current(window)?;
         Ok(())
     } else {
-        Err(ActivationError::ForegroundDenied(window))
+        ensure_current(window)?;
+        Err(ActivationError::ForegroundDenied(window.id))
     }
 }
 
-pub fn focus_window(window: WindowId) -> Result<(), ActivationError> {
+pub fn focus_window(window: TrackedWindowKey) -> Result<(), ActivationError> {
     focus(window)
 }
 
-pub fn switch_window(window: WindowId) -> Result<(), ActivationError> {
-    let hwnd = existing_window(window)?;
-    if unsafe { IsIconic(hwnd) }.as_bool() {
-        let _was_visible = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+pub fn switch_window(window: TrackedWindowKey) -> Result<(), ActivationError> {
+    let existing = existing_window(window)?;
+    if unsafe { IsIconic(existing.hwnd) }.as_bool() {
+        let _was_visible = unsafe { ShowWindow(existing.hwnd, SW_RESTORE) };
     }
 
-    unsafe { SwitchToThisWindow(hwnd, true) };
-    if activate_window(hwnd).is_owned() {
+    unsafe { SwitchToThisWindow(existing.hwnd, true) };
+    drop(existing);
+    ensure_current(window)?;
+    let existing = existing_window(window)?;
+    let activated = activate_exact_window(existing.hwnd).is_owned();
+    drop(existing);
+    if activated {
+        ensure_current(window)?;
         Ok(())
     } else {
-        Err(ActivationError::ForegroundDenied(window))
+        ensure_current(window)?;
+        Err(ActivationError::ForegroundDenied(window.id))
     }
 }
 
-pub fn request_window_close(window: WindowId) -> Result<(), ActivationError> {
-    let hwnd = existing_window(window)?;
-    unsafe {
+pub fn request_window_close(window: TrackedWindowKey) -> Result<(), ActivationError> {
+    let existing = existing_window(window)?;
+    let posted = unsafe {
         PostMessageW(
-            Some(hwnd),
+            Some(existing.hwnd),
             WM_SYSCOMMAND,
             WPARAM(SC_CLOSE as usize),
             LPARAM(0),
         )
+    };
+    drop(existing);
+    match posted {
+        Ok(()) => ensure_current(window),
+        Err(source) => classify_close_delivery(window, source, ensure_current(window)),
     }
-    .map_err(|_| ActivationError::MissingWindow(window))
 }
 
-pub fn force_window_close(window: WindowId) -> Result<(), ActivationError> {
-    let hwnd = existing_window(window)?;
+pub fn force_window_close(window: TrackedWindowKey) -> Result<(), ActivationError> {
+    let existing = existing_window(window)?;
     // `existing_window` established this HWND is a current top-level window identity.
-    unsafe { EndTask(hwnd, BOOL::from(false), BOOL::from(true)) }
-        .as_bool()
-        .then_some(())
-        .ok_or(ActivationError::ForceCloseDenied(window))
+    let ended =
+        unsafe { EndTask(existing.hwnd, BOOL::from(false), BOOL::from(true)) }.as_bool();
+    drop(existing);
+    if ended {
+        return ensure_current(window);
+    }
+    ensure_current(window)?;
+    Err(ActivationError::ForceCloseDenied(window.id))
 }
 
-fn existing_window(window: WindowId) -> Result<HWND, ActivationError> {
-    let hwnd = hwnd_from_id(window)?;
-    unsafe { IsWindow(Some(hwnd)) }
-        .as_bool()
-        .then_some(hwnd)
-        .ok_or(ActivationError::MissingWindow(window))
+struct ExistingWindow {
+    hwnd: HWND,
+    _current: crate::window_tracker::CurrentTrackedWindow,
+}
+
+fn existing_window(key: TrackedWindowKey) -> Result<ExistingWindow, ActivationError> {
+    let Some(current) = crate::window_tracker::hold_current_tracked_window(key) else {
+        crate::window_tracker::report_stale_target(key);
+        return Err(ActivationError::RetiredWindow(key));
+    };
+    let hwnd = hwnd_from_id(key.id)?;
+    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+        drop(current);
+        crate::window_tracker::report_stale_target(key);
+        return Err(ActivationError::MissingWindow(key.id));
+    }
+    let mut process_id = 0;
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+            hwnd,
+            Some(&raw mut process_id),
+        )
+    };
+    if process_id != key.process_id {
+        drop(current);
+        crate::window_tracker::report_stale_target(key);
+        return Err(ActivationError::IdentityMismatch {
+            key,
+            actual_process_id: process_id,
+        });
+    }
+    Ok(ExistingWindow {
+        hwnd,
+        _current: current,
+    })
+}
+
+fn ensure_current(key: TrackedWindowKey) -> Result<(), ActivationError> {
+    existing_window(key).map(|_| ())
+}
+
+fn classify_close_delivery(
+    window: TrackedWindowKey,
+    source: windows::core::Error,
+    revalidation: Result<(), ActivationError>,
+) -> Result<(), ActivationError> {
+    revalidation?;
+    Err(ActivationError::CloseDelivery { window, source })
 }
 
 fn hwnd_from_id(window: WindowId) -> Result<HWND, ActivationError> {

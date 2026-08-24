@@ -617,8 +617,22 @@ impl ModuleHost {
     pub(super) fn record_switcher_foreground(
         &mut self,
         foreground: Option<lotus_core::window::WindowId>,
+        windows: &[lotus_core::window::WindowInfo],
     ) {
-        self.switcher.record_foreground(foreground);
+        self.switcher.record_foreground(foreground.and_then(|id| {
+            windows
+                .iter()
+                .find(|window| window.id == id)
+                .map(lotus_core::window::WindowInfo::key)
+        }));
+    }
+
+    pub(super) fn reconcile_switcher_windows(
+        &mut self,
+        windows: &[lotus_core::window::WindowInfo],
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        self.switcher.reconcile_windows(windows, graphics)
     }
 
     pub(super) fn drain_switcher_events(&mut self) -> bool {
@@ -672,6 +686,7 @@ impl ModuleHost {
         self.context_menu.open_app(
             anchor,
             source_index,
+            item.id.clone(),
             item.windows.len(),
             item.is_pinned,
             graphics,
@@ -685,8 +700,9 @@ impl ModuleHost {
         dock_model: &mut DockRuntime,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        let entries = dock_model
-            .picker_windows(source_index, lotus_windows::activation::foreground_window());
+        let foreground = lotus_windows::activation::foreground_window()
+            .and_then(|id| dock_model.tracked_key_for_window_id(id));
+        let entries = dock_model.picker_windows(source_index, foreground);
         let identity = dock_model
             .item(source_index)
             .map(|item| item.id.clone())
@@ -718,11 +734,22 @@ impl ModuleHost {
             return Ok(());
         };
         let Some(source_index) = dock_model.source_index(&identity) else {
+            lotus_windows::diagnostics::record_diagnostic(
+                "activation.picker_entries_pruned",
+                "window picker source disappeared during snapshot reconciliation",
+            );
             self.context_menu.hide();
             return Ok(());
         };
-        let windows = dock_model
-            .picker_windows(source_index, lotus_windows::activation::foreground_window());
+        let foreground = lotus_windows::activation::foreground_window()
+            .and_then(|id| dock_model.tracked_key_for_window_id(id));
+        let windows = dock_model.picker_windows(source_index, foreground);
+        if windows.is_empty() {
+            lotus_windows::diagnostics::record_diagnostic(
+                "activation.picker_entries_pruned",
+                "all window picker entries disappeared during snapshot reconciliation",
+            );
+        }
         let style = dock_model.settings().window_picker_style;
         self.context_menu
             .replace_picker(source_index, style, windows, graphics)

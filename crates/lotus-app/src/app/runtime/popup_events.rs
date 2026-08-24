@@ -1,9 +1,7 @@
 use lotus_core::window::WindowInfo;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
-use lotus_windows::activation::{
-    ActivationError, force_window_close, launch_target, request_window_close,
-};
+use lotus_windows::activation::launch_target;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
 use lotus_windows::interaction::request_exit;
@@ -12,7 +10,7 @@ use lotus_windows::window::{ContextMenuEvent, DockWindow, SelectionDirection};
 use super::presentation::present_dock_change;
 use crate::app::modules::ModuleHost;
 use crate::app::visuals::{AppMenuAction, ContextMenuAction, PopupAction, PowerAction};
-use crate::app::{AppError, DockRuntime};
+use crate::app::{AppError, DockRuntime, activation};
 
 pub(super) fn handle_context_menu_event(
     event: ContextMenuEvent,
@@ -37,7 +35,7 @@ pub(super) fn handle_context_menu_event(
         ContextMenuEvent::PointerReleased { x, y } => {
             let action = auxiliary.context_menu_runtime().scene.pointer_action(x, y);
             let source_index = auxiliary.context_menu_runtime().scene.source_index();
-            if !action.is_some_and(opens_power_menu) {
+            if !action.as_ref().is_some_and(opens_power_menu) {
                 auxiliary.context_menu_runtime().hide();
             }
             if let Some(action) = action {
@@ -55,7 +53,7 @@ pub(super) fn handle_context_menu_event(
         ContextMenuEvent::SelectionRequested => {
             let action = auxiliary.context_menu_runtime().scene.selected_action();
             let source_index = auxiliary.context_menu_runtime().scene.source_index();
-            if !action.is_some_and(opens_power_menu) {
+            if !action.as_ref().is_some_and(opens_power_menu) {
                 auxiliary.context_menu_runtime().hide();
             }
             if let Some(action) = action {
@@ -112,7 +110,7 @@ struct PopupActionContext<'a> {
 
 fn execute_popup_action(
     action: PopupAction,
-    source_index: Option<usize>,
+    _source_index: Option<usize>,
     context: &mut PopupActionContext<'_>,
 ) -> Result<(), AppError> {
     match action {
@@ -125,28 +123,44 @@ fn execute_popup_action(
             )?;
         }
         PopupAction::Power(action) => execute_power_action(action, context.dock.handle()),
-        PopupAction::App(action) => {
-            let Some(source_index) = source_index else {
+        PopupAction::App { action, identity } => {
+            let Some(source_index) = context.dock_model.source_index(&identity) else {
+                lotus_windows::diagnostics::record_diagnostic(
+                    "activation.app_menu_source_absent",
+                    "application context-menu source disappeared before its action ran",
+                );
                 return Ok(());
             };
             execute_app_menu_action(action, source_index, context)?;
         }
-        PopupAction::Activate(window) => {
-            if let Some(source_index) = source_index {
-                context
-                    .dock_model
-                    .record_window_activation(source_index, window);
+        PopupAction::Activate(key) => match activation::activate_exact(key) {
+            Ok(outcome) => {
+                if let Some(window) = outcome.focused_key()
+                    && let Some(source_index) =
+                        context.dock_model.source_index_for_key(window)
+                {
+                    context
+                        .dock_model
+                        .record_window_activation(source_index, window);
+                }
+                if matches!(outcome, activation::ActivationOutcome::ForegroundDenied) {
+                    show_error(
+                        context.dock.handle(),
+                        "Lotus",
+                        "Windows prevented Lotus from bringing that window to the foreground.",
+                    );
+                }
             }
-            if let Err(error) = lotus_windows::activation::switch_window(window) {
+            Err(error) => {
                 show_error(
                     context.dock.handle(),
                     "Lotus",
                     &format!("Lotus could not activate that window.\n\n{error}"),
                 );
             }
-        }
-        PopupAction::CloseWindow(window) => {
-            if let Err(error) = request_window_close(window) {
+        },
+        PopupAction::CloseWindow(key) => {
+            if let Err(error) = activation::request_close(key, false) {
                 show_error(
                     context.dock.handle(),
                     "Lotus",
@@ -158,7 +172,7 @@ fn execute_popup_action(
     Ok(())
 }
 
-const fn opens_power_menu(action: PopupAction) -> bool {
+const fn opens_power_menu(action: &PopupAction) -> bool {
     matches!(
         action,
         PopupAction::System(ContextMenuAction::RequestShutdown)
@@ -243,18 +257,13 @@ fn execute_app_menu_action(
             }
         }
         AppMenuAction::Close => {
-            let window_ids = context
+            let window_keys = context
                 .dock_model
                 .item(source_index)
-                .map(|item| {
-                    item.windows
-                        .iter()
-                        .map(|window| window.id)
-                        .collect::<Vec<_>>()
-                })
+                .map(|item| item.windows.iter().map(WindowInfo::key).collect::<Vec<_>>())
                 .unwrap_or_default();
-            for window in window_ids {
-                if let Err(error) = request_window_close(window) {
+            for key in window_keys {
+                if let Err(error) = activation::request_close(key, false) {
                     show_error(
                         context.dock.handle(),
                         "Lotus",
@@ -265,27 +274,19 @@ fn execute_app_menu_action(
             }
         }
         AppMenuAction::ForceClose => {
-            let window_ids = context
+            let window_keys = context
                 .dock_model
                 .item(source_index)
-                .map(|item| {
-                    item.windows
-                        .iter()
-                        .map(|window| window.id)
-                        .collect::<Vec<_>>()
-                })
+                .map(|item| item.windows.iter().map(WindowInfo::key).collect::<Vec<_>>())
                 .unwrap_or_default();
-            for window in window_ids {
-                match force_window_close(window) {
-                    Ok(()) | Err(ActivationError::MissingWindow(_)) => {}
-                    Err(error) => {
-                        show_error(
-                            context.dock.handle(),
-                            "Lotus",
-                            &format!("Lotus could not force close that window.\n\n{error}"),
-                        );
-                        break;
-                    }
+            for key in window_keys {
+                if let Err(error) = activation::request_close(key, true) {
+                    show_error(
+                        context.dock.handle(),
+                        "Lotus",
+                        &format!("Lotus could not force close that window.\n\n{error}"),
+                    );
+                    break;
                 }
             }
         }

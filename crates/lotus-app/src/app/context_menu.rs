@@ -83,13 +83,19 @@ impl ContextMenuRuntime {
         &mut self,
         anchor: SignedPoint,
         source_index: usize,
+        identity: String,
         running_windows: usize,
         pinned: bool,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        let mut scene =
-            ContextMenuScene::app(self.window.dpi(), source_index, running_windows, pinned)
-                .ok_or(AppError::InvalidContextMenuScene)?;
+        let mut scene = ContextMenuScene::app(
+            self.window.dpi(),
+            source_index,
+            identity,
+            running_windows,
+            pinned,
+        )
+        .ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = None;

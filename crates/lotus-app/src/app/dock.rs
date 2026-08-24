@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use lotus_core::dock::DockItem;
 use lotus_core::notification::NotificationSource;
 use lotus_core::settings::{DockSettings, SettingsStore};
-use lotus_core::window::{WindowId, WindowInfo};
+use lotus_core::window::{TrackedWindowKey, WindowInfo};
 use lotus_dock::interaction::DockInteraction;
 use lotus_dock::model::{DockModel, SettingsImpact};
 use lotus_dock::scene::DockPresenter;
@@ -46,7 +46,7 @@ pub(super) struct DockRuntime {
     pending_items: Option<Vec<SceneDockItem>>,
     exit_deadline: Option<Instant>,
     media: Option<MediaItem>,
-    recent_windows: HashMap<String, Vec<WindowId>>,
+    recent_windows: HashMap<String, Vec<TrackedWindowKey>>,
     transient_unpinned: HashMap<String, (usize, DockItem)>,
     revision: u64,
     presenter: DockPresenter,

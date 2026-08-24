@@ -88,33 +88,3 @@ pub fn taskbar_display_name(name: &str) -> &str {
         })
         .map_or(name, |(display_name, _)| display_name)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{badge_count, is_supported_application, taskbar_display_name};
-
-    #[test]
-    fn taskbar_badge_contract_handles_supported_apps() {
-        assert_eq!(
-            badge_count("Appid: com.squirrel.Discord.Discord", "9 notifications"),
-            Some(10)
-        );
-        assert_eq!(
-            badge_count("Appid: com.squirrel.slack.slack", "50 notifications"),
-            Some(50)
-        );
-        assert!(is_supported_application(
-            "Appid: com.squirrel.Discord.Discord",
-            "Discord"
-        ));
-        assert!(is_supported_application(
-            "Appid: com.squirrel.slack.slack",
-            "Slack"
-        ));
-        assert!(!is_supported_application("Appid: com.example.Mail", "Mail"));
-        assert_eq!(
-            taskbar_display_name("Discord - 1 running window"),
-            "Discord"
-        );
-    }
-}

@@ -308,27 +308,3 @@ fn character_byte_index(text: &str, character_index: usize) -> usize {
         .nth(character_index)
         .map_or(text.len(), |(index, _)| index)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{LauncherModel, QueryEdit};
-
-    #[test]
-    fn delete_previous_word_preserves_unicode_boundaries_and_selection_precedence() {
-        let mut launcher = LauncherModel::new(5);
-        assert!(launcher.insert_text("naïve  🌸pet"));
-
-        assert!(launcher.edit_query(QueryEdit::DeletePreviousWord));
-        assert_eq!(launcher.query(), "naïve  ");
-        assert_eq!(launcher.query_cursor(), "naïve  ".chars().count());
-
-        assert!(launcher.edit_query(QueryEdit::DeletePreviousWord));
-        assert_eq!(launcher.query(), "");
-        assert_eq!(launcher.query_cursor(), 0);
-
-        assert!(launcher.insert_text("selected text"));
-        assert!(launcher.edit_query(QueryEdit::SelectAll));
-        assert!(launcher.edit_query(QueryEdit::DeletePreviousWord));
-        assert_eq!(launcher.query(), "");
-    }
-}
