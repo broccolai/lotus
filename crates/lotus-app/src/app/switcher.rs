@@ -10,7 +10,7 @@ use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::switcher_surface::SwitcherCompositionSurfaceState;
-use lotus_windows::graphics::{DeviceState, SurfaceError};
+use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError};
 use lotus_windows::icon_hydrator::{SwitcherIconClient, SwitcherIconRequest};
 use lotus_windows::interaction::PointerCursor;
 use lotus_windows::window::{SwitcherEvent, SwitcherWindow};
@@ -89,6 +89,9 @@ impl SwitcherRuntime {
         let Some(session) = SwitcherSession::begin(windows, direction) else {
             return Ok(());
         };
+        if self.surface.is_none() && graphics.ready().is_none() {
+            return Err(AppError::GraphicsUnavailable);
+        }
         self.name_overrides = settings.application_name_overrides.clone();
         self.icon_settings = settings.clone();
         self.theme = theme_for(settings);
@@ -271,6 +274,7 @@ impl SwitcherRuntime {
     pub(super) fn handle_window_event(
         &mut self,
         event: SwitcherEvent,
+        graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         match event {
             SwitcherEvent::CloseRequested => self.hide(),
@@ -325,7 +329,11 @@ impl SwitcherRuntime {
                 if let Some(size) = NonZeroPhysicalSize::new(width, height)
                     && let Some(surface) = &mut self.surface
                 {
-                    surface.value_mut().resize(size)?;
+                    match surface.value_mut().resize(size) {
+                        Ok(()) => {}
+                        Err(SurfaceError::DeviceLost(loss)) => graphics.mark_lost(loss),
+                        Err(error) => return Err(error.into()),
+                    }
                 }
             }
             SwitcherEvent::DpiChanged { dpi } => {
@@ -420,6 +428,16 @@ impl SwitcherRuntime {
         }
     }
 
+    pub(super) fn recover_surface(
+        &mut self,
+        device: &GraphicsDevice,
+    ) -> Result<(), AppError> {
+        if let Some(surface) = &mut self.surface {
+            surface.value_mut().recover(device)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn render_frame(
         &mut self,
         pass: &mut FramePass,
@@ -441,17 +459,9 @@ impl SwitcherRuntime {
                     Ok(FrameOutcome::complete(needs_animation))
                 }
                 Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-                Err(SurfaceError::DeviceLost(_)) => {
-                    let _ = graphics.poll();
-                    graphics.recover()?;
-                    let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-                    surface.recover(device)?;
-                    match surface.render_scene(&presentation)? {
-                        FrameResult::Presented { needs_animation } => {
-                            Ok(FrameOutcome::complete(needs_animation))
-                        }
-                        FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
-                    }
+                Err(SurfaceError::DeviceLost(loss)) => {
+                    graphics.mark_lost(loss);
+                    Ok(FrameOutcome::complete(false))
                 }
                 Err(error) => Err(error.into()),
             }

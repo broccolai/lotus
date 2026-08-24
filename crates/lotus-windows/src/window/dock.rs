@@ -86,6 +86,10 @@ impl DockWindow {
         self.resize_content(width, height, settings)
     }
 
+    pub fn clear_appbar_ownership(&self) {
+        self.appbar_active.set(false);
+    }
+
     pub fn set_visible(&self, visible: bool) -> bool {
         self.apply_visibility(visible)
     }

@@ -34,23 +34,10 @@ pub(super) fn render_frame(
     pass.render(surface, |surface| match render(surface) {
         Ok(FrameResult::Presented { .. }) => Ok(FrameOutcome::complete(false)),
         Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-        Err(SurfaceError::DeviceLost(_)) => {
-            recover_device(graphics)?;
-
-            let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            surface.recover(device)?;
-
-            match render(surface)? {
-                FrameResult::Presented { .. } => Ok(FrameOutcome::complete(false)),
-                FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
-            }
+        Err(SurfaceError::DeviceLost(loss)) => {
+            graphics.mark_lost(loss);
+            Ok(FrameOutcome::complete(false))
         }
         Err(error) => Err(error.into()),
     })
-}
-
-pub(super) fn recover_device(graphics: &mut DeviceState) -> Result<(), AppError> {
-    let _ = graphics.poll();
-    graphics.recover()?;
-    Ok(())
 }

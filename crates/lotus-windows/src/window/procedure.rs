@@ -40,6 +40,7 @@ const WNDPROC_PANIC_EXIT_CODE: i32 = 1;
 pub(super) enum WindowKind {
     #[default]
     Dock,
+    DockReplica,
     Status,
     Search,
     Settings,
@@ -70,6 +71,12 @@ impl WindowState {
     pub fn status() -> Self {
         Self {
             kind: WindowKind::Status,
+            ..Self::default()
+        }
+    }
+    pub fn dock_replica() -> Self {
+        Self {
+            kind: WindowKind::DockReplica,
             ..Self::default()
         }
     }
@@ -231,6 +238,12 @@ pub(super) fn is_context_menu_window(hwnd: HWND) -> bool {
 }
 pub(super) fn is_dock_window(hwnd: HWND) -> bool {
     window_kind(hwnd) == Some(WindowKind::Dock)
+}
+pub(super) fn is_dock_context_window(hwnd: HWND) -> bool {
+    matches!(
+        window_kind(hwnd),
+        Some(WindowKind::Dock | WindowKind::DockReplica)
+    )
 }
 pub(super) fn initialize_window_state(hwnd: HWND, lparam: LPARAM) {
     let events = unsafe { (*(lparam.0 as *const CREATESTRUCTW)).lpCreateParams };

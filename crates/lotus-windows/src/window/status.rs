@@ -67,7 +67,11 @@ impl StatusWindow {
                 height: 1,
                 owner: Some(owner),
             },
-            Box::new(WindowState::status()),
+            Box::new(if display.is_some() {
+                WindowState::dock_replica()
+            } else {
+                WindowState::status()
+            }),
         )?;
         backdrop::apply(window.hwnd());
         Ok(Self {

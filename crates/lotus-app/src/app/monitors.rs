@@ -3,7 +3,9 @@ use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_windows::WindowHandle;
 use lotus_windows::graphics::surface::FrameResult;
-use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
+use lotus_windows::graphics::{
+    CompositionSurfaceState, DeviceState, GraphicsDevice, SurfaceSize,
+};
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::window::{
     DockContextRequest, DockWindow, PointerEvent, PopupAlignment, SignedPoint,
@@ -27,6 +29,7 @@ pub(super) enum MonitorDockAction {
         target: DockHitTarget,
         anchor: SignedPoint,
         alignment: PopupAlignment,
+        shift_held: bool,
     },
 }
 
@@ -40,6 +43,14 @@ pub(super) struct MonitorDocks {
     rendered_revision: u64,
     topology_dirty: bool,
     topology_generation: u64,
+    health: MonitorIntegrationHealth,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MonitorIntegrationHealth {
+    Disabled,
+    Healthy,
+    Degraded,
 }
 
 struct MonitorDock {
@@ -66,6 +77,7 @@ impl MonitorDocks {
             rendered_revision: u64::MAX,
             topology_dirty: true,
             topology_generation: 0,
+            health: MonitorIntegrationHealth::Disabled,
         }
     }
 
@@ -79,11 +91,28 @@ impl MonitorDocks {
         if !model.settings().show_on_all_monitors {
             self.docks.clear();
             self.rendered_revision = model.revision();
+            self.health = MonitorIntegrationHealth::Disabled;
             return Ok(());
         }
 
         if self.topology_dirty {
-            self.recreate(dock, model, graphics)?;
+            if let Err(error) = self.recreate(dock, model, graphics) {
+                self.health = MonitorIntegrationHealth::Degraded;
+                lotus_windows::diagnostics::record_error(
+                    "monitors.recovery_failed",
+                    &error,
+                );
+                return Err(error);
+            }
+            self.health = MonitorIntegrationHealth::Healthy;
+            lotus_windows::diagnostics::record_diagnostic(
+                "monitors.recovered",
+                &format!(
+                    "replicas={} topology={}",
+                    self.docks.len(),
+                    self.topology_generation
+                ),
+            );
         } else if self.rendered_revision != model.revision() {
             self.refresh_content(dock, model, graphics)?;
         }
@@ -99,6 +128,10 @@ impl MonitorDocks {
 
     pub(super) const fn topology_generation(&self) -> u64 {
         self.topology_generation
+    }
+
+    pub(super) const fn health(&self) -> MonitorIntegrationHealth {
+        self.health
     }
 
     pub(super) fn replica_count(&self) -> usize {
@@ -138,6 +171,16 @@ impl MonitorDocks {
         for replica in &mut self.docks {
             replica.surface.invalidate();
         }
+    }
+
+    pub(super) fn recover_surfaces(
+        &mut self,
+        device: &GraphicsDevice,
+    ) -> Result<(), AppError> {
+        for replica in &mut self.docks {
+            replica.surface.value_mut().recover(device)?;
+        }
+        Ok(())
     }
 
     pub(super) fn sync_visibility(
@@ -181,6 +224,7 @@ impl MonitorDocks {
                                 target,
                                 anchor,
                                 alignment,
+                                shift_held: request.shift_held(),
                             });
                         }
                     }
@@ -219,7 +263,15 @@ impl MonitorDocks {
         model: &mut DockRuntime,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        self.docks.clear();
+        lotus_windows::diagnostics::record_diagnostic(
+            "monitors.recovery_requested",
+            &format!(
+                "previous_replicas={} topology={}",
+                self.docks.len(),
+                self.topology_generation
+            ),
+        );
+        let mut docks = Vec::new();
         for window in dock.create_secondary_dock_windows()? {
             let scene = model.replica_scene(window.dpi())?;
             let size = scene.desired_size();
@@ -239,8 +291,9 @@ impl MonitorDocks {
                 scene,
                 presenter: DockPresenter::default(),
             };
-            self.docks.push(replica);
+            docks.push(replica);
         }
+        self.docks = docks;
         self.topology_dirty = false;
         Ok(())
     }
@@ -334,7 +387,7 @@ impl MonitorDock {
         &self,
         request: DockContextRequest,
     ) -> Option<(DockHitTarget, SignedPoint, PopupAlignment)> {
-        let DockContextRequest::Pointer { screen, client } = request else {
+        let DockContextRequest::Pointer { screen, client, .. } = request else {
             return None;
         };
         let target = hit_test(&self.scene, client.x, client.y)?;
@@ -398,17 +451,9 @@ impl MonitorDock {
                 Ok(FrameOutcome::complete(needs_animation && animation_allowed))
             }
             Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-            Err(lotus_windows::graphics::SurfaceError::DeviceLost(_)) => {
-                let _ = graphics.poll();
-                graphics.recover()?;
-                let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-                surface.recover(device)?;
-                match render(surface)? {
-                    FrameResult::Presented { needs_animation } => {
-                        Ok(FrameOutcome::complete(needs_animation && animation_allowed))
-                    }
-                    FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
-                }
+            Err(lotus_windows::graphics::SurfaceError::DeviceLost(loss)) => {
+                graphics.mark_lost(loss);
+                Ok(FrameOutcome::complete(false))
             }
             Err(error) => Err(error.into()),
         })

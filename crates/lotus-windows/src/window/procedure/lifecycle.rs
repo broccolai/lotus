@@ -4,21 +4,21 @@ use windows::Win32::Graphics::Gdi::{
     CreateRoundRectRgn, DeleteObject, HGDIOBJ, ScreenToClient, SetWindowRgn,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT;
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, GetClientRect, GetWindowRect, HTCAPTION, HTCLIENT, MA_NOACTIVATE,
-    MINMAXINFO, SPI_SETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WM_CLOSE,
-    WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_GETMINMAXINFO,
-    WM_MOUSEACTIVATE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_SETCURSOR,
-    WM_SETTINGCHANGE, WM_SIZE,
+    MINMAXINFO, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WM_CLOSE, WM_CONTEXTMENU,
+    WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_MOUSEACTIVATE, WM_NCCREATE,
+    WM_NCDESTROY, WM_NCHITTEST, WM_SETCURSOR, WM_SIZE,
 };
 
 use super::{
     ContextMenuEvent, DockContextRequest, SearchEvent, SettingsEvent, SignedPoint,
     SwitcherEvent, WindowEvent, WindowKind, clear_window_state, initialize_window_state,
-    is_dock_window, is_settings_window, low_word, push_window_event, window_kind,
-    with_window_state,
+    is_dock_context_window, is_dock_window, is_settings_window, low_word,
+    push_window_event, window_kind, with_window_state,
 };
-use crate::platform::windows::interaction::request_exit;
+use crate::platform::windows::interaction::{key_is_pressed, request_exit};
 
 const SETTINGS_MIN_WIDTH_DIPS: u32 = 780;
 const SETTINGS_MIN_HEIGHT_DIPS: u32 = 540;
@@ -52,7 +52,7 @@ pub(super) fn dispatch(
         WM_NCHITTEST if is_settings_window(hwnd) => {
             Some(settings_header_hit_test(hwnd, lparam))
         }
-        WM_CONTEXTMENU if is_dock_window(hwnd) => {
+        WM_CONTEXTMENU if is_dock_context_window(hwnd) => {
             push_window_event(
                 hwnd,
                 WindowEvent::ContextMenuRequested(context_request(hwnd, lparam)),
@@ -75,10 +75,6 @@ pub(super) fn dispatch(
         {
             Some(LRESULT(0))
         }
-        message if is_dock_window(hwnd) && requests_placement_refresh(message, wparam) => {
-            push_window_event(hwnd, WindowEvent::PlacementRefreshRequested);
-            Some(LRESULT(0))
-        }
         WM_CLOSE => Some(dispatch_close_message(hwnd)),
         WM_DESTROY => {
             stop_animation_timer(hwnd);
@@ -94,7 +90,7 @@ pub(super) fn dispatch(
 fn is_nonactivating_window(hwnd: HWND) -> bool {
     matches!(
         window_kind(hwnd),
-        Some(WindowKind::Dock | WindowKind::Status)
+        Some(WindowKind::Dock | WindowKind::DockReplica | WindowKind::Status)
     )
 }
 fn apply_pointer_cursor(hwnd: HWND) -> bool {
@@ -119,7 +115,9 @@ fn dispatch_close_message(hwnd: HWND) -> LRESULT {
         Some(WindowKind::Switcher) => {
             Some(WindowEvent::Switcher(SwitcherEvent::CloseRequested))
         }
-        Some(WindowKind::Dock | WindowKind::Status) | None => None,
+        Some(WindowKind::Dock | WindowKind::DockReplica | WindowKind::Status) | None => {
+            None
+        }
     };
     if let Some(event) = event {
         push_window_event(hwnd, event);
@@ -227,8 +225,9 @@ fn signed_point_from_lparam(lparam: LPARAM) -> SignedPoint {
 }
 
 fn context_request(hwnd: HWND, lparam: LPARAM) -> DockContextRequest {
+    let shift_held = key_is_pressed(VK_SHIFT);
     if lparam.0 == -1 {
-        return DockContextRequest::Keyboard;
+        return DockContextRequest::Keyboard { shift_held };
     }
     let screen = signed_point_from_lparam(lparam);
     let mut client = POINT {
@@ -243,13 +242,11 @@ fn context_request(hwnd: HWND, lparam: LPARAM) -> DockContextRequest {
     } else {
         screen
     };
-    DockContextRequest::Pointer { screen, client }
-}
-
-fn requests_placement_refresh(message: u32, wparam: WPARAM) -> bool {
-    message == WM_DISPLAYCHANGE
-        || (message == WM_SETTINGCHANGE
-            && u32::try_from(wparam.0).ok() == Some(SPI_SETWORKAREA.0))
+    DockContextRequest::Pointer {
+        screen,
+        client,
+        shift_held,
+    }
 }
 
 pub fn apply_rounded_region(hwnd: HWND, radius_dips: u32) {

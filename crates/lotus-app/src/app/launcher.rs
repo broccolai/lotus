@@ -18,7 +18,7 @@ use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
 use lotus_windows::graphics::surface::FrameResult;
-use lotus_windows::graphics::{DeviceState, SurfaceError, SurfaceSize};
+use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError, SurfaceSize};
 use lotus_windows::icon_hydrator::{LauncherIconClient, LauncherIconRequest};
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::search_catalog::SearchCatalogCache;
@@ -112,6 +112,9 @@ impl LauncherRuntime {
         if self.visible {
             self.hide();
             return Ok(());
+        }
+        if self.surface.is_none() && graphics.ready().is_none() {
+            return Err(AppError::GraphicsUnavailable);
         }
 
         let _ = catalog.refresh_if_stale(Duration::from_mins(5));
@@ -478,6 +481,16 @@ impl LauncherRuntime {
         }
     }
 
+    pub(super) fn recover_surface(
+        &mut self,
+        device: &GraphicsDevice,
+    ) -> Result<(), AppError> {
+        if let Some(surface) = &mut self.surface {
+            surface.value_mut().recover(device)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn sync_size(
         &mut self,
         dock: &DockWindow,
@@ -532,17 +545,9 @@ impl LauncherRuntime {
                 Ok(FrameOutcome::complete(needs_animation))
             }
             Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-            Err(SurfaceError::DeviceLost(_)) => {
-                let _ = graphics.poll();
-                graphics.recover()?;
-                let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-                surface.recover(device)?;
-                match render(surface)? {
-                    FrameResult::Presented { needs_animation } => {
-                        Ok(FrameOutcome::complete(needs_animation))
-                    }
-                    FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
-                }
+            Err(SurfaceError::DeviceLost(loss)) => {
+                graphics.mark_lost(loss);
+                Ok(FrameOutcome::complete(false))
             }
             Err(error) => Err(error.into()),
         })

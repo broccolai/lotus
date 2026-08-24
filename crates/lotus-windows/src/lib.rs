@@ -29,6 +29,7 @@ pub mod search_catalog;
 mod shell_bridge;
 pub mod single_instance;
 pub mod startup;
+pub mod system_lifecycle;
 pub mod taskbar_badges;
 pub mod taskbar_state;
 pub mod tray;

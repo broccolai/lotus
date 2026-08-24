@@ -15,12 +15,34 @@ const WINDOW_SETTLE_RETRY: Duration = Duration::from_millis(16);
 const REQUIRED_STABLE_SAMPLES: u8 = 5;
 const EDGE_INSET_DIP: i32 = 12;
 
+#[derive(Clone, Copy)]
 pub(super) struct PlacementOutcome {
     pub discovery_wait: Duration,
     pub bridge_configuration: Duration,
     pub positioning: Duration,
     pub timed_out: bool,
     pub success: bool,
+}
+
+impl PlacementOutcome {
+    pub(super) const fn cancelled(discovery_wait: Duration) -> Self {
+        Self {
+            discovery_wait,
+            bridge_configuration: Duration::ZERO,
+            positioning: Duration::ZERO,
+            timed_out: false,
+            success: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PlacementRequest<'a> {
+    pub screen_x: Option<i32>,
+    pub anchor_x: i32,
+    pub anchor_y: i32,
+    pub bridge: Option<&'a ShellBridgeLease>,
+    pub bridge_setup: Duration,
 }
 
 #[derive(Clone, Copy)]
@@ -30,22 +52,24 @@ struct PositionAttempt {
 }
 
 pub(super) fn place_flyout(
-    screen_x: Option<i32>,
-    anchor_x: i32,
-    anchor_y: i32,
-    bridge: Option<&ShellBridgeLease>,
-    bridge_setup: Duration,
+    request: PlacementRequest<'_>,
     mut find_window: impl FnMut() -> Option<HWND>,
+    mut is_current: impl FnMut() -> bool,
+    mut set_position: impl FnMut(HWND, i32, i32) -> bool,
+    mut configure_bridge: impl FnMut(&ShellBridgeLease, i32, i32) -> bool,
 ) -> PlacementOutcome {
     let deadline = Instant::now() + WINDOW_SETTLE_TIMEOUT;
     let mut previous_size = None;
     let mut stable_samples = 0;
-    let mut bridge_configuration = bridge_setup;
+    let mut bridge_configuration = request.bridge_setup;
     let mut positioning = Duration::ZERO;
     let mut discovery_wait = Duration::ZERO;
     let mut bridge_configured = false;
     let mut previous_position = None;
     while Instant::now() < deadline {
+        if !is_current() {
+            return cancelled_outcome(discovery_wait, bridge_configuration, positioning);
+        }
         let Some(window) = find_window() else {
             discovery_wait = discovery_wait.saturating_add(sleep_for_settle());
             continue;
@@ -62,17 +86,39 @@ pub(super) fn place_flyout(
             discovery_wait = discovery_wait.saturating_add(sleep_for_settle());
             continue;
         }
-        if let Some(bridge) = bridge
+        if let Some(bridge) = request.bridge
             && !bridge_configured
         {
+            if !is_current() {
+                return cancelled_outcome(
+                    discovery_wait,
+                    bridge_configuration,
+                    positioning,
+                );
+            }
             let configured = Instant::now();
-            bridge_configured = bridge.configure(screen_x.unwrap_or(anchor_x), anchor_y);
+            bridge_configured = configure_bridge(
+                bridge,
+                request.screen_x.unwrap_or(request.anchor_x),
+                request.anchor_y,
+            );
             bridge_configuration =
                 bridge_configuration.saturating_add(configured.elapsed());
         }
         let observed_requested_position = previous_position == Some((rect.left, rect.top));
+        if !is_current() {
+            return cancelled_outcome(discovery_wait, bridge_configuration, positioning);
+        }
         let positioning_started = Instant::now();
-        let attempt = position_window(window, screen_x, anchor_x, anchor_y, size.0, size.1);
+        let attempt = position_window(
+            window,
+            request.screen_x,
+            request.anchor_x,
+            request.anchor_y,
+            size.0,
+            size.1,
+            &mut set_position,
+        );
         positioning = positioning.saturating_add(positioning_started.elapsed());
         let placement_attempted =
             bridge_configured || attempt.is_some_and(|item| item.accepted);
@@ -109,6 +155,20 @@ pub(super) fn place_flyout(
     }
 }
 
+fn cancelled_outcome(
+    discovery_wait: Duration,
+    bridge_configuration: Duration,
+    positioning: Duration,
+) -> PlacementOutcome {
+    PlacementOutcome {
+        discovery_wait,
+        bridge_configuration,
+        positioning,
+        timed_out: false,
+        success: false,
+    }
+}
+
 fn sleep_for_settle() -> Duration {
     let started = Instant::now();
     thread::sleep(WINDOW_SETTLE_RETRY);
@@ -122,6 +182,7 @@ fn position_window(
     anchor_y: i32,
     width: i32,
     height: i32,
+    set_position: &mut impl FnMut(HWND, i32, i32) -> bool,
 ) -> Option<PositionAttempt> {
     let display_x = screen_x.unwrap_or(anchor_x);
     let Ok(display) = nearest_display_to_point(display_x, anchor_y) else {
@@ -150,7 +211,15 @@ fn position_window(
     let y = anchor_y
         .saturating_sub(height)
         .clamp(display.work_area.top, maximum_y.max(display.work_area.top));
-    let accepted = unsafe {
+    let accepted = set_position(window, x, y);
+    Some(PositionAttempt {
+        requested: (x, y),
+        accepted,
+    })
+}
+
+pub(super) fn set_window_position(window: HWND, x: i32, y: i32) -> bool {
+    unsafe {
         SetWindowPos(
             window,
             None,
@@ -161,9 +230,5 @@ fn position_window(
             SET_WINDOW_POS_FLAGS(SWP_NOSIZE.0 | SWP_NOZORDER.0 | SWP_NOACTIVATE.0),
         )
     }
-    .is_ok();
-    Some(PositionAttempt {
-        requested: (x, y),
-        accepted,
-    })
+    .is_ok()
 }

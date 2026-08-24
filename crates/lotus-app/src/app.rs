@@ -2,6 +2,7 @@ mod activation;
 mod context_menu;
 mod dock;
 mod icon_override;
+mod integration;
 mod launcher;
 mod media;
 mod modules;
@@ -14,6 +15,7 @@ mod visuals;
 
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use dock::DockRuntime;
 use lotus_core::search::SearchUsage;
@@ -24,7 +26,6 @@ use lotus_core::settings::{
 use lotus_search::usage::SearchUsageStore;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::activation::ActivationError;
-use lotus_windows::appbar::ShellIntegration;
 use lotus_windows::dpi::enable_per_monitor_v2;
 use lotus_windows::graphics::{
     CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize,
@@ -79,6 +80,18 @@ pub enum AppError {
     RestartWait(#[from] RestartWaitError),
 }
 
+impl AppError {
+    pub(super) fn mark_graphics_lost(&self, graphics: &mut DeviceState) -> bool {
+        match self {
+            Self::Surface(SurfaceError::DeviceLost(loss)) => {
+                graphics.mark_lost(*loss);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 enum RestartError {
     #[error("Lotus could not locate its current executable: {0}")]
@@ -90,10 +103,64 @@ enum RestartError {
 struct RuntimeServices<'a> {
     taskbar_badges: Option<&'a TaskbarBadgeController>,
     onboarding_required: bool,
-    shell_integration: &'a mut ShellIntegration,
+    integration: &'a mut integration::IntegrationRecovery,
+}
+
+struct StartupPhases {
+    started: Instant,
+    checkpoint: Instant,
+    settings: Duration,
+    graphics_window: Duration,
+    initial_window_tracking: Duration,
+    dock_model: Duration,
+    badge_worker_dispatch: Duration,
+    auxiliary_windows: Duration,
+    shell_integration_placement: Duration,
+}
+
+impl StartupPhases {
+    fn start() -> Self {
+        let started = Instant::now();
+        Self {
+            started,
+            checkpoint: started,
+            settings: Duration::ZERO,
+            graphics_window: Duration::ZERO,
+            initial_window_tracking: Duration::ZERO,
+            dock_model: Duration::ZERO,
+            badge_worker_dispatch: Duration::ZERO,
+            auxiliary_windows: Duration::ZERO,
+            shell_integration_placement: Duration::ZERO,
+        }
+    }
+
+    fn complete(&mut self) -> Duration {
+        let elapsed = self.checkpoint.elapsed();
+        self.checkpoint = Instant::now();
+        elapsed
+    }
+
+    fn record_after_first_frame(self, first_frame: Duration) {
+        lotus_windows::diagnostics::record_diagnostic(
+            "startup.cold_boot",
+            &format!(
+                "settings_ms={} graphics_window_ms={} initial_window_tracking_ms={} dock_model_ms={} badge_worker_dispatch_ms={} auxiliary_windows_ms={} shell_integration_placement_ms={} first_frame_ms={} total_ms={}",
+                self.settings.as_millis(),
+                self.graphics_window.as_millis(),
+                self.initial_window_tracking.as_millis(),
+                self.dock_model.as_millis(),
+                self.badge_worker_dispatch.as_millis(),
+                self.auxiliary_windows.as_millis(),
+                self.shell_integration_placement.as_millis(),
+                first_frame.as_millis(),
+                self.started.elapsed().as_millis(),
+            ),
+        );
+    }
 }
 
 pub fn run() -> Result<(), AppError> {
+    let mut startup_phases = StartupPhases::start();
     enable_per_monitor_v2()?;
     let startup = parse_startup_args(std::env::args_os().skip(1))?;
     let _restart_wait = wait_for_restart_source(startup.restart_after)?;
@@ -111,6 +178,7 @@ pub fn run() -> Result<(), AppError> {
     }
     let usage_store = SearchUsageStore::new(settings_store.directory());
     let usage = usage_store.load().unwrap_or_default();
+    startup_phases.settings = startup_phases.complete();
     let mut graphics = DeviceState::create()?;
     let mut dock = DockWindow::create()?;
     lotus_windows::backdrop::apply_dock_settings(dock.handle(), &settings);
@@ -123,7 +191,9 @@ pub fn run() -> Result<(), AppError> {
         dock.handle(),
         surface_size,
     )?);
+    startup_phases.graphics_window = startup_phases.complete();
     let mut window_tracker = WindowTracker::start()?;
+    startup_phases.initial_window_tracking = startup_phases.complete();
     let mut dock_model = DockRuntime::new(
         settings,
         settings_store,
@@ -131,9 +201,11 @@ pub fn run() -> Result<(), AppError> {
         dock.dpi(),
         dock.drag_threshold(),
     )?;
+    startup_phases.dock_model = startup_phases.complete();
     let taskbar_badges = (!onboarding_required)
-        .then(|| enable_notification_badges(&mut dock_model))
+        .then(|| enable_notification_badges(&dock_model))
         .flatten();
+    startup_phases.badge_worker_dispatch = startup_phases.complete();
     let mut auxiliary = create_auxiliary_windows(
         &dock,
         &dock_model,
@@ -141,9 +213,13 @@ pub fn run() -> Result<(), AppError> {
         usage_store,
         !onboarding_required,
     )?;
+    startup_phases.auxiliary_windows = startup_phases.complete();
     resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
-    let mut shell_integration =
-        ShellIntegration::new(dock_model.settings(), &dock, !onboarding_required);
+    let mut integration = integration::IntegrationRecovery::new(
+        dock_model.settings(),
+        &dock,
+        !onboarding_required,
+    );
     window_tracker.refresh_fullscreen();
     if !onboarding_required {
         auxiliary.sync_status(&dock, &dock_model, &mut graphics)?;
@@ -170,6 +246,8 @@ pub fn run() -> Result<(), AppError> {
     if startup.open_settings && !onboarding_required {
         auxiliary.open_settings_without_refresh(dock_model.settings(), &mut graphics)?;
     }
+    startup_phases.shell_integration_placement = startup_phases.complete();
+    let first_frame_started = Instant::now();
     flush_frame(
         &mut dock,
         &mut graphics,
@@ -178,10 +256,11 @@ pub fn run() -> Result<(), AppError> {
         &mut auxiliary,
         lotus_ui::frame::FrameTrigger::Changes,
     )?;
+    startup_phases.record_after_first_frame(first_frame_started.elapsed());
     let mut runtime = RuntimeServices {
         taskbar_badges: taskbar_badges.as_ref(),
         onboarding_required,
-        shell_integration: &mut shell_integration,
+        integration: &mut integration,
     };
     run_message_loop(
         &mut runtime,
@@ -208,15 +287,20 @@ fn sync_startup_preference(enabled: bool) {
     let _ = startup_registration::sync(enabled);
 }
 
-fn enable_notification_badges(model: &mut DockRuntime) -> Option<TaskbarBadgeController> {
+fn enable_notification_badges(model: &DockRuntime) -> Option<TaskbarBadgeController> {
     if model.settings().notification_badge_style == NotificationBadgeStyle::Off {
         return None;
     }
-    let controller = TaskbarBadgeController::start().ok()?;
-    if let Ok(snapshot) = controller.snapshot() {
-        model.set_notifications(snapshot);
+    match TaskbarBadgeController::start() {
+        Ok(controller) => Some(controller),
+        Err(error) => {
+            lotus_windows::diagnostics::record_error(
+                "taskbar_badges.worker_dispatch",
+                &error,
+            );
+            None
+        }
     }
-    Some(controller)
 }
 
 fn load_settings() -> Result<(DockSettings, SettingsStore), AppError> {

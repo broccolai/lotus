@@ -8,7 +8,7 @@ use lotus_windows::dwm_thumbnail::DwmThumbnailHost;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
 use lotus_windows::graphics::surface::FrameResult;
-use lotus_windows::graphics::{DeviceState, SurfaceError};
+use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError};
 use lotus_windows::window::{
     ContextMenuEvent, ContextMenuWindow, PopupAlignment, SignedPoint,
 };
@@ -26,6 +26,13 @@ pub(super) struct ContextMenuRuntime {
     anchor: Option<SignedPoint>,
     alignment: PopupAlignment,
     picker_identity: Option<String>,
+}
+
+pub(super) struct AppMenuOptions {
+    pub(super) identity: String,
+    pub(super) running_windows: usize,
+    pub(super) pinned: bool,
+    pub(super) shift_held: bool,
 }
 
 impl ContextMenuRuntime {
@@ -83,17 +90,16 @@ impl ContextMenuRuntime {
         &mut self,
         anchor: SignedPoint,
         source_index: usize,
-        identity: String,
-        running_windows: usize,
-        pinned: bool,
+        options: AppMenuOptions,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         let mut scene = ContextMenuScene::app(
             self.window.dpi(),
             source_index,
-            identity,
-            running_windows,
-            pinned,
+            options.identity,
+            options.running_windows,
+            options.pinned,
+            options.shift_held,
         )
         .ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(self.theme);
@@ -182,6 +188,9 @@ impl ContextMenuRuntime {
         anchor: SignedPoint,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
+        if self.surface.is_none() && graphics.ready().is_none() {
+            return Err(AppError::GraphicsUnavailable);
+        }
         let mut desired = self.scene.desired_size();
         let dpi = self.window.prepare_at(anchor, self.alignment, desired)?;
         if self.scene.set_dpi(dpi) {
@@ -223,6 +232,16 @@ impl ContextMenuRuntime {
         }
     }
 
+    pub(super) fn recover_surface(
+        &mut self,
+        device: &GraphicsDevice,
+    ) -> Result<(), AppError> {
+        if let Some(surface) = &mut self.surface {
+            surface.value_mut().recover(device)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn render_frame(
         &mut self,
         pass: &mut FramePass,
@@ -246,18 +265,9 @@ impl ContextMenuRuntime {
                     Ok(FrameOutcome::complete(false))
                 }
                 Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-                Err(SurfaceError::DeviceLost(_)) => {
-                    let _ = graphics.poll();
-                    graphics.recover()?;
-                    let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-                    surface.recover(device)?;
-                    match surface.render_scene(&presentation)? {
-                        FrameResult::Presented { .. } => {
-                            self.thumbnails.reconcile(&self.scene.picker_previews());
-                            Ok(FrameOutcome::complete(false))
-                        }
-                        FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
-                    }
+                Err(SurfaceError::DeviceLost(loss)) => {
+                    graphics.mark_lost(loss);
+                    Ok(FrameOutcome::complete(false))
                 }
                 Err(error) => Err(error.into()),
             }

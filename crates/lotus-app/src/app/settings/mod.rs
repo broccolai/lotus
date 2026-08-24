@@ -13,7 +13,7 @@ use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
 use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::graphics::settings_surface::SettingsCompositionSurfaceState;
-use lotus_windows::graphics::{DeviceState, SurfaceSize};
+use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceSize};
 use lotus_windows::interaction::PointerCursor;
 use lotus_windows::native_icon::NativeIconCache;
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
@@ -240,6 +240,16 @@ impl SettingsRuntime {
         }
     }
 
+    pub(in crate::app) fn recover_surface(
+        &mut self,
+        device: &GraphicsDevice,
+    ) -> Result<(), AppError> {
+        if let Some(surface) = &mut self.surface {
+            surface.value_mut().recover(device)?;
+        }
+        Ok(())
+    }
+
     pub(in crate::app) fn drain_events(&mut self) -> Vec<SettingsEvent> {
         self.window.drain_events().collect()
     }
@@ -269,12 +279,8 @@ impl SettingsRuntime {
                 self.invalidate();
                 Ok(())
             }
-            Err(lotus_windows::graphics::SurfaceError::DeviceLost(_)) => {
-                assets::recover_device(graphics)?;
-                let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-                surface.value_mut().recover(device)?;
-                surface.value_mut().resize(size)?;
-                self.invalidate();
+            Err(lotus_windows::graphics::SurfaceError::DeviceLost(loss)) => {
+                graphics.mark_lost(loss);
                 Ok(())
             }
             Err(error) => Err(error.into()),

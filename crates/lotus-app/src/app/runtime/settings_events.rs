@@ -1,7 +1,6 @@
 use lotus_core::settings::DockSettings;
 use lotus_settings::scene::SettingsAction;
 use lotus_ui::frame::ScheduledSurface;
-use lotus_windows::appbar::{ShellIntegration, ShellRecoverySource};
 use lotus_windows::clipboard::read_text;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
@@ -12,6 +11,9 @@ use lotus_windows::window_tracker::WindowTracker;
 
 use super::presentation::{apply_fullscreen_visibility, present_dock_change};
 use super::{controllers, update_events};
+use crate::app::integration::{
+    IntegrationRecovery, IntegrationRecoveryContext, IntegrationRecoverySource,
+};
 use crate::app::modules::ModuleHost;
 use crate::app::settings::{
     ApplicationIconOutcome, ColorOutcome, ColorTarget, choose_application_icon,
@@ -23,10 +25,10 @@ pub(super) struct SettingsEventContext<'a> {
     pub(super) dock: &'a DockWindow,
     pub(super) graphics: &'a mut DeviceState,
     pub(super) dock_surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
-    pub(super) window_tracker: &'a WindowTracker,
+    pub(super) window_tracker: &'a mut WindowTracker,
     pub(super) dock_model: &'a mut DockRuntime,
     pub(super) auxiliary: &'a mut ModuleHost,
-    pub(super) shell_integration: &'a mut ShellIntegration,
+    pub(super) integration: &'a mut IntegrationRecovery,
 }
 
 pub(super) fn handle_settings_event(
@@ -237,10 +239,16 @@ fn apply_settings_action(
             Ok(())
         }
         SettingsAction::RestartIntegration => {
-            context.shell_integration.recover(
-                context.dock_model.settings(),
-                context.dock,
-                ShellRecoverySource::Settings,
+            context.integration.recover(
+                IntegrationRecoverySource::Settings,
+                &mut IntegrationRecoveryContext {
+                    dock: context.dock,
+                    graphics: context.graphics,
+                    dock_surface: context.dock_surface,
+                    window_tracker: context.window_tracker,
+                    dock_model: context.dock_model,
+                    auxiliary: context.auxiliary,
+                },
             );
             Ok(())
         }

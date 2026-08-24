@@ -5,7 +5,7 @@
 )]
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -79,32 +79,16 @@ impl TaskbarBadgeController {
             scan_queued: AtomicBool::new(false),
             running: AtomicBool::new(true),
         });
-        let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
             .name("lotus-taskbar-badges".to_owned())
-            .spawn(move || run_worker(worker_shared, startup_sender))
+            .spawn(move || run_worker(worker_shared))
             .map_err(|error| WindowsError::new(E_FAIL, error.to_string()))?;
 
-        match startup_receiver.recv_timeout(Duration::from_secs(2)) {
-            Ok(Ok(())) => Ok(Self {
-                shared,
-                worker: Some(worker),
-            }),
-            Ok(Err(message)) => {
-                shared.running.store(false, Ordering::Release);
-                let _ = worker.join();
-                Err(WindowsError::new(E_FAIL, message))
-            }
-            Err(_) => {
-                shared.running.store(false, Ordering::Release);
-                request_worker_stop(&shared);
-                Err(WindowsError::new(
-                    E_FAIL,
-                    "Lotus taskbar badge worker did not start",
-                ))
-            }
-        }
+        Ok(Self {
+            shared,
+            worker: Some(worker),
+        })
     }
 
     pub fn snapshot(&self) -> Result<Vec<NotificationSource>, WindowsError> {
@@ -121,41 +105,38 @@ impl Drop for TaskbarBadgeController {
     fn drop(&mut self) {
         self.shared.running.store(false, Ordering::Release);
         request_worker_stop(&self.shared);
-        if let Some(worker) = self.worker.take() {
+        if let Some(worker) = self.worker.take()
+            && worker.is_finished()
+        {
             let _ = worker.join();
         }
     }
 }
 
-fn run_worker(shared: Arc<SharedState>, startup: mpsc::SyncSender<Result<(), String>>) {
+fn run_worker(shared: Arc<SharedState>) {
     let mut message = MSG::default();
     let _ = unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_NOREMOVE) };
     shared
         .worker_thread
         .store(current_thread_id(), Ordering::Release);
+    if !shared.running.load(Ordering::Acquire) {
+        shared.worker_thread.store(0, Ordering::Release);
+        return;
+    }
     let automation = match BadgeAutomation::start(Arc::clone(&shared)) {
         Ok(automation) => automation,
         Err(error) => {
             shared.running.store(false, Ordering::Release);
-            let _ = startup.send(Err(error.to_string()));
-            drop(startup);
-            drop(shared);
+            crate::diagnostics::record_error("taskbar_badges.worker_init", &error);
+            shared.worker_thread.store(0, Ordering::Release);
             return;
         }
     };
     scan_and_publish(&automation, &shared);
     if !shared.running.load(Ordering::Acquire) {
-        let _ = startup.send(Err(
-            "Lotus taskbar badge worker was stopped during startup".to_owned()
-        ));
-        drop(startup);
-        drop(automation);
         shared.worker_thread.store(0, Ordering::Release);
-        drop(shared);
         return;
     }
-    let _ = startup.send(Ok(()));
-    drop(startup);
 
     worker_message_loop(&automation, &shared);
     shared.worker_thread.store(0, Ordering::Release);

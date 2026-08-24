@@ -1,6 +1,6 @@
 use lotus_core::window::WindowInfo;
 use lotus_ui::frame::ScheduledSurface;
-use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
+use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, GraphicsDeviceHealth};
 use lotus_windows::interaction::NativeMessage;
 use lotus_windows::window::{DockWindow, WindowEvent};
 use lotus_windows::window_tracker::{WindowTracker, WindowTrackerEvent};
@@ -29,22 +29,35 @@ pub(super) fn drain_window_events(
         .iter()
         .any(|event| matches!(event, WindowEvent::AnimationFrame));
     for event in events {
-        dock_events::handle_window_event(
-            event, dock, graphics, surface, dock_model, auxiliary,
+        complete_after_graphics_loss(
+            dock_events::handle_window_event(
+                event, dock, graphics, surface, dock_model, auxiliary,
+            ),
+            graphics,
         )?;
     }
-    had_events |=
-        search_events::drain_search_events(dock, graphics, dock_model, auxiliary)?;
+    had_events |= complete_after_graphics_loss(
+        search_events::drain_search_events(dock, graphics, dock_model, auxiliary),
+        graphics,
+    )?
+    .unwrap_or(false);
     for event in auxiliary.drain_context_menu_events() {
         had_events = true;
-        popup_events::handle_context_menu_event(
-            event, dock, graphics, surface, windows, dock_model, auxiliary,
+        complete_after_graphics_loss(
+            popup_events::handle_context_menu_event(
+                event, dock, graphics, surface, windows, dock_model, auxiliary,
+            ),
+            graphics,
         )?;
     }
     for (zone, event) in auxiliary.drain_status_events() {
         had_events = true;
         auxiliary.hide_launcher_on_status_press(&event);
-        if let Some(activation) = auxiliary.handle_status_event(zone, event, graphics)? {
+        let activation = complete_after_graphics_loss(
+            auxiliary.handle_status_event(zone, event, graphics),
+            graphics,
+        )?;
+        if let Some(activation) = activation.flatten() {
             match activation.action {
                 crate::app::status::AuxiliaryZoneAction::Media(target) => {
                     auxiliary.activate_media(target, dock_model, activation.owner);
@@ -63,6 +76,22 @@ pub(super) fn drain_window_events(
         animation_tick,
         had_events,
     })
+}
+
+fn complete_after_graphics_loss<T>(
+    result: Result<T, AppError>,
+    graphics: &mut DeviceState,
+) -> Result<Option<T>, AppError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error)
+            if error.mark_graphics_lost(graphics)
+                || graphics.health() == GraphicsDeviceHealth::Lost =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub(super) struct TrackerEventContext<'a> {
@@ -104,16 +133,22 @@ pub(super) fn handle_tracker_message(
         let previous_size = context.dock_model.scene().desired_size();
         let windows = context.window_tracker.current_windows();
         context.dock_model.prune_recent_windows(windows);
-        context
-            .auxiliary
-            .reconcile_switcher_windows(windows, context.graphics)?;
+        complete_after_graphics_loss(
+            context
+                .auxiliary
+                .reconcile_switcher_windows(windows, context.graphics),
+            context.graphics,
+        )?;
         let pins_reconciled = context
             .dock_model
             .reconcile_unpinned_pins(windows, context.auxiliary.application_catalog())?;
         if pins_reconciled {
-            context.auxiliary.adapt_to_pin_changes(
-                context.dock,
-                context.dock_model,
+            complete_after_graphics_loss(
+                context.auxiliary.adapt_to_pin_changes(
+                    context.dock,
+                    context.dock_model,
+                    context.graphics,
+                ),
                 context.graphics,
             )?;
         }
@@ -121,21 +156,30 @@ pub(super) fn handle_tracker_message(
         context
             .dock_model
             .record_foreground(lotus_windows::activation::foreground_window());
-        context
-            .auxiliary
-            .reconcile_visible_window_picker(context.dock_model, context.graphics)?;
+        complete_after_graphics_loss(
+            context
+                .auxiliary
+                .reconcile_visible_window_picker(context.dock_model, context.graphics),
+            context.graphics,
+        )?;
         if context.dock_model.scene().desired_size() != previous_size {
-            present_dock_change(
-                context.dock,
+            complete_after_graphics_loss(
+                present_dock_change(
+                    context.dock,
+                    context.graphics,
+                    context.surface,
+                    context.auxiliary,
+                    context.dock_model,
+                ),
                 context.graphics,
-                context.surface,
-                context.auxiliary,
-                context.dock_model,
             )?;
         } else if pins_reconciled {
-            context.auxiliary.sync_status(
-                context.dock,
-                context.dock_model,
+            complete_after_graphics_loss(
+                context.auxiliary.sync_status(
+                    context.dock,
+                    context.dock_model,
+                    context.graphics,
+                ),
                 context.graphics,
             )?;
         }

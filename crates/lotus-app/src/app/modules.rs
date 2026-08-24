@@ -7,7 +7,7 @@ use lotus_settings::appearance::theme_for;
 use lotus_settings::scene::{SettingsApplicationRecord, SettingsScene};
 use lotus_ui::frame::FramePass;
 use lotus_windows::WindowHandle;
-use lotus_windows::graphics::DeviceState;
+use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth};
 use lotus_windows::icon_hydrator::{IconHydrationResult, IconHydrator};
 use lotus_windows::input::{InputConfig, InputController};
 use lotus_windows::search_catalog::{RegisteredApplication, SearchCatalogCache};
@@ -19,7 +19,7 @@ use lotus_windows::window::{
 use lotus_windows::window_tracker::WindowTracker;
 
 use crate::app::AppError;
-use crate::app::context_menu::ContextMenuRuntime;
+use crate::app::context_menu::{AppMenuOptions, ContextMenuRuntime};
 use crate::app::dock::DockRuntime;
 use crate::app::launcher::LauncherRuntime;
 use crate::app::media::MediaRuntime;
@@ -256,6 +256,12 @@ impl ModuleHost {
 
     pub(super) const fn monitor_topology_generation(&self) -> u64 {
         self.monitors.topology_generation()
+    }
+
+    pub(super) const fn monitor_integration_health(
+        &self,
+    ) -> crate::app::monitors::MonitorIntegrationHealth {
+        self.monitors.health()
     }
 
     pub(super) fn monitor_replica_count(&self) -> usize {
@@ -614,6 +620,18 @@ impl ModuleHost {
         self.monitors.invalidate();
     }
 
+    pub(super) fn recover_surfaces(
+        &mut self,
+        device: &lotus_windows::graphics::GraphicsDevice,
+    ) -> Result<(), AppError> {
+        self.launcher.recover_surface(device)?;
+        self.context_menu.recover_surface(device)?;
+        self.settings.recover_surface(device)?;
+        self.switcher.recover_surface(device)?;
+        self.status.recover_surfaces(device)?;
+        self.monitors.recover_surfaces(device)
+    }
+
     pub(super) fn record_switcher_foreground(
         &mut self,
         foreground: Option<lotus_core::window::WindowId>,
@@ -635,14 +653,18 @@ impl ModuleHost {
         self.switcher.reconcile_windows(windows, graphics)
     }
 
-    pub(super) fn drain_switcher_events(&mut self) -> bool {
+    pub(super) fn drain_switcher_events(&mut self, graphics: &mut DeviceState) -> bool {
         let events = self.switcher.drain_events();
         let had_events = !events.is_empty();
         for event in events {
-            if let Err(error) = self.switcher.handle_window_event(event) {
+            if let Err(error) = self.switcher.handle_window_event(event, graphics) {
+                if error.mark_graphics_lost(graphics)
+                    || graphics.health() == GraphicsDeviceHealth::Lost
+                {
+                    continue;
+                }
                 lotus_windows::diagnostics::record_error("alt_tab.event", &error);
                 self.switcher.abandon();
-                break;
             }
         }
         had_events
@@ -677,6 +699,7 @@ impl ModuleHost {
         &mut self,
         anchor: SignedPoint,
         source_index: usize,
+        shift_held: bool,
         dock_model: &DockRuntime,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
@@ -686,9 +709,12 @@ impl ModuleHost {
         self.context_menu.open_app(
             anchor,
             source_index,
-            item.id.clone(),
-            item.windows.len(),
-            item.is_pinned,
+            AppMenuOptions {
+                identity: item.id.clone(),
+                running_windows: item.windows.len(),
+                pinned: item.is_pinned,
+                shift_held,
+            },
             graphics,
         )
     }

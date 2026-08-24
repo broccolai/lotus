@@ -6,7 +6,9 @@ use lotus_windows::activation::launch_target;
 use lotus_windows::clipboard::{read_text, write_text};
 use lotus_windows::clock::local_time;
 use lotus_windows::dialog::{confirm_restart, confirm_shutdown, show_error};
-use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
+use lotus_windows::graphics::{
+    CompositionSurfaceState, DeviceState, GraphicsDeviceHealth, SurfaceSize,
+};
 use lotus_windows::interaction::request_exit;
 use lotus_windows::window::{
     CursorMove as WindowCursorMove, DockWindow, SearchEdit, SearchEvent,
@@ -54,13 +56,23 @@ pub(super) fn drain_search_events(
     let events = auxiliary.drain_launcher_events();
     let had_events = !events.is_empty();
     for event in events {
-        if let Some(submission) = handle_search_event(
+        let submission = match handle_search_event(
             event,
             dock,
             graphics,
             dock_model,
             auxiliary.launcher_runtime(),
-        )? {
+        ) {
+            Ok(submission) => submission,
+            Err(error)
+                if error.mark_graphics_lost(graphics)
+                    || graphics.health() == GraphicsDeviceHealth::Lost =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(submission) = submission {
             execute_search_submission(submission, dock, graphics, dock_model, auxiliary)?;
         }
     }

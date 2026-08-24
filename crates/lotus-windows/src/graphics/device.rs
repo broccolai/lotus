@@ -92,6 +92,12 @@ enum DeviceStatus {
     Lost(DeviceLost),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphicsDeviceHealth {
+    Healthy,
+    Lost,
+}
+
 pub struct DeviceState {
     status: DeviceStatus,
     generation: u64,
@@ -123,6 +129,13 @@ impl DeviceState {
         self.generation
     }
 
+    pub const fn health(&self) -> GraphicsDeviceHealth {
+        match &self.status {
+            DeviceStatus::Ready(_) => GraphicsDeviceHealth::Healthy,
+            DeviceStatus::Lost(_) => GraphicsDeviceHealth::Lost,
+        }
+    }
+
     pub fn poll(&mut self) -> bool {
         let DeviceStatus::Ready(device) = &self.status else {
             return false;
@@ -133,6 +146,12 @@ impl DeviceState {
 
         self.status = DeviceStatus::Lost(loss);
         true
+    }
+
+    pub fn mark_lost(&mut self, loss: DeviceLost) {
+        if matches!(self.status, DeviceStatus::Ready(_)) {
+            self.status = DeviceStatus::Lost(loss);
+        }
     }
 
     pub fn recover(&mut self) -> Result<(), GraphicsDeviceError> {

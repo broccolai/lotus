@@ -51,8 +51,19 @@ pub enum DockContextRequest {
     Pointer {
         screen: SignedPoint,
         client: SignedPoint,
+        shift_held: bool,
     },
-    Keyboard,
+    Keyboard {
+        shift_held: bool,
+    },
+}
+
+impl DockContextRequest {
+    pub const fn shift_held(self) -> bool {
+        match self {
+            Self::Pointer { shift_held, .. } | Self::Keyboard { shift_held } => shift_held,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -35,7 +35,7 @@ impl DockRuntime {
         &self,
         request: DockContextRequest,
     ) -> Option<(DockHitTarget, SignedPoint, PopupAlignment)> {
-        let DockContextRequest::Pointer { screen, client } = request else {
+        let DockContextRequest::Pointer { screen, client, .. } = request else {
             return None;
         };
         let target = self.hit_test(client.x, client.y)?;

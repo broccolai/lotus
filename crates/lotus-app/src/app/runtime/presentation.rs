@@ -90,7 +90,10 @@ pub(crate) fn resize_surface(
 ) -> Result<(), AppError> {
     match surface.resize(size) {
         Ok(()) => Ok(()),
-        Err(SurfaceError::DeviceLost(_)) => recover_graphics(graphics, surface),
+        Err(SurfaceError::DeviceLost(loss)) => {
+            graphics.mark_lost(loss);
+            Ok(())
+        }
         Err(error) => Err(error.into()),
     }
 }
@@ -102,12 +105,8 @@ pub(crate) fn resize_launcher_surface(
 ) -> Result<(), AppError> {
     match surface.resize(size) {
         Ok(()) => Ok(()),
-        Err(SurfaceError::DeviceLost(_)) => {
-            let _ = graphics.poll();
-            graphics.recover()?;
-            let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            surface.recover(device)?;
-            surface.resize(size)?;
+        Err(SurfaceError::DeviceLost(loss)) => {
+            graphics.mark_lost(loss);
             Ok(())
         }
         Err(error) => Err(error.into()),
@@ -125,14 +124,9 @@ pub(crate) fn render_surface(
             Ok(FrameOutcome::complete(needs_animation))
         }
         Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-        Err(SurfaceError::DeviceLost(_)) => {
-            recover_graphics(graphics, surface)?;
-            match surface.render_scene(&presentation, needs_animation)? {
-                FrameResult::Presented { needs_animation } => {
-                    Ok(FrameOutcome::complete(needs_animation))
-                }
-                FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
-            }
+        Err(SurfaceError::DeviceLost(loss)) => {
+            graphics.mark_lost(loss);
+            Ok(FrameOutcome::complete(false))
         }
         Err(error) => Err(error.into()),
     }
@@ -159,16 +153,5 @@ pub(crate) fn present_dock_change(
     resize_dock(dock, graphics, surface, model)?;
     host.sync_status(dock, model, graphics)?;
     surface.invalidate();
-    Ok(())
-}
-
-fn recover_graphics(
-    graphics: &mut DeviceState,
-    surface: &mut CompositionSurfaceState,
-) -> Result<(), AppError> {
-    let _ = graphics.poll();
-    graphics.recover()?;
-    let graphics_device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-    surface.recover(graphics_device)?;
     Ok(())
 }

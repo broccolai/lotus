@@ -104,7 +104,11 @@ fn handle_dock_pointer(
             let client = SignedPoint { x, y };
             dock.client_to_screen(client)
                 .ok()
-                .map(|screen| DockContextRequest::Pointer { screen, client })
+                .map(|screen| DockContextRequest::Pointer {
+                    screen,
+                    client,
+                    shift_held: false,
+                })
         }
         PointerEvent::Moved { .. }
         | PointerEvent::Left
@@ -259,13 +263,22 @@ fn handle_context_menu(
     if dock_model.pointer_cancelled() {
         surface.invalidate();
     }
-    open_context_target(target, anchor, alignment, graphics, dock_model, auxiliary)
+    open_context_target(
+        target,
+        anchor,
+        alignment,
+        request.shift_held(),
+        graphics,
+        dock_model,
+        auxiliary,
+    )
 }
 
 fn open_context_target(
     target: DockHitTarget,
     anchor: SignedPoint,
     alignment: PopupAlignment,
+    shift_held: bool,
     graphics: &mut DeviceState,
     dock_model: &DockRuntime,
     auxiliary: &mut ModuleHost,
@@ -278,6 +291,7 @@ fn open_context_target(
             auxiliary.open_application_context_menu(
                 anchor,
                 source_index,
+                shift_held,
                 dock_model,
                 graphics,
             )?;
@@ -337,10 +351,11 @@ pub(super) fn handle_monitor_dock_action(
             target,
             anchor,
             alignment,
+            shift_held,
         } => {
             auxiliary.hide_launcher();
             open_context_target(
-                target, anchor, alignment, graphics, dock_model, auxiliary,
+                target, anchor, alignment, shift_held, graphics, dock_model, auxiliary,
             )?;
         }
     }

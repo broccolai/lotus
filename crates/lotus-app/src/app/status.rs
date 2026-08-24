@@ -6,7 +6,9 @@ use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::surface::FrameResult;
-use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
+use lotus_windows::graphics::{
+    CompositionSurfaceState, DeviceState, GraphicsDevice, SurfaceSize,
+};
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::window::{
     DockWindow, PointerEvent, SignedPoint, StatusWindow, WindowEvent,
@@ -266,17 +268,9 @@ impl StatusRuntime {
                     FrameOutcome::complete(needs_animation && animation_allowed),
                 ),
                 Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-                Err(lotus_windows::graphics::SurfaceError::DeviceLost(_)) => {
-                    let _ = graphics.poll();
-                    graphics.recover()?;
-                    let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-                    surface.recover(device)?;
-                    match render(surface)? {
-                        FrameResult::Presented { needs_animation } => {
-                            Ok(FrameOutcome::complete(needs_animation && animation_allowed))
-                        }
-                        FrameResult::TargetRecreated => Ok(FrameOutcome::Retry),
-                    }
+                Err(lotus_windows::graphics::SurfaceError::DeviceLost(loss)) => {
+                    graphics.mark_lost(loss);
+                    Ok(FrameOutcome::complete(false))
                 }
                 Err(error) => Err(error.into()),
             })?;
@@ -288,6 +282,18 @@ impl StatusRuntime {
         for zone in &mut self.zones {
             zone.invalidate();
         }
+    }
+
+    pub(super) fn recover_surfaces(
+        &mut self,
+        device: &GraphicsDevice,
+    ) -> Result<(), AppError> {
+        for zone in &mut self.zones {
+            if let Some(surface) = &mut zone.surface {
+                surface.value_mut().recover(device)?;
+            }
+        }
+        Ok(())
     }
 }
 

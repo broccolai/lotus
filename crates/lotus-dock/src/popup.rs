@@ -172,6 +172,7 @@ impl<Asset: Clone> DockPopup<Asset> {
         identity: String,
         running_windows: usize,
         pinned: bool,
+        shift_held: bool,
     ) -> Option<Self> {
         let open = AppEntry {
             action: AppMenuAction::Open,
@@ -197,20 +198,21 @@ impl<Asset: Clone> DockPopup<Asset> {
             symbol: PopupSymbol::Image,
         };
         let close = (running_windows != 0).then_some(AppEntry {
-            action: AppMenuAction::Close,
-            label: if running_windows == 1 {
+            action: if shift_held {
+                AppMenuAction::ForceClose
+            } else {
+                AppMenuAction::Close
+            },
+            label: if shift_held {
+                if running_windows == 1 {
+                    "Force close window"
+                } else {
+                    "Force close all windows"
+                }
+            } else if running_windows == 1 {
                 "Close window"
             } else {
                 "Close all windows"
-            },
-            symbol: PopupSymbol::Close,
-        });
-        let force_close = (running_windows != 0).then_some(AppEntry {
-            action: AppMenuAction::ForceClose,
-            label: if running_windows == 1 {
-                "Force close window"
-            } else {
-                "Force close all windows"
             },
             symbol: PopupSymbol::Close,
         });
@@ -219,7 +221,7 @@ impl<Asset: Clone> DockPopup<Asset> {
             kind: PopupKind::App {
                 source_index,
                 identity,
-                entries: [Some(open), Some(customize), Some(pin), close, force_close]
+                entries: [Some(open), Some(customize), Some(pin), close]
                     .into_iter()
                     .flatten()
                     .collect(),

@@ -11,7 +11,8 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{
     ABE_BOTTOM, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, ABN_FULLSCREENAPP,
-    APPBARDATA, DefSubclassProc, RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
+    ABN_POSCHANGED, APPBARDATA, DefSubclassProc, RemoveWindowSubclass, SHAppBarMessage,
+    SetWindowSubclass,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, PostMessageW, PostThreadMessageW,
@@ -30,6 +31,7 @@ const RESERVATION_SUBCLASS_ID: usize = 0x4C4F_5455;
 static TASKBAR_CREATED_MESSAGE: AtomicU32 = AtomicU32::new(0);
 static RECOVERY_QUEUED: AtomicBool = AtomicBool::new(false);
 static RECOVERY_WAKE_FAILED: AtomicBool = AtomicBool::new(false);
+static RECOVERY_SOURCE: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShellIntegrationHealth {
@@ -43,6 +45,10 @@ pub enum ShellRecoverySource {
     Startup,
     TaskbarCreated,
     Settings,
+    DisplayChange,
+    SystemResume,
+    SessionUnlock,
+    AppBarPositionChanged,
 }
 
 impl ShellRecoverySource {
@@ -51,6 +57,10 @@ impl ShellRecoverySource {
             Self::Startup => "startup",
             Self::TaskbarCreated => "taskbar_created",
             Self::Settings => "settings",
+            Self::DisplayChange => "display_change",
+            Self::SystemResume => "system_resume",
+            Self::SessionUnlock => "session_unlock",
+            Self::AppBarPositionChanged => "appbar_position_changed",
         }
     }
 }
@@ -125,12 +135,16 @@ impl ShellIntegration {
         self.health
     }
 
-    pub fn take_recovery_request(&self, is_thread_message: bool, message: u32) -> bool {
+    pub fn take_recovery_request(
+        &self,
+        is_thread_message: bool,
+        message: u32,
+    ) -> Option<ShellRecoverySource> {
         let private_wake =
             is_thread_message && message == crate::messages::SHELL_INTEGRATION_RECOVERY;
         let wake_failed = RECOVERY_WAKE_FAILED.swap(false, Ordering::AcqRel);
         if !private_wake && !wake_failed {
-            return false;
+            return None;
         }
         if wake_failed {
             crate::diagnostics::record_diagnostic(
@@ -139,8 +153,13 @@ impl ShellIntegration {
             );
         }
 
-        let queued = RECOVERY_QUEUED.swap(false, Ordering::AcqRel);
-        self.recovery_enabled && queued
+        if !RECOVERY_QUEUED.swap(false, Ordering::AcqRel) || !self.recovery_enabled {
+            return None;
+        }
+        Some(match RECOVERY_SOURCE.swap(0, Ordering::AcqRel) {
+            1 => ShellRecoverySource::AppBarPositionChanged,
+            _ => ShellRecoverySource::TaskbarCreated,
+        })
     }
 
     pub fn recover(
@@ -149,6 +168,11 @@ impl ShellIntegration {
         dock: &DockWindow,
         source: ShellRecoverySource,
     ) {
+        if !self.recovery_enabled {
+            self.release_to_normal_placement(settings, dock, "disabled");
+            self.health = ShellIntegrationHealth::Disabled;
+            return;
+        }
         if self.taskbar_created_message == 0 {
             self.taskbar_created_message = register_taskbar_created_message();
         }
@@ -158,22 +182,12 @@ impl ShellIntegration {
         );
 
         if !settings.replace_windows_taskbar {
-            if self.active.is_none() {
-                self.health = ShellIntegrationHealth::Disabled;
-                crate::diagnostics::record_diagnostic(
-                    "shell_integration.recovery_succeeded",
-                    &format!("source={} health=disabled", source.diagnostic_name()),
-                );
-            } else {
-                self.health = ShellIntegrationHealth::Degraded;
-                crate::diagnostics::record_diagnostic(
-                    "shell_integration.recovery_degraded",
-                    &format!(
-                        "source={} stage=configuration_mismatch",
-                        source.diagnostic_name()
-                    ),
-                );
-            }
+            self.release_to_normal_placement(settings, dock, "disabled_by_settings");
+            self.health = ShellIntegrationHealth::Disabled;
+            crate::diagnostics::record_diagnostic(
+                "shell_integration.recovery_succeeded",
+                &format!("source={} health=disabled", source.diagnostic_name()),
+            );
             return;
         }
 
@@ -181,7 +195,7 @@ impl ShellIntegration {
             match ActiveShellIntegration::start(settings, dock) {
                 Ok(active) => self.active = Some(active),
                 Err(error) => {
-                    self.record_recovery_failure(source, &error);
+                    self.record_recovery_failure(settings, dock, source, &error);
                     return;
                 }
             }
@@ -214,26 +228,49 @@ impl ShellIntegration {
                 }
             }
             Err(error) => {
-                self.record_recovery_failure(source, &error);
+                self.record_recovery_failure(settings, dock, source, &error);
             }
         }
     }
 
     fn record_recovery_failure(
         &mut self,
+        settings: &DockSettings,
+        dock: &DockWindow,
         source: ShellRecoverySource,
         error: &ShellIntegrationError,
     ) {
+        self.release_to_normal_placement(settings, dock, "recovery_failed");
         self.health = ShellIntegrationHealth::Degraded;
         crate::diagnostics::record_error("shell_integration.recovery_degraded", error);
         crate::diagnostics::record_diagnostic(
             "shell_integration.recovery_failed",
             &format!(
-                "source={} stage={}",
+                "source={} stage={} fail_open=native_taskbar",
                 source.diagnostic_name(),
                 error.recovery_stage()
             ),
         );
+    }
+
+    fn release_to_normal_placement(
+        &mut self,
+        settings: &DockSettings,
+        dock: &DockWindow,
+        reason: &str,
+    ) {
+        drop(self.active.take());
+        dock.clear_appbar_ownership();
+        if let Err(error) = dock.refresh_placement(settings) {
+            crate::diagnostics::record_error(
+                "shell_integration.fail_open_placement_failed",
+                &error,
+            );
+            crate::diagnostics::record_diagnostic(
+                "shell_integration.fail_open_placement_failed",
+                &format!("reason={reason}"),
+            );
+        }
     }
 }
 
@@ -260,9 +297,22 @@ pub(crate) fn queue_taskbar_created_recovery(hwnd: HWND, message: u32) -> bool {
     if taskbar_created == 0 || message != taskbar_created {
         return false;
     }
+    queue_recovery(hwnd, 0);
+    true
+}
+
+fn queue_appbar_position_recovery(hwnd: HWND) {
+    queue_recovery(hwnd, 1);
+}
+
+fn queue_recovery(hwnd: HWND, source: u32) {
     if RECOVERY_QUEUED.swap(true, Ordering::AcqRel) {
-        return true;
+        if source == 0 {
+            RECOVERY_SOURCE.store(0, Ordering::Release);
+        }
+        return;
     }
+    RECOVERY_SOURCE.store(source, Ordering::Release);
 
     let thread_id = unsafe { GetCurrentThreadId() };
     if unsafe {
@@ -278,7 +328,6 @@ pub(crate) fn queue_taskbar_created_recovery(hwnd: HWND, message: u32) -> bool {
         RECOVERY_WAKE_FAILED.store(true, Ordering::Release);
         let _ = unsafe { PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0)) };
     }
-    true
 }
 
 struct ActiveShellIntegration {
@@ -329,9 +378,16 @@ impl ActiveShellIntegration {
         dock: &DockWindow,
         source: ShellRecoverySource,
     ) -> Result<bool, ShellIntegrationError> {
+        if source == ShellRecoverySource::AppBarPositionChanged
+            && let Some(appbar) = self.appbar.as_ref()
+        {
+            appbar.refresh_position(dock, settings)?;
+            return Ok(self.is_healthy());
+        }
         if let Some(appbar) = self.appbar.as_mut() {
             appbar.release_for_recovery(source)?;
             drop(self.appbar.take());
+            dock.clear_appbar_ownership();
             self.taskbar_needs_refresh = true;
         }
         let ownership_healthy = if self.taskbar_needs_refresh {
@@ -406,6 +462,9 @@ impl AppBarController {
         dock: &DockWindow,
         settings: &DockSettings,
     ) -> Result<Self, ShellIntegrationError> {
+        dock.clear_appbar_ownership();
+        dock.refresh_placement(settings)?;
+
         let callback_message =
             unsafe { RegisterWindowMessageW(w!("Lotus.AppBar.Callback")) };
         if callback_message == 0 {
@@ -436,12 +495,25 @@ impl AppBarController {
         unsafe { SHAppBarMessage(ABM_QUERYPOS, &raw mut data) };
         let queried = layout.with_shell_bounds(to_screen_rect(data.rc))?;
         data.rc = to_rect(queried.reserved_rect());
+        self.reservation.ignore_next_position_change();
         if unsafe { SHAppBarMessage(ABM_SETPOS, &raw mut data) } == 0 {
+            self.reservation.cancel_ignored_position_change();
             return Err(ShellIntegrationError::AppBarRejected("ABM_SETPOS"));
         }
         let negotiated = queried.with_shell_bounds(to_screen_rect(data.rc))?;
         self.reservation.move_to(negotiated.reserved_rect())?;
         Ok(negotiated)
+    }
+
+    fn refresh_position(
+        &self,
+        dock: &DockWindow,
+        settings: &DockSettings,
+    ) -> Result<(), ShellIntegrationError> {
+        let layout = requested_layout(dock, settings)?;
+        let negotiated = self.reserve(layout)?;
+        dock.apply_appbar_layout(negotiated, settings)?;
+        Ok(())
     }
 
     fn release_for_recovery(
@@ -471,11 +543,12 @@ impl AppBarController {
 struct ReservationCallback {
     message: u32,
     thread_id: u32,
+    ignore_position_change: AtomicBool,
 }
 
 struct ReservationWindow {
     hwnd: HWND,
-    _callback: Box<ReservationCallback>,
+    callback: Box<ReservationCallback>,
 }
 
 impl ReservationWindow {
@@ -501,6 +574,7 @@ impl ReservationWindow {
         let callback = Box::new(ReservationCallback {
             message: callback_message,
             thread_id,
+            ignore_position_change: AtomicBool::new(false),
         });
         let callback_pointer = std::ptr::from_ref(callback.as_ref()).addr();
         if !unsafe {
@@ -516,14 +590,23 @@ impl ReservationWindow {
             let _ = unsafe { DestroyWindow(hwnd) };
             return Err(windows::core::Error::from_thread());
         }
-        Ok(Self {
-            hwnd,
-            _callback: callback,
-        })
+        Ok(Self { hwnd, callback })
     }
 
     const fn hwnd(&self) -> HWND {
         self.hwnd
+    }
+
+    fn ignore_next_position_change(&self) {
+        self.callback
+            .ignore_position_change
+            .store(true, Ordering::Release);
+    }
+
+    fn cancel_ignored_position_change(&self) {
+        self.callback
+            .ignore_position_change
+            .store(false, Ordering::Release);
     }
 
     fn move_to(&self, rect: ScreenRect) -> Result<(), windows::core::Error> {
@@ -566,9 +649,10 @@ unsafe extern "system" fn reservation_subclass_proc(
     let callback =
         std::ptr::with_exposed_provenance::<ReservationCallback>(callback_pointer);
     let callback = unsafe { &*callback };
-    if message == callback.message
-        && wparam.0 == usize::try_from(ABN_FULLSCREENAPP).unwrap_or(2)
-    {
+    if message != callback.message {
+        return unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
+    }
+    if wparam.0 == usize::try_from(ABN_FULLSCREENAPP).unwrap_or(2) {
         let fullscreen = usize::from(lparam.0 != 0);
         let _ = unsafe {
             PostThreadMessageW(
@@ -578,6 +662,16 @@ unsafe extern "system" fn reservation_subclass_proc(
                 LPARAM(0),
             )
         };
+        return LRESULT(0);
+    }
+    if wparam.0 == usize::try_from(ABN_POSCHANGED).unwrap_or(1) {
+        if callback
+            .ignore_position_change
+            .swap(false, Ordering::AcqRel)
+        {
+            return LRESULT(0);
+        }
+        queue_appbar_position_recovery(hwnd);
         return LRESULT(0);
     }
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
