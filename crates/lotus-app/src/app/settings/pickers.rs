@@ -72,6 +72,7 @@ pub(in crate::app) fn choose_application_icon(
                         image_path: stored.to_string_lossy().into_owned(),
                         app_user_model_id: record.app_user_model_id,
                         match_executables: record.match_executables,
+                        ..Default::default()
                     });
                     ApplicationIconOutcome::Updated
                 }

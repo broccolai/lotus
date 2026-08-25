@@ -222,6 +222,8 @@ pub enum SettingsControl {
     CheckForUpdates,
     RestartIntegration,
     ReplaySetup,
+    ExportSettings,
+    ResetLotus,
     OnboardingModule(OnboardingModule),
     OnboardingZone(OnboardingModule),
     OnboardingBack,
@@ -247,6 +249,8 @@ pub enum SettingsAction {
     CheckForUpdates,
     RestartIntegration,
     ReplaySetup,
+    ExportSettings,
+    ResetLotus,
     CompleteOnboarding(Box<DockSettings>),
     Apply(Box<DockSettings>),
     Close,
@@ -758,6 +762,8 @@ impl SettingsScene {
             | SettingsControl::CheckForUpdates
             | SettingsControl::RestartIntegration
             | SettingsControl::ReplaySetup
+            | SettingsControl::ExportSettings
+            | SettingsControl::ResetLotus
             | SettingsControl::OnboardingModule(_)
             | SettingsControl::OnboardingZone(_)
             | SettingsControl::OnboardingBack
@@ -958,6 +964,8 @@ fn is_page_content(control: SettingsControl) -> bool {
             | SettingsControl::ResetApplicationIcon(_)
             | SettingsControl::RestartIntegration
             | SettingsControl::ReplaySetup
+            | SettingsControl::ExportSettings
+            | SettingsControl::ResetLotus
     )
 }
 

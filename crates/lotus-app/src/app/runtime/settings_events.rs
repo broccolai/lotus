@@ -2,7 +2,7 @@ use lotus_core::settings::DockSettings;
 use lotus_settings::scene::SettingsAction;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::clipboard::read_text;
-use lotus_windows::dialog::show_error;
+use lotus_windows::dialog::{confirm_reset_settings, show_error, show_information};
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
 use lotus_windows::interaction::request_exit;
 use lotus_windows::startup as startup_registration;
@@ -257,6 +257,14 @@ fn apply_settings_action(
             false,
             context.graphics,
         ),
+        SettingsAction::ExportSettings => {
+            export_settings(context);
+            Ok(())
+        }
+        SettingsAction::ResetLotus => {
+            reset_lotus(context);
+            Ok(())
+        }
         SettingsAction::Close => {
             if !context.auxiliary.onboarding_required_for_close() {
                 context.auxiliary.hide_settings();
@@ -272,6 +280,117 @@ fn apply_settings_action(
                 context.auxiliary.hide_settings();
             }
             Ok(())
+        }
+    }
+}
+
+fn export_settings(context: &mut SettingsEventContext<'_>) {
+    let owner = context.auxiliary.settings_owner();
+    let destination = match lotus_windows::settings_file::choose_export_path(owner) {
+        Ok(Some(destination)) => destination,
+        Ok(None) => return,
+        Err(error) => {
+            lotus_windows::diagnostics::record_error(
+                "settings.export_dialog_failed",
+                &error,
+            );
+            show_error(
+                owner,
+                "Lotus Settings",
+                &format!("Lotus could not open the settings export dialog.\n\n{error}"),
+            );
+            return;
+        }
+    };
+
+    match context.dock_model.export_settings(&destination) {
+        Ok(()) => {
+            lotus_windows::diagnostics::record_diagnostic(
+                "settings.exported",
+                &format!("path={}", destination.display()),
+            );
+            show_information(
+                owner,
+                "Lotus Settings",
+                &format!(
+                    "Settings exported successfully.\n\n{}",
+                    destination.display()
+                ),
+            );
+        }
+        Err(error) => {
+            lotus_windows::diagnostics::record_error("settings.export_failed", &error);
+            show_error(
+                owner,
+                "Lotus Settings",
+                &format!(
+                    "Lotus could not export settings to {}.\n\n{error}",
+                    destination.display()
+                ),
+            );
+        }
+    }
+}
+
+fn reset_lotus(context: &mut SettingsEventContext<'_>) {
+    let owner = context.auxiliary.settings_owner();
+    if !confirm_reset_settings(owner) {
+        return;
+    }
+
+    let reset = match context.dock_model.reset_settings() {
+        Ok(reset) => reset,
+        Err(error) => {
+            lotus_windows::diagnostics::record_error("settings.reset_failed", &error);
+            show_error(
+                owner,
+                "Reset Lotus safely",
+                &format!("Lotus could not reset your settings.\n\n{error}"),
+            );
+            return;
+        }
+    };
+    lotus_windows::diagnostics::record_diagnostic(
+        "settings.reset_persisted",
+        &format!(
+            "settings_path={} backup_path={}",
+            context
+                .dock_model
+                .settings_directory()
+                .join("settings.json")
+                .display(),
+            reset.backup_path.display(),
+        ),
+    );
+    if let Err(error) = startup_registration::sync(reset.settings.start_with_windows) {
+        lotus_windows::diagnostics::record_error(
+            "settings.reset_startup_sync_failed",
+            &error,
+        );
+        show_error(
+            owner,
+            "Reset Lotus safely",
+            &format!(
+                "Lotus reset its settings, but could not update Windows startup. The reset will still take effect after restart.\n\nBackup: {}\n\n{error}",
+                reset.backup_path.display(),
+            ),
+        );
+    }
+    match controllers::restart_current_process() {
+        Ok(()) => request_exit(0),
+        Err(error) => {
+            lotus_windows::diagnostics::record_error(
+                "settings.reset_restart_failed",
+                &error,
+            );
+            show_error(
+                owner,
+                "Reset Lotus safely",
+                &format!(
+                    "Lotus reset its settings and kept a backup, but could not restart. The reset will take effect the next time Lotus starts.\n\nBackup: {}\n\n{error}",
+                    reset.backup_path.display(),
+                ),
+            );
         }
     }
 }

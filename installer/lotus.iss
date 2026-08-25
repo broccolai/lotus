@@ -42,7 +42,7 @@ Name: "{group}\lotus"; Filename: "{app}\{#MyAppExeName}"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "{code:UpdateLaunchParameters}"; Flags: nowait; Check: RestartAfterUpdate
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch lotus"; Flags: nowait postinstall skipifsilent; Check: not RestartAfterUpdate
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--post-install-health"; Description: "Launch lotus"; Flags: nowait postinstall skipifsilent; Check: not RestartAfterUpdate
 
 [Code]
 
@@ -57,11 +57,31 @@ end;
 function UpdateLaunchParameters(Param: String): String;
 begin
   Result := '--restart-after ' + IntToStr(GetCurrentProcessId) +
-    ' --cleanup-update "' + ExpandConstant('{src}') + '" --open-settings';
+    ' --cleanup-update "' + ExpandConstant('{src}') +
+    '" --open-settings --post-install-health';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    SaveStringToFile(
+      ExpandConstant('{app}\lotus-health.pending'),
+      '{#MyAppVersion}', False);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  RemoveUserData: Boolean;
 begin
   if CurUninstallStep = usUninstall then
+  begin
     RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Lotus');
+    RemoveUserData := ExpandConstant('{param:PURGEUSERDATA|0}') = '1';
+    if (not WizardSilent) and (not RemoveUserData) then
+      RemoveUserData := MsgBox(
+        'Remove Lotus user data from ' + ExpandConstant('{localappdata}\Lotus') + '?',
+        mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+    if RemoveUserData then
+      DelTree(ExpandConstant('{localappdata}\Lotus'), True, True, True);
+  end;
 end;

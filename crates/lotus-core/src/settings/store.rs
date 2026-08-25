@@ -6,7 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use atomic_write_file::AtomicWriteFile;
 use thiserror::Error;
 
-use super::codec::{SettingsDecodeError, apply_legacy_migrations, decode_settings};
+use super::codec::{
+    SettingsDecodeError, apply_settings_migrations, decode_settings_document,
+};
 use super::model::DockSettings;
 
 #[derive(Debug, Error)]
@@ -20,13 +22,23 @@ pub enum SettingsStoreError {
     },
     #[error("could not encode Lotus settings: {0}")]
     Encode(#[from] serde_json::Error),
+    #[error("the export destination `{path}` is the active Lotus settings file")]
+    ExportAliasesLiveSettings { path: PathBuf },
+    #[error("could not resolve settings path `{path}`")]
+    InvalidPath { path: PathBuf },
+    #[error("the system clock could not create a reset backup timestamp: {0}")]
+    Clock(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SettingsLoadSource {
     CreatedDefaults,
     Existing,
-    Migrated,
+    Migrated {
+        backup_path: PathBuf,
+        from_version: u32,
+        to_version: u32,
+    },
     RecoveredInvalid {
         backup_path: PathBuf,
         error: SettingsDecodeError,
@@ -37,6 +49,12 @@ pub enum SettingsLoadSource {
 pub struct SettingsLoad {
     pub settings: DockSettings,
     pub source: SettingsLoadSource,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettingsReset {
+    pub settings: DockSettings,
+    pub backup_path: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,28 +88,52 @@ impl SettingsStore {
             return self.create_defaults();
         }
 
-        let source = fs::read_to_string(&path)
+        let source_bytes = fs::read(&path)
             .map_err(|error| store_io("read settings from", &path, error))?;
+        let source =
+            String::from_utf8(source_bytes.clone()).map_err(SettingsDecodeError::from);
 
-        match decode_settings(&source) {
-            Ok(settings) => self.finish_valid_load(&source, settings),
-            Err(error) => self.recover_invalid(&path, error),
+        match source.and_then(|source| decode_settings_document(&source)) {
+            Ok(decoded) => self.finish_valid_load(&source_bytes, decoded),
+            Err(error) => self.recover_invalid(&source_bytes, error),
         }
     }
 
     pub fn save(&self, settings: &DockSettings) -> Result<(), SettingsStoreError> {
         self.ensure_directory()?;
         let path = self.settings_path();
-        let settings = settings.clone().normalized();
-        let mut json = serde_json::to_string_pretty(&settings)?;
-        json.push('\n');
+        Self::write_settings(&path, settings, "settings")
+    }
 
-        let mut file = AtomicWriteFile::open(&path)
-            .map_err(|error| store_io("open settings for atomic write at", &path, error))?;
-        file.write_all(json.as_bytes())
-            .map_err(|error| store_io("write settings to", &path, error))?;
-        file.commit()
-            .map_err(|error| store_io("commit settings at", &path, error))
+    pub fn export(
+        &self,
+        settings: &DockSettings,
+        destination: &Path,
+    ) -> Result<(), SettingsStoreError> {
+        if paths_alias(destination, &self.settings_path())? {
+            return Err(SettingsStoreError::ExportAliasesLiveSettings {
+                path: destination.to_owned(),
+            });
+        }
+
+        Self::write_settings(destination, settings, "exported settings")
+    }
+
+    pub fn reset(&self) -> Result<SettingsReset, SettingsStoreError> {
+        self.ensure_directory()?;
+        let settings_path = self.settings_path();
+        let source = fs::read(&settings_path)
+            .map_err(|error| store_io("read settings from", &settings_path, error))?;
+        let backup_path = self.reset_backup_path()?;
+        write_atomic_bytes(&backup_path, &source, "reset backup")?;
+
+        let settings = DockSettings::default().normalized();
+        Self::write_settings(&settings_path, &settings, "reset settings")?;
+
+        Ok(SettingsReset {
+            settings,
+            backup_path,
+        })
     }
 
     fn create_defaults(&self) -> Result<SettingsLoad, SettingsStoreError> {
@@ -106,45 +148,43 @@ impl SettingsStore {
 
     fn finish_valid_load(
         &self,
-        source: &str,
-        mut settings: DockSettings,
+        source: &[u8],
+        mut decoded: super::codec::DecodedSettings,
     ) -> Result<SettingsLoad, SettingsStoreError> {
-        let migrated = apply_legacy_migrations(source, &mut settings);
+        let from_version = decoded.source_schema_version;
+        let migrated = apply_settings_migrations(&mut decoded);
         if migrated {
-            self.save(&settings)?;
+            let to_version = decoded.settings.schema_version;
+            let backup_path = self.pre_migration_backup_path(from_version, to_version);
+            write_atomic_bytes(&backup_path, source, "pre-migration backup")?;
+            self.save(&decoded.settings)?;
+
+            return Ok(SettingsLoad {
+                settings: decoded.settings,
+                source: SettingsLoadSource::Migrated {
+                    backup_path,
+                    from_version,
+                    to_version,
+                },
+            });
         }
 
         Ok(SettingsLoad {
-            settings,
-            source: if migrated {
-                SettingsLoadSource::Migrated
-            } else {
-                SettingsLoadSource::Existing
-            },
+            settings: decoded.settings,
+            source: SettingsLoadSource::Existing,
         })
     }
 
     fn recover_invalid(
         &self,
-        settings_path: &Path,
+        source: &[u8],
         error: SettingsDecodeError,
     ) -> Result<SettingsLoad, SettingsStoreError> {
         let backup_path = self.invalid_backup_path();
-        fs::rename(settings_path, &backup_path).map_err(|error| {
-            store_io("back up invalid settings to", &backup_path, error)
-        })?;
+        write_atomic_bytes(&backup_path, source, "back up invalid settings to")?;
 
         let settings = DockSettings::default().normalized();
-        if let Err(error) = self.save(&settings) {
-            if let Err(restore_error) = fs::rename(&backup_path, settings_path) {
-                return Err(store_io(
-                    "restore invalid settings from",
-                    &backup_path,
-                    restore_error,
-                ));
-            }
-            return Err(error);
-        }
+        self.save(&settings)?;
 
         Ok(SettingsLoad {
             settings,
@@ -159,35 +199,95 @@ impl SettingsStore {
     }
 
     fn invalid_backup_path(&self) -> PathBuf {
+        self.directory.join("settings.json.invalid.bak")
+    }
+
+    fn pre_migration_backup_path(&self, from_version: u32, to_version: u32) -> PathBuf {
+        self.directory.join(format!(
+            "settings.json.pre-migration-v{from_version}-to-v{to_version}.bak"
+        ))
+    }
+
+    fn write_settings(
+        path: &Path,
+        settings: &DockSettings,
+        description: &'static str,
+    ) -> Result<(), SettingsStoreError> {
+        let settings = settings.clone().normalized();
+        let json = encode_settings(&settings)?;
+        write_atomic_bytes(path, json.as_bytes(), description)
+    }
+
+    fn reset_backup_path(&self) -> Result<PathBuf, SettingsStoreError> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_millis());
-        let base = self
-            .directory
-            .join(format!("settings.json.invalid-{timestamp}"));
-
-        unique_path(base)
+            .map_err(|error| SettingsStoreError::Clock(error.to_string()))?;
+        let stem = format!(
+            "settings.json.reset-{}-{:09}.bak",
+            timestamp.as_secs(),
+            timestamp.subsec_nanos()
+        );
+        let mut candidate = self.directory.join(&stem);
+        let mut suffix = 1_u32;
+        while candidate.exists() {
+            candidate = self.directory.join(format!("{stem}.{suffix}"));
+            suffix = suffix.saturating_add(1);
+        }
+        Ok(candidate)
     }
 }
 
-fn unique_path(base: PathBuf) -> PathBuf {
-    if !base.exists() {
-        return base;
+fn encode_settings(settings: &DockSettings) -> Result<String, SettingsStoreError> {
+    let mut json = serde_json::to_string_pretty(settings)?;
+    json.push('\n');
+    Ok(json)
+}
+
+fn paths_alias(left: &Path, right: &Path) -> Result<bool, SettingsStoreError> {
+    let left = canonical_path(left)?;
+    let right = canonical_path(right)?;
+    Ok(left
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy()))
+}
+
+fn canonical_path(path: &Path) -> Result<PathBuf, SettingsStoreError> {
+    let absolute = std::path::absolute(path)
+        .map_err(|error| store_io("resolve settings path", path, error))?;
+    if absolute.exists() {
+        return absolute
+            .canonicalize()
+            .map_err(|error| store_io("resolve settings path", &absolute, error));
     }
 
-    for suffix in 1_u32.. {
-        let candidate = base.with_extension(format!(
-            "{}-{suffix}",
-            base.extension()
-                .and_then(|extension| extension.to_str())
-                .unwrap_or("invalid")
-        ));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
+    let parent = absolute
+        .parent()
+        .ok_or_else(|| SettingsStoreError::InvalidPath {
+            path: absolute.clone(),
+        })?;
+    let parent = parent
+        .canonicalize()
+        .map_err(|error| store_io("resolve settings directory", parent, error))?;
+    let file_name =
+        absolute
+            .file_name()
+            .ok_or_else(|| SettingsStoreError::InvalidPath {
+                path: absolute.clone(),
+            })?;
+    Ok(parent.join(file_name))
+}
 
-    unreachable!("u32 path suffixes cannot be exhausted in practice")
+fn write_atomic_bytes(
+    path: &Path,
+    bytes: &[u8],
+    description: &'static str,
+) -> Result<(), SettingsStoreError> {
+    let mut file = AtomicWriteFile::open(path)
+        .map_err(|error| store_io("open atomic file at", path, error))?;
+    file.write_all(bytes)
+        .map_err(|error| store_io(description, path, error))?;
+    file.commit()
+        .map_err(|error| store_io("commit atomic file at", path, error))
 }
 
 fn store_io(operation: &'static str, path: &Path, source: io::Error) -> SettingsStoreError {

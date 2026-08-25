@@ -131,9 +131,23 @@ impl SettingsScene {
         for (control, relative_top) in content.controls {
             let top = match control {
                 SettingsControl::RestartIntegration => {
-                    HEIGHT_DIP - FOOTER_HEIGHT_DIP - 2 * ROW_HEIGHT_DIP - ROW_GAP_DIP - 22
+                    HEIGHT_DIP
+                        - FOOTER_HEIGHT_DIP
+                        - 4 * ROW_HEIGHT_DIP
+                        - 3 * ROW_GAP_DIP
+                        - 22
                 }
                 SettingsControl::ReplaySetup => {
+                    HEIGHT_DIP
+                        - FOOTER_HEIGHT_DIP
+                        - 3 * ROW_HEIGHT_DIP
+                        - 2 * ROW_GAP_DIP
+                        - 22
+                }
+                SettingsControl::ExportSettings => {
+                    HEIGHT_DIP - FOOTER_HEIGHT_DIP - 2 * ROW_HEIGHT_DIP - ROW_GAP_DIP - 22
+                }
+                SettingsControl::ResetLotus => {
                     HEIGHT_DIP - FOOTER_HEIGHT_DIP - ROW_HEIGHT_DIP - 22
                 }
                 _ => CONTENT_TOP_DIP.saturating_add(relative_top),
@@ -285,6 +299,8 @@ impl SettingsScene {
             SettingsPage::About => vec![
                 SettingsControl::RestartIntegration,
                 SettingsControl::ReplaySetup,
+                SettingsControl::ExportSettings,
+                SettingsControl::ResetLotus,
             ],
             SettingsPage::Taskbar | SettingsPage::Status | SettingsPage::Search => self
                 .page_groups()

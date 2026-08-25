@@ -16,6 +16,7 @@ const RELEASES_API: &str =
     "https://api.github.com/repos/broccolai/lotus/releases?per_page=100";
 const METADATA_DOWNLOAD_LIMIT: u64 = 64 * 1024;
 const INSTALLER_DOWNLOAD_LIMIT: u64 = 64 * 1024 * 1024;
+const STAGING_MARKER_NAME: &str = "lotus-update.staged";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Release {
@@ -107,16 +108,32 @@ pub fn stage(release: &Release) -> Result<StagedUpdate, UpdateError> {
     }
 
     let directory = staging_directory(&release.version);
-    fs::create_dir_all(&directory).map_err(UpdateError::Staging)?;
+    fs::create_dir(&directory).map_err(UpdateError::Staging)?;
     let executable = directory.join("lotus-setup.exe");
-    let mut output = File::create(&executable).map_err(UpdateError::Staging)?;
-    output.write_all(&installer).map_err(UpdateError::Staging)?;
-    output.sync_all().map_err(UpdateError::Staging)?;
-    Ok(StagedUpdate {
-        version: release.version.clone(),
-        executable,
-        directory,
-    })
+    let partial = directory.join("lotus-setup.exe.partial");
+    let staged = (|| {
+        let mut marker = File::create(directory.join(STAGING_MARKER_NAME))
+            .map_err(UpdateError::Staging)?;
+        marker
+            .write_all(release.version.as_bytes())
+            .map_err(UpdateError::Staging)?;
+        marker.sync_all().map_err(UpdateError::Staging)?;
+
+        let mut output = File::create(&partial).map_err(UpdateError::Staging)?;
+        output.write_all(&installer).map_err(UpdateError::Staging)?;
+        output.sync_all().map_err(UpdateError::Staging)?;
+        fs::rename(&partial, &executable).map_err(UpdateError::Staging)?;
+        Ok(StagedUpdate {
+            version: release.version.clone(),
+            executable,
+            directory: directory.clone(),
+        })
+    })();
+
+    if staged.is_err() {
+        let _ = fs::remove_dir_all(&directory);
+    }
+    staged
 }
 
 fn fetch_release(channel: UpdateChannel) -> Result<Release, UpdateError> {

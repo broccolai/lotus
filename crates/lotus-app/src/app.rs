@@ -106,6 +106,21 @@ struct RuntimeServices<'a> {
     integration: &'a mut integration::IntegrationRecovery,
 }
 
+struct PreparedSettings {
+    settings: DockSettings,
+    store: SettingsStore,
+    onboarding_required: bool,
+}
+
+struct InitialWindows<'a> {
+    dock: &'a DockWindow,
+    dock_model: &'a mut DockRuntime,
+    graphics: &'a mut DeviceState,
+    surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
+    window_tracker: &'a WindowTracker,
+    auxiliary: &'a mut ModuleHost,
+}
+
 struct StartupPhases {
     started: Instant,
     checkpoint: Instant,
@@ -164,18 +179,26 @@ pub fn run() -> Result<(), AppError> {
     enable_per_monitor_v2()?;
     let startup = parse_startup_args(std::env::args_os().skip(1))?;
     let _restart_wait = wait_for_restart_source(startup.restart_after)?;
-    if let Some(directory) = startup.cleanup_update.as_deref() {
-        let _ = lotus_windows::update::cleanup_staging_directory(directory);
+    let post_install_health = startup.post_install_health
+        || lotus_windows::update::post_install_health_pending().unwrap_or(true)
+        || lotus_windows::update::interrupted_install_health_pending().unwrap_or(true);
+    if let Some(directory) = startup.cleanup_update.as_deref()
+        && let Err(error) = lotus_windows::update::cleanup_staging_directory(directory)
+    {
+        lotus_windows::diagnostics::record_error("update.cleanup_requested", &error);
     }
     let Some(_instance) = SingleInstance::acquire()? else {
         return Ok(());
     };
 
-    let (settings, settings_store) = load_settings()?;
-    let onboarding_required = settings.onboarding_version < CURRENT_ONBOARDING_VERSION;
-    if !onboarding_required {
-        sync_startup_preference(settings.start_with_windows);
-    }
+    let Some(prepared) = prepare_settings(post_install_health)? else {
+        return Ok(());
+    };
+    let PreparedSettings {
+        settings,
+        store: settings_store,
+        onboarding_required,
+    } = prepared;
     let usage_store = SearchUsageStore::new(settings_store.directory());
     let usage = usage_store.load().unwrap_or_default();
     startup_phases.settings = startup_phases.complete();
@@ -221,31 +244,19 @@ pub fn run() -> Result<(), AppError> {
         !onboarding_required,
     );
     window_tracker.refresh_fullscreen();
-    if !onboarding_required {
-        auxiliary.sync_status(&dock, &dock_model, &mut graphics)?;
-        auxiliary.sync_monitor_docks(
-            &dock,
-            &mut dock_model,
-            &mut graphics,
-            &window_tracker,
-        )?;
-    }
-    if onboarding_required {
-        let _changed = dock.set_visible(false);
-        auxiliary.set_status_visible(false);
-        auxiliary.open_onboarding(dock_model.settings(), true, &mut graphics)?;
-    } else {
-        apply_fullscreen_visibility(
-            &dock,
-            &mut surface,
-            &window_tracker,
-            &dock_model,
-            &mut auxiliary,
-        )?;
-    }
-    if startup.open_settings && !onboarding_required {
-        auxiliary.open_settings_without_refresh(dock_model.settings(), &mut graphics)?;
-    }
+    let mut initial_windows = InitialWindows {
+        dock: &dock,
+        dock_model: &mut dock_model,
+        graphics: &mut graphics,
+        surface: &mut surface,
+        window_tracker: &window_tracker,
+        auxiliary: &mut auxiliary,
+    };
+    prepare_initial_windows(
+        startup.open_settings,
+        onboarding_required,
+        &mut initial_windows,
+    )?;
     startup_phases.shell_integration_placement = startup_phases.complete();
     let first_frame_started = Instant::now();
     flush_frame(
@@ -275,6 +286,117 @@ pub fn run() -> Result<(), AppError> {
     result
 }
 
+fn prepare_settings(
+    post_install_health: bool,
+) -> Result<Option<PreparedSettings>, AppError> {
+    let (settings, store) = load_settings()?;
+    let recovery_notice = match lotus_windows::update::recover_startup(post_install_health)
+    {
+        Ok(notice) => notice,
+        Err(error) => {
+            lotus_windows::diagnostics::record_error("update.recovery", &error);
+            Some(format!(
+                "Lotus found an incomplete update, but could not clean it safely. Please re-run the Lotus installer to repair the installation.\n\n{error}"
+            ))
+        }
+    };
+    std::thread::spawn(|| {
+        for error in lotus_windows::update::cleanup_stale_staging() {
+            lotus_windows::diagnostics::record_error("update.cleanup_stale", &error);
+        }
+    });
+    if post_install_health {
+        if let Err(error) =
+            validate_post_install_health(&store, settings.start_with_windows)
+        {
+            lotus_windows::diagnostics::record_message(
+                "update.post_install_health",
+                &error,
+            );
+            let message = format!(
+                "Lotus could not complete its post-install health check. Native shell integration was not started.\n\n{error}\n\nPlease re-run the Lotus installer and choose Repair."
+            );
+            if let Err(journal_error) =
+                lotus_windows::update::complete_post_install_health(false, &message)
+            {
+                lotus_windows::diagnostics::record_error(
+                    "update.post_install_health_journal",
+                    &journal_error,
+                );
+            }
+            lotus_windows::dialog::show_unowned_error("Lotus repair required", &message);
+            return Ok(None);
+        }
+        if let Err(error) = lotus_windows::update::complete_post_install_health(true, "") {
+            lotus_windows::diagnostics::record_error(
+                "update.post_install_health_journal",
+                &error,
+            );
+        }
+        lotus_windows::diagnostics::record_message(
+            "update.post_install_health",
+            "installed executable, bridge DLLs, settings, and startup registration are healthy",
+        );
+    }
+    if let Some(notice) = recovery_notice {
+        lotus_windows::diagnostics::record_message("update.recovered", &notice);
+        lotus_windows::dialog::show_unowned_error("Lotus Update", &notice);
+    }
+    let onboarding_required = settings.onboarding_version < CURRENT_ONBOARDING_VERSION;
+    if !onboarding_required {
+        let _ = sync_startup_preference(settings.start_with_windows);
+    }
+    Ok(Some(PreparedSettings {
+        settings,
+        store,
+        onboarding_required,
+    }))
+}
+
+fn prepare_initial_windows(
+    open_settings: bool,
+    onboarding_required: bool,
+    windows: &mut InitialWindows<'_>,
+) -> Result<(), AppError> {
+    if !onboarding_required {
+        windows.auxiliary.sync_status(
+            windows.dock,
+            windows.dock_model,
+            windows.graphics,
+        )?;
+        windows.auxiliary.sync_monitor_docks(
+            windows.dock,
+            windows.dock_model,
+            windows.graphics,
+            windows.window_tracker,
+        )?;
+    }
+    if onboarding_required {
+        let _changed = windows.dock.set_visible(false);
+        windows.auxiliary.set_status_visible(false);
+        windows.auxiliary.open_onboarding(
+            windows.dock_model.settings(),
+            true,
+            windows.graphics,
+        )?;
+    } else {
+        apply_fullscreen_visibility(
+            windows.dock,
+            windows.surface,
+            windows.window_tracker,
+            windows.dock_model,
+            windows.auxiliary,
+        )?;
+    }
+    if open_settings && !onboarding_required {
+        windows.auxiliary.open_settings_without_refresh(
+            windows.dock_model.settings(),
+            windows.graphics,
+        )?;
+    }
+    Ok(())
+}
+
 fn create_auxiliary_windows(
     dock: &DockWindow,
     dock_model: &mut DockRuntime,
@@ -285,8 +407,40 @@ fn create_auxiliary_windows(
     ModuleHost::create(dock, dock_model, usage, usage_store, modules_active)
 }
 
-fn sync_startup_preference(enabled: bool) {
-    let _ = startup_registration::sync(enabled);
+fn sync_startup_preference(
+    enabled: bool,
+) -> Result<(), startup_registration::StartupRegistrationError> {
+    if let Err(error) = startup_registration::sync(enabled) {
+        lotus_windows::diagnostics::record_error("startup.registration", &error);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn validate_post_install_health(
+    settings_store: &SettingsStore,
+    start_with_windows: bool,
+) -> Result<(), String> {
+    lotus_windows::update::verify_post_install_target()
+        .map_err(|error| error.to_string())?;
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    if !executable.is_file() {
+        return Err("the installed lotus.exe is missing".to_owned());
+    }
+    let directory = executable
+        .parent()
+        .ok_or("the installed Lotus directory is invalid")?;
+    if !directory.join("unins000.exe").is_file() {
+        return Err("the Lotus uninstaller is missing".to_owned());
+    }
+    for bridge in ["lotus_shell_bridge.dll", "lotus_explorer_bridge.dll"] {
+        if !directory.join(bridge).is_file() {
+            return Err(format!("the installed {bridge} is missing"));
+        }
+    }
+    fs::File::open(settings_store.settings_path())
+        .map_err(|error| format!("Lotus settings could not be read: {error}"))?;
+    sync_startup_preference(start_with_windows).map_err(|error| error.to_string())
 }
 
 fn enable_notification_badges(model: &DockRuntime) -> Option<TaskbarBadgeController> {
@@ -323,14 +477,28 @@ fn load_settings() -> Result<(DockSettings, SettingsStore), AppError> {
     }
 
     let load = store.load()?;
-    if let SettingsLoadSource::RecoveredInvalid { backup_path, error } = &load.source {
-        lotus_windows::diagnostics::record_message(
-            "settings.recovered_invalid",
+    match &load.source {
+        SettingsLoadSource::Migrated {
+            backup_path,
+            from_version,
+            to_version,
+        } => lotus_windows::diagnostics::record_message(
+            "settings.migrated",
             &format!(
-                "Lotus restored default settings after `{error}`. The original file is at `{}`.",
+                "Lotus migrated settings schema {from_version} to {to_version}. The original file is at `{}`.",
                 backup_path.display()
             ),
-        );
+        ),
+        SettingsLoadSource::RecoveredInvalid { backup_path, error } => {
+            lotus_windows::diagnostics::record_message(
+                "settings.recovered_invalid",
+                &format!(
+                    "Lotus restored default settings after `{error}`. The original file is at `{}`.",
+                    backup_path.display()
+                ),
+            );
+        }
+        SettingsLoadSource::CreatedDefaults | SettingsLoadSource::Existing => {}
     }
 
     Ok((load.settings, store))

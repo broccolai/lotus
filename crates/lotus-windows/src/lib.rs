@@ -27,6 +27,7 @@ pub(crate) mod messages;
 pub mod native_icon;
 pub mod network;
 pub mod search_catalog;
+pub mod settings_file;
 mod shell_bridge;
 pub mod single_instance;
 pub mod startup;

@@ -427,6 +427,8 @@ impl SettingsScene {
             }
             SettingsControl::RestartIntegration => SettingsAction::RestartIntegration,
             SettingsControl::ReplaySetup => SettingsAction::ReplaySetup,
+            SettingsControl::ExportSettings => SettingsAction::ExportSettings,
+            SettingsControl::ResetLotus => SettingsAction::ResetLotus,
             SettingsControl::OnboardingModule(module) => {
                 self.draft.set_onboarding_module(
                     module,
@@ -558,7 +560,10 @@ impl SettingsScene {
     pub fn set_mascot_image_path(&mut self, path: Option<String>) {
         self.draft.set_mascot_image_path(path);
     }
-    pub fn set_application_icon_override(&mut self, override_: ApplicationIconOverride) {
+    pub fn set_application_icon_override(
+        &mut self,
+        mut override_: ApplicationIconOverride,
+    ) {
         if let Some(existing) = self
             .draft
             .draft
@@ -566,6 +571,9 @@ impl SettingsScene {
             .iter_mut()
             .find(|existing| existing.id.eq_ignore_ascii_case(&override_.id))
         {
+            for (name, value) in std::mem::take(&mut existing.extra_fields) {
+                override_.extra_fields.entry(name).or_insert(value);
+            }
             *existing = override_;
         } else {
             self.draft.draft.application_icon_overrides.push(override_);

@@ -6,7 +6,9 @@ use lotus_core::application::{
     RegisteredApplication, WindowApplicationAssignments, is_shared_host_executable,
 };
 use lotus_core::dock::DockItem;
-use lotus_core::settings::{DockSettings, PinnedApp, SettingsStore, SettingsStoreError};
+use lotus_core::settings::{
+    DockSettings, PinnedApp, SettingsReset, SettingsStore, SettingsStoreError,
+};
 use lotus_core::window::WindowInfo;
 
 pub fn project_snapshot(
@@ -78,6 +80,14 @@ impl DockModel {
 
     pub fn settings_directory(&self) -> &Path {
         self.settings_store.directory()
+    }
+
+    pub fn export_settings(&self, destination: &Path) -> Result<(), SettingsStoreError> {
+        self.settings_store.export(&self.settings, destination)
+    }
+
+    pub fn reset_settings(&self) -> Result<SettingsReset, SettingsStoreError> {
+        self.settings_store.reset()
     }
 
     pub fn items(&self) -> &[DockItem] {
@@ -307,6 +317,7 @@ impl DockModel {
                 icon_source: launch.icon_source,
                 app_user_model_id: launch.app_user_model_id,
                 match_executables: launch.match_executables,
+                ..Default::default()
             });
             insert_item_order(&mut settings.item_order, &self.items, source_index);
         } else {

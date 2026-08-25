@@ -70,6 +70,21 @@ pub fn confirm_restart(owner: WindowHandle) -> bool {
     confirm_power_action(owner, "Restart this PC now?")
 }
 
+pub fn confirm_reset_settings(owner: WindowHandle) -> bool {
+    let title = HSTRING::from("Reset Lotus safely");
+    let message = HSTRING::from(
+        "Reset Lotus to its default settings?\n\nUnsaved changes will be discarded. Your custom assets will remain on this PC.",
+    );
+    unsafe {
+        MessageBoxW(
+            Some(owner.raw()),
+            &message,
+            &title,
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+        ) == IDYES
+    }
+}
+
 fn confirm_power_action(owner: WindowHandle, message: &str) -> bool {
     let title = HSTRING::from("Lotus");
     let message = HSTRING::from(message);

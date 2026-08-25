@@ -53,6 +53,7 @@ pub struct StartupOptions {
     pub restart_after: Option<u32>,
     pub open_settings: bool,
     pub cleanup_update: Option<PathBuf>,
+    pub post_install_health: bool,
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -76,6 +77,7 @@ where
     let mut restart_after = None;
     let mut open_settings = false;
     let mut cleanup_update = None;
+    let mut post_install_health = false;
     let mut index = 0;
 
     while index < arguments.len() {
@@ -106,6 +108,8 @@ where
                     .ok_or(StartupArgsError::MissingCleanupDirectory)?
                     .as_ref(),
             ));
+        } else if argument_eq(argument, "--post-install-health") {
+            post_install_health = true;
         }
         index += 1;
     }
@@ -114,6 +118,7 @@ where
         restart_after,
         open_settings,
         cleanup_update,
+        post_install_health,
     })
 }
 

@@ -339,6 +339,24 @@ impl SettingsScene {
                 true,
                 false,
             ),
+            SettingsControl::ExportSettings => {
+                self.present_button(
+                    output,
+                    bounds,
+                    control,
+                    "Export settings",
+                    true,
+                    false,
+                );
+            }
+            SettingsControl::ResetLotus => self.present_button(
+                output,
+                bounds,
+                control,
+                "Reset Lotus safely",
+                true,
+                false,
+            ),
             SettingsControl::Revert => self.present_button(
                 output,
                 bounds,

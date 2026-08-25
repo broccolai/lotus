@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::application::{
     ApplicationIdentity, ApplicationMatchStrength, is_reliable_application_identity,
@@ -9,6 +10,7 @@ use crate::application::{
 
 pub const CURRENT_APPEARANCE_VERSION: u32 = 3;
 pub const CURRENT_ONBOARDING_VERSION: u32 = 1;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +57,7 @@ impl DockZone {
     reason = "independent persisted preferences are not mutually exclusive state"
 )]
 pub struct DockSettings {
+    pub schema_version: u32,
     pub onboarding_version: u32,
     pub icon_size: u32,
     pub item_spacing: u32,
@@ -104,11 +107,14 @@ pub struct DockSettings {
     pub hidden_executables: Vec<String>,
     pub item_order: Vec<String>,
     pub pinned_apps: Vec<PinnedApp>,
+    #[serde(flatten)]
+    pub extra_fields: BTreeMap<String, Value>,
 }
 
 impl Default for DockSettings {
     fn default() -> Self {
         Self {
+            schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
             onboarding_version: 0,
             icon_size: 38,
             item_spacing: 8,
@@ -158,6 +164,7 @@ impl Default for DockSettings {
             hidden_executables: Vec::new(),
             item_order: Vec::new(),
             pinned_apps: Vec::new(),
+            extra_fields: BTreeMap::new(),
         }
     }
 }
@@ -268,6 +275,8 @@ pub struct ApplicationIconOverride {
     pub image_path: String,
     pub app_user_model_id: Option<String>,
     pub match_executables: Vec<String>,
+    #[serde(flatten)]
+    pub extra_fields: BTreeMap<String, Value>,
 }
 
 impl ApplicationIconOverride {
@@ -348,6 +357,8 @@ pub struct PinnedApp {
     pub icon_source: Option<String>,
     pub app_user_model_id: Option<String>,
     pub match_executables: Vec<String>,
+    #[serde(flatten)]
+    pub extra_fields: BTreeMap<String, Value>,
 }
 
 impl PinnedApp {

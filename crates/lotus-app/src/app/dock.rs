@@ -345,6 +345,17 @@ impl DockRuntime {
     pub(super) fn settings_directory(&self) -> &Path {
         self.model.settings_directory()
     }
+
+    pub(super) fn export_settings(&self, destination: &Path) -> Result<(), AppError> {
+        self.model.export_settings(destination)?;
+        Ok(())
+    }
+
+    pub(super) fn reset_settings(
+        &self,
+    ) -> Result<lotus_core::settings::SettingsReset, AppError> {
+        Ok(self.model.reset_settings()?)
+    }
     pub(super) fn items(&self) -> &[DockItem] {
         self.model.items()
     }

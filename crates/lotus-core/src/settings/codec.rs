@@ -1,11 +1,28 @@
 use serde_json::Value;
 use thiserror::Error;
 
-use super::model::{CURRENT_APPEARANCE_VERSION, CURRENT_ONBOARDING_VERSION, DockSettings};
+use super::model::{
+    CURRENT_APPEARANCE_VERSION, CURRENT_ONBOARDING_VERSION,
+    CURRENT_SETTINGS_SCHEMA_VERSION, DockSettings,
+};
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 #[error("invalid Lotus settings: {0}")]
 pub struct SettingsDecodeError(String);
+
+impl From<std::string::FromUtf8Error> for SettingsDecodeError {
+    fn from(error: std::string::FromUtf8Error) -> Self {
+        Self(error.to_string())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct DecodedSettings {
+    pub settings: DockSettings,
+    pub source_schema_version: u32,
+    pub has_appearance_version: bool,
+    pub has_onboarding_version: bool,
+}
 
 impl From<serde_json::Error> for SettingsDecodeError {
     fn from(error: serde_json::Error) -> Self {
@@ -14,29 +31,46 @@ impl From<serde_json::Error> for SettingsDecodeError {
 }
 
 pub fn decode_settings(source: &str) -> Result<DockSettings, SettingsDecodeError> {
+    Ok(decode_settings_document(source)?.settings)
+}
+
+pub(super) fn decode_settings_document(
+    source: &str,
+) -> Result<DecodedSettings, SettingsDecodeError> {
     let mut value = decode_compatible_value(source)?;
+
+    let object = value
+        .as_object()
+        .ok_or_else(|| SettingsDecodeError("settings root must be a JSON object".into()))?;
+    let source_schema_version = object.get("schemaVersion").map_or(Ok(0), |value| {
+        serde_json::from_value::<u32>(value.clone()).map_err(SettingsDecodeError::from)
+    })?;
+    let has_appearance_version = object.contains_key("appearanceVersion");
+    let has_onboarding_version = object.contains_key("onboardingVersion");
 
     repair_legacy_nulls(&mut value);
     repair_legacy_null_strings(&mut value);
     normalize_signed_integer_fields(&mut value)?;
 
-    Ok(serde_json::from_value::<DockSettings>(value)?.normalized())
+    Ok(DecodedSettings {
+        settings: serde_json::from_value::<DockSettings>(value)?.normalized(),
+        source_schema_version,
+        has_appearance_version,
+        has_onboarding_version,
+    })
 }
 
-pub(super) fn apply_legacy_migrations(source: &str, settings: &mut DockSettings) -> bool {
-    let Ok(value) = decode_compatible_value(source) else {
+pub(super) fn apply_settings_migrations(decoded: &mut DecodedSettings) -> bool {
+    if decoded.source_schema_version != 0 {
         return false;
-    };
-    let Some(object) = value.as_object() else {
-        return false;
-    };
+    }
 
-    let has_appearance_version = object.contains_key("appearanceVersion");
-    let needs_onboarding_migration = !object.contains_key("onboardingVersion");
+    let settings = &mut decoded.settings;
+    let needs_onboarding_migration = !decoded.has_onboarding_version;
     let needs_appearance_migration =
-        !has_appearance_version || settings.appearance_version < 2;
-    let needs_frosted_material_migration =
-        !has_appearance_version || settings.appearance_version < CURRENT_APPEARANCE_VERSION;
+        !decoded.has_appearance_version || settings.appearance_version < 2;
+    let needs_frosted_material_migration = !decoded.has_appearance_version
+        || settings.appearance_version < CURRENT_APPEARANCE_VERSION;
 
     if needs_onboarding_migration {
         settings.onboarding_version = CURRENT_ONBOARDING_VERSION;
@@ -53,14 +87,9 @@ pub(super) fn apply_legacy_migrations(source: &str, settings: &mut DockSettings)
         settings.appearance_version = CURRENT_APPEARANCE_VERSION;
     }
 
-    let changed = needs_onboarding_migration
-        || needs_appearance_migration
-        || needs_frosted_material_migration;
-    if changed {
-        *settings = settings.clone().normalized();
-    }
+    settings.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
 
-    changed
+    true
 }
 
 fn decode_compatible_value(source: &str) -> Result<Value, SettingsDecodeError> {
@@ -332,6 +361,7 @@ const INTEGER_BOUNDS: &[(&str, i64, i64)] = &[
 ];
 
 const PROPERTY_NAMES: &[&str] = &[
+    "schemaVersion",
     "iconSize",
     "itemSpacing",
     "horizontalPadding",
