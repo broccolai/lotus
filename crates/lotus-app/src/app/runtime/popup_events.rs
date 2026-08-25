@@ -80,6 +80,11 @@ pub(super) fn handle_context_menu_event(
                 auxiliary.context_menu_runtime().invalidate();
             }
         }
+        ContextMenuEvent::ShiftChanged(held) => {
+            if auxiliary.context_menu_runtime().scene.set_shift_held(held) {
+                auxiliary.context_menu_runtime().invalidate();
+            }
+        }
         ContextMenuEvent::DismissRequested => auxiliary.context_menu_runtime().hide(),
         ContextMenuEvent::Resized { width, height } => {
             auxiliary.context_menu_runtime().resize(width, height)?;

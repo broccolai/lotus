@@ -139,6 +139,7 @@ enum PopupKind<Asset> {
     App {
         source_index: usize,
         identity: String,
+        running_windows: usize,
         entries: Vec<AppEntry>,
     },
     Picker {
@@ -205,7 +206,7 @@ impl<Asset: Clone> DockPopup<Asset> {
             },
             label: if shift_held {
                 if running_windows == 1 {
-                    "Force close window"
+                    "Force close"
                 } else {
                     "Force close all windows"
                 }
@@ -221,6 +222,7 @@ impl<Asset: Clone> DockPopup<Asset> {
             kind: PopupKind::App {
                 source_index,
                 identity,
+                running_windows,
                 entries: [Some(open), Some(customize), Some(pin), close]
                     .into_iter()
                     .flatten()
@@ -294,6 +296,47 @@ impl<Asset: Clone> DockPopup<Asset> {
         if let PopupKind::System(menu) = &mut self.kind {
             let _ = menu.set_dpi(dpi);
         }
+        true
+    }
+
+    pub fn set_shift_held(&mut self, shift_held: bool) -> bool {
+        let PopupKind::App {
+            running_windows,
+            entries,
+            ..
+        } = &mut self.kind
+        else {
+            return false;
+        };
+        let Some(close) = entries.iter_mut().find(|entry| {
+            matches!(
+                entry.action,
+                AppMenuAction::Close | AppMenuAction::ForceClose
+            )
+        }) else {
+            return false;
+        };
+        let action = if shift_held {
+            AppMenuAction::ForceClose
+        } else {
+            AppMenuAction::Close
+        };
+        let label = if shift_held {
+            if *running_windows == 1 {
+                "Force close"
+            } else {
+                "Force close all windows"
+            }
+        } else if *running_windows == 1 {
+            "Close window"
+        } else {
+            "Close all windows"
+        };
+        if close.action == action && close.label == label {
+            return false;
+        }
+        close.action = action;
+        close.label = label;
         true
     }
 

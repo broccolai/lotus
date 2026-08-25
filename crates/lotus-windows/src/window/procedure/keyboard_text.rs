@@ -4,7 +4,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_KEYDOWN, WM_MOUSEWHEEL,
+    DefWindowProcW, WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_MOUSEWHEEL,
 };
 
 use super::{
@@ -40,7 +40,7 @@ pub(super) fn dispatch(
         WM_KEYDOWN if is_settings_window(hwnd) => {
             Some(dispatch_settings_key(hwnd, message, wparam, lparam))
         }
-        WM_KEYDOWN if is_context_menu_window(hwnd) => {
+        WM_KEYDOWN | WM_KEYUP if is_context_menu_window(hwnd) => {
             Some(dispatch_context_menu_key(hwnd, message, wparam, lparam))
         }
         WM_CHAR if is_search_window(hwnd) => {
@@ -157,6 +157,16 @@ fn dispatch_context_menu_key(
     let Ok(key) = u16::try_from(wparam.0) else {
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     };
+    if key == VK_SHIFT.0 {
+        push_window_event(
+            hwnd,
+            WindowEvent::ContextMenu(ContextMenuEvent::ShiftChanged(message == WM_KEYDOWN)),
+        );
+        return LRESULT(0);
+    }
+    if message == WM_KEYUP {
+        return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
+    }
     let event = match key {
         key if key == VK_ESCAPE.0 => ContextMenuEvent::DismissRequested,
         key if key == VK_RETURN.0 || key == VK_SPACE.0 => {

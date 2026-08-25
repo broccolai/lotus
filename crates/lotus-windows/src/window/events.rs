@@ -107,6 +107,7 @@ pub enum ContextMenuEvent {
     MoveSelection(SelectionDirection),
     Scroll(SelectionDirection),
     SelectionRequested,
+    ShiftChanged(bool),
     DismissRequested,
     Resized { width: u32, height: u32 },
     DpiChanged { dpi: u32 },
