@@ -159,7 +159,7 @@ impl DockRuntime {
             &mut self.custom_images,
             windows
                 .first()
-                .and_then(|window| window.app_user_model_id.as_deref()),
+                .and_then(|window| window.application_facts.reliable_id()),
             Some(&identity),
             Path::new(&icon_source),
         )
@@ -263,7 +263,9 @@ impl DockRuntime {
             .items()
             .iter()
             .enumerate()
-            .find(|(_, item)| media_source_matches_item(source_id, item))
+            .find(|(_, item)| {
+                media_source_matches_item(source_id, item, &self.application_catalog)
+            })
             .map(|(index, item)| {
                 let preferred = self.recent_windows.get(&item.id).and_then(|recent| {
                     recent

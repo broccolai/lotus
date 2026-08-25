@@ -28,18 +28,18 @@ pub(super) fn refresh_catalog(
     auxiliary: &mut ModuleHost,
 ) -> Result<bool, AppError> {
     let catalog_changed = auxiliary.refresh_catalog(dock, dock_model, graphics)?;
-    let pins_upgraded = dock_model.upgrade_legacy_pins(auxiliary.application_catalog())?;
-    let pins_reconciled =
-        dock_model.reconcile_unpinned_pins(windows, auxiliary.application_catalog())?;
-    let pins_changed = pins_upgraded || pins_reconciled;
-    if !catalog_changed && !pins_changed {
+    if !catalog_changed {
         return Ok(false);
     }
-    if pins_changed {
-        auxiliary.adapt_to_pin_changes(dock, dock_model, graphics)?;
-        dock_model.rebuild(windows);
-        present_dock_change(dock, graphics, surface, auxiliary, dock_model)?;
-    }
+    let application_catalog = auxiliary.application_snapshot();
+    dock_model.rebuild(windows, application_catalog.clone());
+    auxiliary.reconcile_switcher_windows(
+        windows,
+        application_catalog,
+        dock_model.application_assignments(),
+        graphics,
+    )?;
+    present_dock_change(dock, graphics, surface, auxiliary, dock_model)?;
     auxiliary.refresh_open_application_manager(dock_model.items());
     if catalog_changed {
         auxiliary.invalidate_launcher_surface();

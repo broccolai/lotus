@@ -1,5 +1,4 @@
-use std::path::Path;
-
+use crate::application::ApplicationKey;
 use crate::dock::DockItem;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,77 +20,28 @@ pub fn count_for_item(
     item: &DockItem,
     sources: &[NotificationSource],
     disabled_apps: &[String],
+    mut identifier_key: impl FnMut(&str) -> Option<ApplicationKey>,
 ) -> NotificationCount {
-    let candidates = item_candidates(item);
     if disabled_apps
         .iter()
-        .map(|value| normalized(value))
-        .any(|disabled| {
-            !disabled.is_empty()
-                && candidates.iter().any(|candidate| candidate == &disabled)
-        })
+        .filter_map(|disabled| identifier_key(disabled))
+        .any(|disabled| disabled == item.application_key)
     {
         return NotificationCount::default();
     }
 
     sources
         .iter()
-        .filter(|source| source_matches(source, &candidates))
+        .filter(|source| {
+            identifier_key(&source.app_user_model_id)
+                .or_else(|| identifier_key(&source.package_family_name))
+                .as_ref()
+                == Some(&item.application_key)
+        })
         .fold(NotificationCount::default(), |total, source| {
             NotificationCount {
                 value: total.value.saturating_add(source.count),
                 is_lower_bound: total.is_lower_bound || source.count_is_lower_bound,
             }
         })
-}
-
-fn source_matches(source: &NotificationSource, candidates: &[String]) -> bool {
-    let display_name = normalized(&source.display_name);
-    if !display_name.is_empty()
-        && candidates
-            .iter()
-            .any(|candidate| candidate == &display_name)
-    {
-        return true;
-    }
-
-    let model_id = normalized(&source.app_user_model_id);
-    let family = normalized(&source.package_family_name);
-    candidates.iter().any(|candidate| {
-        candidate.len() >= 4 && (model_id.contains(candidate) || family.contains(candidate))
-    })
-}
-
-fn item_candidates(item: &DockItem) -> Vec<String> {
-    let mut candidates = Vec::new();
-    let identity = item.application_identity();
-    for value in [
-        item.display_name.as_str(),
-        file_stem(&item.executable_path),
-        file_stem(&item.launch_target),
-    ]
-    .into_iter()
-    .chain(identity.identifiers())
-    {
-        let value = normalized(value);
-        if !value.is_empty() && !candidates.contains(&value) {
-            candidates.push(value);
-        }
-    }
-    candidates
-}
-
-fn file_stem(value: &str) -> &str {
-    Path::new(value)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or(value)
-}
-
-fn normalized(value: &str) -> String {
-    value
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .flat_map(char::to_lowercase)
-        .collect()
 }

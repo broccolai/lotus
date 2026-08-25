@@ -1,12 +1,17 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::application::{ApplicationIdentity, is_reliable_application_identity};
+use crate::application::{
+    ApplicationIdentity, ApplicationKey, ApplicationResolution, LaunchSpec,
+    PinnedApplicationAssignment, RegisteredApplication, WindowApplicationAssignments,
+    is_reliable_application_identity, normalized_path,
+};
 use crate::settings::PinnedApp;
 use crate::window::WindowInfo;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DockItem {
+    pub application_key: ApplicationKey,
     pub id: String,
     pub display_name: String,
     pub launch_target: String,
@@ -47,16 +52,12 @@ pub struct DockProjection<'a> {
     pub hidden_executables: &'a [String],
     pub item_order: &'a [String],
     pub show_unpinned_running_apps: bool,
+    pub assignments: &'a WindowApplicationAssignments,
+    pub applications: &'a [RegisteredApplication],
+    pub pinned_applications: &'a [PinnedApplicationAssignment],
 }
 
-pub fn project_dock<F>(
-    windows: &[WindowInfo],
-    settings: DockProjection<'_>,
-    mut resolve_executable: F,
-) -> Vec<DockItem>
-where
-    F: FnMut(&str) -> Option<String>,
-{
+pub fn project_dock(windows: &[WindowInfo], settings: DockProjection<'_>) -> Vec<DockItem> {
     let visible_windows = windows
         .iter()
         .filter(|window| {
@@ -70,42 +71,80 @@ where
     let mut items = Vec::new();
 
     for pinned in settings.pinned_apps {
-        let resolved_launch = resolve_executable(&pinned.launch_target);
+        let key = settings
+            .pinned_applications
+            .iter()
+            .find(|assignment| assignment.pin_id.eq_ignore_ascii_case(&pinned.id))
+            .map_or_else(
+                || {
+                    LaunchSpec::new(&pinned.launch_target, pinned.arguments.as_deref())
+                        .map_or_else(
+                            || {
+                                ApplicationKey::ExecutablePath(
+                                    normalized_path(&pinned.launch_target).unwrap_or_else(
+                                        || pinned.launch_target.to_lowercase(),
+                                    ),
+                                )
+                            },
+                            |launch| ApplicationKey::from_launch_fallback(&launch),
+                        )
+                },
+                |assignment| assignment.key.clone(),
+            );
+        let registered = settings
+            .pinned_applications
+            .iter()
+            .find(|assignment| assignment.pin_id.eq_ignore_ascii_case(&pinned.id))
+            .and_then(|assignment| assignment.registered_index)
+            .and_then(|index| settings.applications.get(index));
         let mut matches = Vec::new();
         for (index, window) in visible_windows.iter().enumerate() {
-            if unmatched[index] && matches_pin(pinned, window, resolved_launch.as_deref()) {
+            if unmatched[index] && window_key(window, settings.assignments) == key {
                 unmatched[index] = false;
                 matches.push((*window).clone());
             }
         }
         let executable_path = matches.first().map_or_else(
             || {
-                resolved_launch
-                    .clone()
+                registered
+                    .and_then(|application| application.canonical_executables.first())
+                    .cloned()
                     .unwrap_or_else(|| pinned.launch_target.clone())
             },
             |window| path_text(&window.executable_path),
         );
 
         items.push(DockItem {
+            application_key: key,
             id: pinned.id.clone(),
-            display_name: pinned.name.clone(),
+            display_name: registered.map_or_else(
+                || pinned.name.clone(),
+                |application| application.name.clone(),
+            ),
             launch_target: pinned.launch_target.clone(),
             arguments: pinned.arguments.clone(),
-            icon_source: pinned
-                .icon_source
-                .clone()
-                .unwrap_or_else(|| executable_path.clone()),
+            icon_source: registered.map_or_else(
+                || {
+                    pinned
+                        .icon_source
+                        .clone()
+                        .unwrap_or_else(|| executable_path.clone())
+                },
+                |application| application.icon_source.clone(),
+            ),
             app_user_model_id: pinned
                 .app_user_model_id
                 .as_deref()
                 .filter(|identity| is_reliable_application_identity(identity))
                 .map(str::to_owned)
                 .or_else(|| {
+                    registered.and_then(|application| application.app_user_model_id.clone())
+                })
+                .or_else(|| {
                     matches.iter().find_map(|window| {
                         window
-                            .app_user_model_id
-                            .as_deref()
+                            .application_facts
+                            .reliable_id()
                             .filter(|identity| is_reliable_application_identity(identity))
                             .map(str::to_owned)
                     })
@@ -117,78 +156,165 @@ where
     }
 
     if settings.show_unpinned_running_apps {
-        append_unpinned(&mut items, &visible_windows, &unmatched);
+        append_unpinned(
+            &mut items,
+            &visible_windows,
+            &unmatched,
+            settings.assignments,
+            settings.applications,
+        );
     }
 
     apply_saved_order(&mut items, settings.item_order);
     items
 }
 
-fn matches_pin(
-    pinned: &PinnedApp,
-    window: &WindowInfo,
-    resolved_launch: Option<&str>,
-) -> bool {
-    pinned
-        .match_identity(&window.application_identity(), resolved_launch)
-        .is_match()
-}
-
 fn append_unpinned(
     items: &mut Vec<DockItem>,
     visible_windows: &[&WindowInfo],
     unmatched: &[bool],
+    assignments: &WindowApplicationAssignments,
+    applications: &[RegisteredApplication],
 ) {
-    let mut group_indices = HashMap::<String, usize>::new();
-    let mut groups = Vec::<(String, String, Vec<WindowInfo>)>::new();
+    let mut group_indices = HashMap::<ApplicationKey, usize>::new();
+    let mut groups = Vec::<(ApplicationKey, Option<usize>, Vec<WindowInfo>)>::new();
 
     for (window, is_unmatched) in visible_windows.iter().zip(unmatched) {
         if !is_unmatched {
             continue;
         }
 
-        let executable_path = path_text(&window.executable_path);
-        let identity = window.application_identity();
-        let key = identity
-            .process_group_key()
-            .unwrap_or_else(|| format!("window:{}", window.id.get()));
-        let id = if identity.is_shared_host() {
-            identity
-                .reliable_registered_id()
-                .or_else(|| identity.stable_id())
-                .map_or_else(|| key.clone(), str::to_owned)
-        } else {
-            executable_path.clone()
-        };
-        let index = *group_indices.entry(key).or_insert_with(|| {
-            groups.push((id, executable_path, Vec::new()));
+        let (key, registered_index) = window_assignment(window, assignments);
+        let index = *group_indices.entry(key.clone()).or_insert_with(|| {
+            groups.push((key.clone(), registered_index, Vec::new()));
             groups.len() - 1
         });
         groups[index].2.push((*window).clone());
     }
 
     groups.sort_by(|left, right| {
-        case_key(&file_stem(&left.1))
-            .cmp(&case_key(&file_stem(&right.1)))
-            .then_with(|| case_key(&left.1).cmp(&case_key(&right.1)))
-            .then_with(|| left.1.cmp(&right.1))
+        group_name(left, applications).cmp(&group_name(right, applications))
     });
 
-    items.extend(groups.into_iter().map(|(id, executable_path, windows)| {
+    items.extend(groups.into_iter().map(|(key, registered_index, windows)| {
+        let registered = registered_index.and_then(|index| applications.get(index));
+        let unregistered_launch = windows.iter().find_map(|window| {
+            let ApplicationResolution::Unregistered { launch, .. } =
+                assignments.by_window.get(&window.key())?
+            else {
+                return None;
+            };
+            launch.clone()
+        });
+        let executable_path = windows
+            .first()
+            .map_or_else(String::new, |window| path_text(&window.executable_path));
         DockItem {
-            id,
-            display_name: file_stem(&executable_path),
-            launch_target: executable_path.clone(),
-            arguments: None,
-            icon_source: executable_path.clone(),
-            app_user_model_id: windows
-                .iter()
-                .find_map(|window| window.app_user_model_id.clone()),
+            application_key: key.clone(),
+            id: registered.map_or_else(
+                || application_key_text(&key),
+                |application| application.id.clone(),
+            ),
+            display_name: registered.map_or_else(
+                || file_stem(&executable_path),
+                |application| application.name.clone(),
+            ),
+            launch_target: registered.map_or_else(
+                || {
+                    unregistered_launch.as_ref().map_or_else(
+                        || executable_path.clone(),
+                        |launch| launch.target.clone(),
+                    )
+                },
+                |application| application.launch.target.clone(),
+            ),
+            arguments: registered.map_or_else(
+                || unregistered_launch.and_then(|launch| launch.arguments),
+                |application| application.launch.arguments.clone(),
+            ),
+            icon_source: registered.map_or_else(
+                || executable_path.clone(),
+                |application| application.icon_source.clone(),
+            ),
+            app_user_model_id: registered
+                .and_then(|application| application.app_user_model_id.clone())
+                .or_else(|| {
+                    windows.iter().find_map(|window| {
+                        window.application_facts.reliable_id().map(str::to_owned)
+                    })
+                }),
             executable_path,
             is_pinned: false,
             windows,
         }
     }));
+}
+
+fn window_key(
+    window: &WindowInfo,
+    assignments: &WindowApplicationAssignments,
+) -> ApplicationKey {
+    match assignments.by_window.get(&window.key()) {
+        Some(
+            ApplicationResolution::Resolved { key, .. }
+            | ApplicationResolution::Associated { key }
+            | ApplicationResolution::Unregistered { key, .. },
+        ) => key.clone(),
+        Some(
+            ApplicationResolution::Prevented | ApplicationResolution::Ambiguous { .. },
+        )
+        | None => ApplicationKey::Ephemeral(window.key()),
+    }
+}
+
+fn window_assignment(
+    window: &WindowInfo,
+    assignments: &WindowApplicationAssignments,
+) -> (ApplicationKey, Option<usize>) {
+    match assignments.by_window.get(&window.key()) {
+        Some(ApplicationResolution::Resolved {
+            key,
+            registered_index,
+            ..
+        }) => (key.clone(), Some(*registered_index)),
+        Some(
+            ApplicationResolution::Associated { key }
+            | ApplicationResolution::Unregistered { key, .. },
+        ) => (key.clone(), None),
+        Some(
+            ApplicationResolution::Prevented | ApplicationResolution::Ambiguous { .. },
+        )
+        | None => (ApplicationKey::Ephemeral(window.key()), None),
+    }
+}
+
+fn application_key_text(key: &ApplicationKey) -> String {
+    match key {
+        ApplicationKey::Registered(value)
+        | ApplicationKey::LaunchSignature(value)
+        | ApplicationKey::ExecutablePath(value) => value.clone(),
+        ApplicationKey::Ephemeral(key) => {
+            format!("window:{}:{}", key.id.get(), key.incarnation)
+        }
+    }
+}
+
+fn group_name(
+    group: &(ApplicationKey, Option<usize>, Vec<WindowInfo>),
+    applications: &[RegisteredApplication],
+) -> String {
+    group
+        .1
+        .and_then(|index| applications.get(index))
+        .map_or_else(
+            || {
+                group.2.first().map_or_else(String::new, |window| {
+                    file_stem(&path_text(&window.executable_path))
+                })
+            },
+            |application| application.name.clone(),
+        )
+        .to_lowercase()
 }
 
 fn apply_saved_order(items: &mut [DockItem], saved_order: &[String]) {

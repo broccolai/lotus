@@ -3,12 +3,14 @@ mod events;
 mod foreground;
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use lotus_core::application::WindowApplicationFacts;
 use lotus_core::window::{TrackedWindowKey, WindowId, WindowInfo};
 use windows::Win32::Foundation::{E_FAIL, HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
@@ -20,6 +22,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::Error;
 
 pub(crate) use self::enumeration::process_image_path;
+use crate::application_identity::window_application_identity_in_apartment;
+use crate::launch::ComApartment;
 use crate::responsiveness::METRICS;
 use crate::{NativeError, WindowHandle};
 
@@ -186,6 +190,7 @@ struct WorkerState {
     debounce_timer: Option<usize>,
     reconcile_timer: usize,
     process_cache: enumeration::ProcessMetadataCache,
+    application_facts: HashMap<TrackedWindowKey, WindowApplicationFacts>,
 }
 
 impl WindowTracker {
@@ -291,7 +296,7 @@ impl WindowTracker {
         message_id: u32,
         _parameter: usize,
     ) -> Result<Option<WindowTrackerEvent>, NativeError> {
-        if !is_thread_message || message_id != events::REFRESH_MESSAGE {
+        if !Self::is_refresh_message(is_thread_message, message_id) {
             return Ok(None);
         }
         if !self
@@ -322,6 +327,10 @@ impl WindowTracker {
         Ok(event)
     }
 
+    pub const fn is_refresh_message(is_thread_message: bool, message_id: u32) -> bool {
+        is_thread_message && message_id == events::REFRESH_MESSAGE
+    }
+
     pub fn refresh_fullscreen(&mut self) {
         self.validate_shell_fullscreen();
         self.fullscreen_window = foreground::observe_fullscreen_window(self.own_process_id);
@@ -342,6 +351,12 @@ fn run_worker(
     shared: Arc<SharedState>,
     startup: mpsc::SyncSender<Result<PublishedSnapshot, String>>,
 ) {
+    let Some(_apartment) = ComApartment::enter() else {
+        let _ = startup.send(Err(
+            "Lotus window tracker could not initialize COM".to_owned()
+        ));
+        return;
+    };
     let mut message = MSG::default();
     let _ = unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_NOREMOVE) };
     let thread_id = unsafe { GetCurrentThreadId() };
@@ -384,6 +399,7 @@ fn run_worker(
         debounce_timer: None,
         reconcile_timer,
         process_cache: enumeration::ProcessMetadataCache::default(),
+        application_facts: HashMap::new(),
     };
     state.refresh();
     if !state.shared.running.load(AtomicOrdering::Acquire) {
@@ -431,6 +447,7 @@ fn worker_message_loop(state: &mut WorkerState) {
 
 impl WorkerState {
     fn refresh(&mut self) {
+        METRICS.record_tracker_worker_refresh_execution();
         let enumeration_started = Instant::now();
         let Ok(mut windows) =
             enumeration::enumerate_windows(self.own_process_id, &mut self.process_cache)
@@ -442,6 +459,7 @@ impl WorkerState {
         };
         assign_window_incarnations(&mut windows);
         suppress_stale_targets(&mut windows, Instant::now());
+        self.hydrate_application_facts(&mut windows);
         METRICS.record_window_enumeration(enumeration_started.elapsed());
 
         self.failures = 0;
@@ -474,6 +492,26 @@ impl WorkerState {
         }
     }
 
+    fn hydrate_application_facts(&mut self, windows: &mut [WindowInfo]) {
+        self.application_facts
+            .retain(|key, _| windows.iter().any(|window| window.key() == *key));
+        for window in windows {
+            if let Some(facts) = self.application_facts.get(&window.key()) {
+                METRICS.record_window_identity_fact(true, Duration::ZERO);
+                window.application_facts.clone_from(facts);
+                continue;
+            }
+            let process_id = window.application_facts.process_app_user_model_id.clone();
+            let started = Instant::now();
+            let mut facts =
+                window_application_identity_in_apartment(window.id).unwrap_or_default();
+            facts.process_app_user_model_id = process_id;
+            METRICS.record_window_identity_fact(false, started.elapsed());
+            window.application_facts.clone_from(&facts);
+            self.application_facts.insert(window.key(), facts);
+        }
+    }
+
     fn publish(&mut self) {
         METRICS.record_window_publish();
         let Ok(mut stale) = STALE_TARGETS.lock() else {
@@ -494,24 +532,33 @@ impl WorkerState {
         drop(latest);
         drop(stale);
 
-        if self.shared.running.load(AtomicOrdering::Acquire)
-            && !self
-                .shared
-                .ui_wake_queued
-                .swap(true, AtomicOrdering::AcqRel)
-            && unsafe {
-                PostThreadMessageW(
-                    self.shared.ui_thread,
-                    events::REFRESH_MESSAGE,
-                    WPARAM(0),
-                    LPARAM(0),
-                )
-            }
-            .is_err()
+        if !self.shared.running.load(AtomicOrdering::Acquire) {
+            return;
+        }
+        if self
+            .shared
+            .ui_wake_queued
+            .swap(true, AtomicOrdering::AcqRel)
+        {
+            METRICS.record_tracker_ui_wake_coalesced();
+            return;
+        }
+        if unsafe {
+            PostThreadMessageW(
+                self.shared.ui_thread,
+                events::REFRESH_MESSAGE,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        }
+        .is_err()
         {
             self.shared
                 .ui_wake_queued
                 .store(false, AtomicOrdering::Release);
+            METRICS.record_tracker_ui_wake_post_failure();
+        } else {
+            METRICS.record_tracker_ui_wake_posted();
         }
     }
 
@@ -667,7 +714,7 @@ fn compare_window_info(left: &WindowInfo, right: &WindowInfo) -> Ordering {
         .then_with(|| left.incarnation.cmp(&right.incarnation))
         .then_with(|| left.title.cmp(&right.title))
         .then_with(|| left.executable_path.cmp(&right.executable_path))
-        .then_with(|| left.app_user_model_id.cmp(&right.app_user_model_id))
+        .then_with(|| left.application_facts.cmp(&right.application_facts))
 }
 
 impl Drop for WindowTracker {

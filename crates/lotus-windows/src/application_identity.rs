@@ -2,6 +2,7 @@ use std::ffi::{OsStr, c_void};
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
+use lotus_core::application::{LaunchSpec, WindowApplicationFacts};
 use lotus_core::window::WindowId;
 use windows::Win32::Foundation::{HLOCAL, HWND, LocalFree, PROPERTYKEY};
 use windows::Win32::System::Com::{
@@ -38,36 +39,30 @@ const PREVENT_PINNING: PROPERTYKEY = PROPERTYKEY {
     pid: 9,
 };
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct WindowApplicationIdentity {
-    pub app_user_model_id: Option<String>,
-    pub relaunch_command: Option<String>,
-    pub display_name: Option<String>,
-    pub icon_resource: Option<String>,
-    pub prevent_pinning: bool,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RelaunchApplication {
-    pub target: String,
-    pub arguments: Option<String>,
-}
-
-pub fn window_application_identity(window: WindowId) -> Option<WindowApplicationIdentity> {
-    let _apartment = ComApartment::enter()?;
-    window_application_identity_in_apartment(window)
+struct RelaunchApplication {
+    target: String,
+    arguments: Option<String>,
 }
 
 pub(crate) fn window_application_identity_in_apartment(
     window: WindowId,
-) -> Option<WindowApplicationIdentity> {
+) -> Option<WindowApplicationFacts> {
     let window = window_handle(window)?;
 
     let properties: IPropertyStore = unsafe { SHGetPropertyStoreForWindow(window) }.ok()?;
 
-    Some(WindowApplicationIdentity {
-        app_user_model_id: string_property(&properties, &APP_USER_MODEL_ID),
-        relaunch_command: string_property(&properties, &RELAUNCH_COMMAND),
+    // This runs on the tracker worker. Resolving the executable is required to find the
+    // complete unquoted target instead of treating the first whitespace-delimited token
+    // as an executable.
+    let relaunch = string_property(&properties, &RELAUNCH_COMMAND)
+        .as_deref()
+        .and_then(relaunch_application)
+        .and_then(|launch| LaunchSpec::new(&launch.target, launch.arguments.as_deref()));
+    Some(WindowApplicationFacts {
+        window_app_user_model_id: string_property(&properties, &APP_USER_MODEL_ID),
+        process_app_user_model_id: None,
+        relaunch,
         display_name: string_property(&properties, &RELAUNCH_DISPLAY_NAME),
         icon_resource: string_property(&properties, &RELAUNCH_ICON),
         prevent_pinning: bool_property(&properties, &PREVENT_PINNING).unwrap_or(false),
@@ -86,7 +81,7 @@ pub(crate) fn shortcut_application_id(path: &Path) -> Option<String> {
     string_property(&properties, &APP_USER_MODEL_ID)
 }
 
-pub fn relaunch_application(command: &str) -> Option<RelaunchApplication> {
+fn relaunch_application(command: &str) -> Option<RelaunchApplication> {
     parse_relaunch_application(command, |candidate| {
         crate::launch::resolve_executable(candidate).is_some()
             || candidate.starts_with("shell:")

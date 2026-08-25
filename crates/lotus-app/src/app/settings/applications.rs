@@ -1,13 +1,13 @@
 use std::path::Path;
 use std::time::Instant;
 
-use lotus_core::application::{ApplicationIdentity, is_shared_host_executable};
+use lotus_core::application::{
+    ApplicationIdentity, RegisteredApplication, is_shared_host_executable,
+};
 use lotus_core::dock::DockItem;
-use lotus_core::search::ApplicationEntry;
 use lotus_core::settings::DockSettings;
 use lotus_settings::scene::{SettingsApplicationRecord, SettingsControl};
 use lotus_windows::custom_image::CustomImageCache;
-use lotus_windows::launch::resolve_executable;
 use lotus_windows::native_icon::NativeIconCache;
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::search_catalog::SearchCatalogCache;
@@ -21,39 +21,23 @@ pub(in crate::app) fn application_records(
     dock_items: &[DockItem],
     settings: &DockSettings,
 ) -> Vec<SettingsApplicationRecord> {
-    let catalog = cache.catalog(dock_items, &[]);
-    let mut applications = catalog
-        .entries_for_management()
-        .map(|entry| {
-            let id = application_record_id(entry);
-            let executable = resolve_executable(&entry.launch_target);
-            let executable_name = executable
-                .as_deref()
-                .and_then(|path| path.file_name())
-                .and_then(|name| name.to_str());
-            let identity = ApplicationIdentity::from_path(
-                entry.app_user_model_id.as_deref(),
-                Some(&id),
-                executable.as_deref(),
-                std::iter::empty(),
-            );
-            let custom = settings.application_icon_override_for(&identity);
-            SettingsApplicationRecord {
-                id,
-                name: entry.name.clone(),
-                icon: None,
-                app_user_model_id: entry.app_user_model_id.clone(),
-                match_executables: executable_name
-                    .filter(|name| !is_shared_host_executable(name))
-                    .map(str::to_owned)
-                    .into_iter()
-                    .collect(),
-                customized: custom.is_some(),
-                missing_icon: custom
-                    .is_some_and(|override_| !Path::new(&override_.image_path).is_file()),
-            }
-        })
+    let snapshot = cache.snapshot();
+    let mut applications = snapshot
+        .applications
+        .iter()
+        .map(|application| registered_record(application, settings))
         .collect::<Vec<_>>();
+    applications.extend(
+        dock_items
+            .iter()
+            .filter(|item| item.is_pinned)
+            .filter(|item| {
+                snapshot
+                    .application_index_for_key(&item.application_key)
+                    .is_none()
+            })
+            .map(|item| dock_record(item, settings)),
+    );
 
     applications.sort_by_cached_key(|application| {
         (!application.customized, application.name.to_lowercase())
@@ -72,17 +56,31 @@ pub(super) fn hydrate_previews(
     }
 
     let settings = runtime.scene.draft().clone();
-    let catalog = cache.catalog(dock_items, &[]);
+    let snapshot = cache.snapshot();
 
     for id in ids {
-        let Some(entry) = catalog
-            .entries_for_management()
-            .find(|entry| application_record_id(entry).eq_ignore_ascii_case(&id))
-        else {
+        let source = snapshot
+            .applications
+            .iter()
+            .find(|application| application.id.eq_ignore_ascii_case(&id))
+            .map(|application| {
+                (
+                    application.application_identity(),
+                    application.icon_source.as_str(),
+                )
+            })
+            .or_else(|| {
+                dock_items
+                    .iter()
+                    .find(|item| item.id.eq_ignore_ascii_case(&id))
+                    .map(|item| (item.application_identity(), item.icon_source.as_str()))
+            });
+        let Some((identity, icon_source)) = source else {
             continue;
         };
         let Some(icon) = effective_application_icon(
-            entry,
+            &identity,
+            icon_source,
             &settings,
             &mut runtime.native_icons,
             &mut runtime.custom_images,
@@ -119,39 +117,74 @@ fn visible_application_ids(runtime: &SettingsRuntime) -> Vec<String> {
     ids
 }
 
-fn application_record_id(entry: &ApplicationEntry) -> String {
-    let identity = entry.application_identity();
+fn registered_record(
+    application: &RegisteredApplication,
+    settings: &DockSettings,
+) -> SettingsApplicationRecord {
+    settings_record(
+        application.id.clone(),
+        application.name.clone(),
+        application.app_user_model_id.clone(),
+        application.executable_aliases.clone(),
+        &application.application_identity(),
+        settings,
+    )
+}
 
-    identity
-        .reliable_registered_id()
-        .or_else(|| identity.stable_id())
-        .unwrap_or(&entry.launch_target)
-        .to_owned()
+fn dock_record(item: &DockItem, settings: &DockSettings) -> SettingsApplicationRecord {
+    let match_executables = Path::new(&item.executable_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !is_shared_host_executable(name))
+        .map(str::to_owned)
+        .into_iter()
+        .collect();
+    settings_record(
+        item.id.clone(),
+        item.display_name.clone(),
+        item.app_user_model_id.clone(),
+        match_executables,
+        &item.application_identity(),
+        settings,
+    )
+}
+
+fn settings_record(
+    id: String,
+    name: String,
+    app_user_model_id: Option<String>,
+    match_executables: Vec<String>,
+    identity: &ApplicationIdentity,
+    settings: &DockSettings,
+) -> SettingsApplicationRecord {
+    let custom = settings.application_icon_override_for(identity);
+    SettingsApplicationRecord {
+        id,
+        name,
+        icon: None,
+        app_user_model_id,
+        match_executables,
+        customized: custom.is_some(),
+        missing_icon: custom
+            .is_some_and(|override_| !Path::new(&override_.image_path).is_file()),
+    }
 }
 
 fn effective_application_icon(
-    entry: &ApplicationEntry,
+    identity: &ApplicationIdentity,
+    icon_source: &str,
     settings: &DockSettings,
     native_icons: &mut NativeIconCache,
     custom_images: &mut CustomImageCache,
 ) -> Option<lotus_ui::icon::RasterIcon> {
-    let executable = resolve_executable(&entry.launch_target)
-        .unwrap_or_else(|| Path::new(&entry.icon_source).to_path_buf());
-    let identity = ApplicationIdentity::from_path(
-        entry.app_user_model_id.as_deref(),
-        Some(&application_record_id(entry)),
-        Some(&executable),
-        std::iter::empty(),
-    );
-
-    if let Some(override_) = settings.application_icon_override_for(&identity)
+    if let Some(override_) = settings.application_icon_override_for(identity)
         && let Ok(icon) = custom_images.image(Path::new(&override_.image_path))
     {
         return Some(icon);
     }
 
     native_icons
-        .icon(Path::new(&entry.icon_source), PREVIEW_ICON_PIXEL_SIZE)
+        .icon(Path::new(icon_source), PREVIEW_ICON_PIXEL_SIZE)
         .ok()
         .flatten()
 }

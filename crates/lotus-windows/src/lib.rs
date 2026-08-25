@@ -1,5 +1,6 @@
 mod error;
 mod platform;
+mod process_resources;
 mod resource_cache;
 pub mod responsiveness;
 

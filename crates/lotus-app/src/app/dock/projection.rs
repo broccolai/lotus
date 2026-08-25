@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use lotus_core::application::{ApplicationIdentity, is_reliable_registered_id};
+use lotus_core::application::WindowApplicationAssignments;
 use lotus_core::dock::DockItem;
 use lotus_core::notification::count_for_item;
 use lotus_core::settings::{DockSettings, DockZone, NotificationBadgeStyle};
@@ -9,7 +9,6 @@ use lotus_core::window::WindowInfo;
 use lotus_dock::model::project_snapshot;
 use lotus_windows::clock::{local_date, local_time};
 use lotus_windows::graphics::assets::SvgAsset;
-use lotus_windows::launch::resolve_executable;
 
 use super::{DockRuntime, NATIVE_ICON_SAMPLE_SCALE, SceneDockItem};
 use crate::app::AppError;
@@ -77,6 +76,10 @@ impl DockRuntime {
                 source,
                 &self.notifications,
                 &self.model.settings().notification_disabled_apps,
+                |identifier| {
+                    self.application_catalog
+                        .key_for_external_identifier(identifier)
+                },
             );
             let count = notification_count.value;
             let badge = match (self.model.settings().notification_badge_style, count) {
@@ -213,40 +216,25 @@ pub(in crate::app) fn docked_status_items(
 pub(in crate::app) fn projected_items(
     settings: &DockSettings,
     windows: &[WindowInfo],
+    assignments: &WindowApplicationAssignments,
+    applications: &[lotus_core::application::RegisteredApplication],
+    pinned_applications: &[lotus_core::application::PinnedApplicationAssignment],
 ) -> Vec<DockItem> {
-    project_snapshot(settings, windows, |target| {
-        resolve_executable(target).map(|path| path.to_string_lossy().into_owned())
-    })
-}
-
-pub(in crate::app) fn media_source_matches_item(source_id: &str, item: &DockItem) -> bool {
-    if is_reliable_registered_id(source_id) {
-        return ApplicationIdentity::new(Some(source_id), None, None, std::iter::empty())
-            .match_strength(&item.application_identity())
-            .is_match();
-    }
-
-    ApplicationIdentity::new(None, None, None, std::iter::once(source_id))
-        .match_strength(&executable_identity(item))
-        .is_match()
-}
-
-pub(in crate::app) fn window_matches_item(window: &WindowInfo, item: &DockItem) -> bool {
-    window
-        .application_identity()
-        .match_strength(&item.application_identity())
-        .is_match()
-}
-
-fn executable_identity(item: &DockItem) -> ApplicationIdentity {
-    ApplicationIdentity::new(
-        None,
-        Some(&item.id),
-        Some(&item.executable_path),
-        item.windows
-            .iter()
-            .filter_map(|window| window.executable_name().and_then(|name| name.to_str())),
+    project_snapshot(
+        settings,
+        windows,
+        assignments,
+        applications,
+        pinned_applications,
     )
+}
+
+pub(in crate::app) fn media_source_matches_item(
+    source_id: &str,
+    item: &DockItem,
+    catalog: &lotus_windows::search_catalog::ApplicationCatalogSnapshot,
+) -> bool {
+    catalog.key_for_external_identifier(source_id).as_ref() == Some(&item.application_key)
 }
 
 pub(in crate::app) fn metrics(settings: &DockSettings) -> Result<DockMetrics, AppError> {

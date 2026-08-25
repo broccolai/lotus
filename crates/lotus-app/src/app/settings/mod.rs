@@ -215,13 +215,6 @@ impl SettingsRuntime {
         self.scene.merge_application_icon_overrides(current)
     }
 
-    pub(in crate::app) fn reconcile_application_icon_overrides(
-        &mut self,
-        applied: &DockSettings,
-    ) {
-        self.scene.reconcile_application_icon_overrides(applied);
-    }
-
     pub(in crate::app) fn mark_applied(&mut self, applied: DockSettings) {
         self.scene.mark_applied(applied);
     }

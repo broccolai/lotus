@@ -181,7 +181,7 @@ impl LauncherRuntime {
             return Ok(false);
         }
         if !self.visible {
-            return Ok(false);
+            return Ok(true);
         }
         self.rebuild_scene(self.window.dpi())?;
         self.sync_size(dock, graphics)?;
@@ -444,7 +444,7 @@ impl LauncherRuntime {
         if submission.is_none()
             && let Some(entry) = selected
         {
-            match launch_target(&entry.launch_target, None) {
+            match launch_target(&entry.launch_target, entry.invocation_arguments()) {
                 Ok(()) => {
                     let _ = self.controller.record_launch(&entry.launch_target);
                 }

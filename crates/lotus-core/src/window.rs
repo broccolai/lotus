@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use crate::application::ApplicationIdentity;
 pub use crate::application::is_reliable_application_identity;
+use crate::application::{ApplicationIdentity, WindowApplicationFacts};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WindowId(u64);
@@ -36,7 +36,7 @@ pub struct WindowInfo {
     pub incarnation: u64,
     pub title: String,
     pub executable_path: PathBuf,
-    pub app_user_model_id: Option<String>,
+    pub application_facts: WindowApplicationFacts,
 }
 
 impl WindowInfo {
@@ -55,7 +55,7 @@ impl WindowInfo {
     #[must_use]
     pub fn application_identity(&self) -> ApplicationIdentity {
         ApplicationIdentity::from_path(
-            self.app_user_model_id.as_deref(),
+            self.application_facts.reliable_id(),
             None,
             Some(&self.executable_path),
             std::iter::empty(),

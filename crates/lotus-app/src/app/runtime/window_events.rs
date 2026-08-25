@@ -1,7 +1,10 @@
+use std::time::Instant;
+
 use lotus_core::window::WindowInfo;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, GraphicsDeviceHealth};
 use lotus_windows::interaction::NativeMessage;
+use lotus_windows::responsiveness::{METRICS, TrackerUiPhase};
 use lotus_windows::window::{DockWindow, WindowEvent};
 use lotus_windows::window_tracker::{WindowTracker, WindowTrackerEvent};
 
@@ -113,74 +116,77 @@ pub(super) fn handle_tracker_message(
     message: &NativeMessage,
     context: &mut TrackerEventContext<'_>,
 ) -> Result<TrackerMessageOutcome, AppError> {
-    let Some(event) = context.window_tracker.handle_message(
-        message.is_thread_message(),
-        message.id(),
-        message.parameter(),
-    )?
+    if !WindowTracker::is_refresh_message(message.is_thread_message(), message.id()) {
+        return Ok(TrackerMessageOutcome::default());
+    }
+    let Some(event) =
+        measure_tracker_ui_phase(TrackerUiPhase::PublishedSnapshotObservation, || {
+            context.window_tracker.handle_message(
+                message.is_thread_message(),
+                message.id(),
+                message.parameter(),
+            )
+        })?
     else {
         return Ok(TrackerMessageOutcome::default());
     };
     if event == WindowTrackerEvent::FullscreenRefreshed {
-        let foreground = lotus_windows::activation::foreground_window();
-        context.dock_model.record_foreground(foreground);
-        context.auxiliary.record_switcher_foreground(
-            foreground,
-            context.window_tracker.current_windows(),
-        );
+        measure_tracker_ui_phase(TrackerUiPhase::DockModelRebuildForegroundUpdate, || {
+            let foreground = lotus_windows::activation::foreground_window();
+            context.dock_model.record_foreground(foreground);
+            context.auxiliary.record_switcher_foreground(
+                foreground,
+                context.window_tracker.current_windows(),
+            );
+        });
     }
     if event == WindowTrackerEvent::SnapshotRefreshed {
         let previous_size = context.dock_model.scene().desired_size();
         let windows = context.window_tracker.current_windows();
         context.dock_model.prune_recent_windows(windows);
-        complete_after_graphics_loss(
+        let application_catalog = context.auxiliary.application_snapshot();
+        measure_tracker_ui_phase(TrackerUiPhase::DockModelRebuildForegroundUpdate, || {
             context
-                .auxiliary
-                .reconcile_switcher_windows(windows, context.graphics),
-            context.graphics,
-        )?;
-        let pins_reconciled = context
-            .dock_model
-            .reconcile_unpinned_pins(windows, context.auxiliary.application_catalog())?;
-        if pins_reconciled {
+                .dock_model
+                .rebuild(windows, application_catalog.clone());
+            context
+                .dock_model
+                .record_foreground(lotus_windows::activation::foreground_window());
+        });
+        measure_tracker_ui_phase(TrackerUiPhase::SwitcherReconciliation, || {
             complete_after_graphics_loss(
-                context.auxiliary.adapt_to_pin_changes(
-                    context.dock,
-                    context.dock_model,
+                context.auxiliary.reconcile_switcher_windows(
+                    windows,
+                    application_catalog,
+                    context.dock_model.application_assignments(),
                     context.graphics,
                 ),
                 context.graphics,
-            )?;
-        }
-        context.dock_model.rebuild(windows);
-        context
-            .dock_model
-            .record_foreground(lotus_windows::activation::foreground_window());
-        complete_after_graphics_loss(
-            context
-                .auxiliary
-                .reconcile_visible_window_picker(context.dock_model, context.graphics),
-            context.graphics,
-        )?;
+            )
+        })?;
+        measure_tracker_ui_phase(TrackerUiPhase::VisiblePickerReconciliation, || {
+            complete_after_graphics_loss(
+                context
+                    .auxiliary
+                    .reconcile_visible_window_picker(context.dock_model, context.graphics),
+                context.graphics,
+            )
+        })?;
         if context.dock_model.scene().desired_size() != previous_size {
-            complete_after_graphics_loss(
-                present_dock_change(
-                    context.dock,
-                    context.graphics,
-                    context.surface,
-                    context.auxiliary,
-                    context.dock_model,
-                ),
-                context.graphics,
-            )?;
-        } else if pins_reconciled {
-            complete_after_graphics_loss(
-                context.auxiliary.sync_status(
-                    context.dock,
-                    context.dock_model,
-                    context.graphics,
-                ),
-                context.graphics,
+            measure_tracker_ui_phase(
+                TrackerUiPhase::PresentationStatusSynchronization,
+                || {
+                    complete_after_graphics_loss(
+                        present_dock_change(
+                            context.dock,
+                            context.graphics,
+                            context.surface,
+                            context.auxiliary,
+                            context.dock_model,
+                        ),
+                        context.graphics,
+                    )
+                },
             )?;
         }
         context.surface.invalidate();
@@ -189,4 +195,11 @@ pub(super) fn handle_tracker_message(
         monitor_sync: true,
         frame: event == WindowTrackerEvent::SnapshotRefreshed,
     })
+}
+
+fn measure_tracker_ui_phase<T>(phase: TrackerUiPhase, operation: impl FnOnce() -> T) -> T {
+    let started = Instant::now();
+    let result = operation();
+    METRICS.record_tracker_ui_phase(phase, started.elapsed());
+    result
 }

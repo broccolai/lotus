@@ -4,8 +4,12 @@ mod projection;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use lotus_core::application::{
+    ApplicationKey, PinnedApplicationAssignment, WindowApplicationAssignments,
+};
 use lotus_core::dock::DockItem;
 use lotus_core::notification::NotificationSource;
 use lotus_core::settings::{DockSettings, SettingsStore};
@@ -21,6 +25,9 @@ use lotus_windows::custom_image::{
 use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::media::decode_artwork;
 use lotus_windows::native_icon::NativeIconCache;
+use lotus_windows::search_catalog::{
+    ApplicationAssociations, ApplicationCatalogSnapshot, ApplicationResolver,
+};
 use projection::{
     departure_transition, docked_status_items, media_source_matches_item, projected_items,
 };
@@ -47,10 +54,13 @@ pub(super) struct DockRuntime {
     exit_deadline: Option<Instant>,
     media: Option<MediaItem>,
     recent_windows: HashMap<String, Vec<TrackedWindowKey>>,
-    transient_unpinned: HashMap<String, (usize, DockItem)>,
+    transient_unpinned: HashMap<ApplicationKey, (usize, DockItem)>,
     revision: u64,
     presenter: DockPresenter,
     mascot_animation: Option<MascotPlayback>,
+    application_resolver: ApplicationResolver,
+    application_catalog: Arc<ApplicationCatalogSnapshot>,
+    application_assignments: WindowApplicationAssignments,
 }
 
 struct MascotPlayback {
@@ -68,7 +78,25 @@ impl DockRuntime {
         drag_threshold: (u32, u32),
     ) -> Result<Self, AppError> {
         let metrics = metrics(&settings)?;
-        let items = projected_items(&settings, windows);
+        let application_catalog = Arc::new(ApplicationCatalogSnapshot::new(0, Vec::new()));
+        let mut application_resolver = ApplicationResolver::default();
+        let associations =
+            ApplicationAssociations::from_pins(&settings.pinned_apps, &application_catalog);
+        let application_assignments = application_resolver.resolve_all(
+            windows,
+            &application_catalog,
+            &associations,
+            0,
+        );
+        let pinned_applications =
+            pinned_application_assignments(&settings, &application_catalog);
+        let items = projected_items(
+            &settings,
+            windows,
+            &application_assignments,
+            &application_catalog.applications,
+            &pinned_applications,
+        );
         let mut scene = Self::configured_scene(dpi, &settings, metrics)
             .ok_or(AppError::InvalidScene)?;
         scene.replace_status_items(docked_status_items(&settings));
@@ -87,6 +115,9 @@ impl DockRuntime {
             revision: 0,
             presenter: DockPresenter::default(),
             mascot_animation: None,
+            application_resolver,
+            application_catalog,
+            application_assignments,
         };
         runtime.reset_mascot_animation();
         runtime.refresh_scene_items();
@@ -111,10 +142,17 @@ impl DockRuntime {
         Some(scene)
     }
 
-    pub(super) fn rebuild(&mut self, windows: &[WindowInfo]) {
+    pub(super) fn rebuild(
+        &mut self,
+        windows: &[WindowInfo],
+        catalog: Arc<ApplicationCatalogSnapshot>,
+    ) {
+        let settings = self.model.settings().clone();
+        self.resolve_application_assignments(&settings, windows, &catalog);
+        self.application_catalog = catalog;
         let previous_model = self.model.items().to_vec();
         let previous_scene = self.scene.items().to_vec();
-        let mut items = projected_items(self.model.settings(), windows);
+        let mut items = self.projected_items(windows);
         self.merge_transient_unpinned(&mut items, windows);
         self.model.rebuild(items);
         let final_items = self.scene_items();
@@ -133,6 +171,65 @@ impl DockRuntime {
             self.exit_deadline = None;
         }
         self.mark_changed();
+    }
+
+    pub(in crate::app) fn registered_application_for_item(
+        &self,
+        item: &DockItem,
+    ) -> Option<lotus_core::application::RegisteredApplication> {
+        self.application_catalog
+            .application_index_for_key(&item.application_key)
+            .and_then(|index| self.application_catalog.application(index))
+            .cloned()
+    }
+
+    fn projected_items(&self, windows: &[WindowInfo]) -> Vec<DockItem> {
+        self.projected_items_for(self.model.settings(), windows)
+    }
+
+    fn resolve_application_assignments(
+        &mut self,
+        settings: &DockSettings,
+        windows: &[WindowInfo],
+        catalog: &ApplicationCatalogSnapshot,
+    ) {
+        let associations =
+            ApplicationAssociations::from_pins(&settings.pinned_apps, catalog);
+        self.application_assignments = self.application_resolver.resolve_all(
+            windows,
+            catalog,
+            &associations,
+            self.revision.saturating_add(1),
+        );
+    }
+
+    pub(in crate::app) fn resolve_current_applications(&mut self, windows: &[WindowInfo]) {
+        let settings = self.model.settings().clone();
+        let catalog = Arc::clone(&self.application_catalog);
+        self.resolve_application_assignments(&settings, windows, &catalog);
+    }
+
+    pub(in crate::app) fn application_assignments(&self) -> &WindowApplicationAssignments {
+        &self.application_assignments
+    }
+
+    fn projected_items_for(
+        &self,
+        settings: &DockSettings,
+        windows: &[WindowInfo],
+    ) -> Vec<DockItem> {
+        let pinned_applications =
+            pinned_application_assignments(settings, &self.application_catalog);
+        let started = Instant::now();
+        let items = projected_items(
+            settings,
+            windows,
+            &self.application_assignments,
+            &self.application_catalog.applications,
+            &pinned_applications,
+        );
+        lotus_windows::responsiveness::METRICS.record_dock_projection(started.elapsed());
+        items
     }
 
     pub(super) fn set_dpi(&mut self, dpi: u32) -> Result<(), AppError> {
@@ -223,11 +320,14 @@ impl DockRuntime {
         windows: &[WindowInfo],
     ) -> Result<SettingsImpact, AppError> {
         let next = next.normalized();
-        let next_items = projected_items(&next, windows);
         let metrics = metrics(&next)?;
         let dpi = self.scene.dpi();
-        let impact = self.model.apply_settings(next, next_items)?;
+        let retained_items = self.model.items().to_vec();
+        let impact = self.model.apply_settings(next, retained_items)?;
         if impact.changed {
+            self.resolve_current_applications(windows);
+            let next_items = self.projected_items(windows);
+            self.model.rebuild(next_items);
             self.custom_images.clear();
             if let Some(media) = &mut self.media {
                 media.show_metadata = self.model.settings().show_media_metadata;
@@ -343,11 +443,9 @@ impl DockRuntime {
     }
 
     fn media_source_icon(&mut self, source_id: &str) -> Option<DockIcon> {
-        let item = self
-            .model
-            .items()
-            .iter()
-            .find(|item| media_source_matches_item(source_id, item))?;
+        let item = self.model.items().iter().find(|item| {
+            media_source_matches_item(source_id, item, &self.application_catalog)
+        })?;
         let size = self
             .scene
             .icon_size_pixels()
@@ -368,6 +466,36 @@ impl DockRuntime {
                 .map(DockIcon::Raster)
         })
     }
+}
+
+fn pinned_application_assignments(
+    settings: &DockSettings,
+    catalog: &ApplicationCatalogSnapshot,
+) -> Vec<PinnedApplicationAssignment> {
+    settings
+        .pinned_apps
+        .iter()
+        .filter_map(|pin| {
+            lotus_core::application::LaunchSpec::new(
+                &pin.launch_target,
+                pin.arguments.as_deref(),
+            )
+            .and_then(|launch| {
+                catalog
+                    .key_for_pin(
+                        &pin.id,
+                        pin.app_user_model_id.as_deref(),
+                        &launch,
+                        &pin.match_executables,
+                    )
+                    .map(|key| PinnedApplicationAssignment {
+                        registered_index: catalog.application_index_for_key(&key),
+                        pin_id: pin.id.clone(),
+                        key,
+                    })
+            })
+        })
+        .collect()
 }
 
 fn advance_mascot_playback(playback: &mut MascotPlayback) -> Option<usize> {

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::application::ApplicationIdentity;
+use crate::application::{ApplicationIdentity, LaunchSpec};
 
 const MAX_USAGE_ENTRIES: usize = 64;
 
@@ -124,6 +124,8 @@ struct UsageRank {
 pub struct ApplicationEntry {
     pub name: String,
     pub launch_target: String,
+    pub arguments: Option<String>,
+    arguments_embedded_in_target: bool,
     pub icon_source: String,
     pub app_user_model_id: Option<String>,
     pub source: ApplicationSource,
@@ -151,10 +153,35 @@ impl ApplicationEntry {
                 .filter(|source| !source.trim().is_empty())
                 .unwrap_or_else(|| launch_target.clone()),
             launch_target,
+            arguments: None,
+            arguments_embedded_in_target: false,
             app_user_model_id: None,
             source: ApplicationSource::default(),
             hidden_until_search: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_arguments(mut self, arguments: Option<&str>) -> Self {
+        self.arguments = arguments
+            .map(str::trim)
+            .filter(|arguments| !arguments.is_empty())
+            .map(str::to_owned);
+        self
+    }
+
+    #[must_use]
+    pub fn with_embedded_arguments(mut self, arguments: Option<&str>) -> Self {
+        self = self.with_arguments(arguments);
+        self.arguments_embedded_in_target = self.arguments.is_some();
+        self
+    }
+
+    #[must_use]
+    pub fn invocation_arguments(&self) -> Option<&str> {
+        (!self.arguments_embedded_in_target)
+            .then_some(self.arguments.as_deref())
+            .flatten()
     }
 
     #[must_use]
@@ -430,10 +457,21 @@ fn normalize(value: &str) -> String {
 }
 
 fn application_identity(entry: &ApplicationEntry) -> String {
-    entry
-        .application_identity()
-        .deduplication_key()
-        .unwrap_or_else(|| format!("target:{}", normalize_target(&entry.launch_target)))
+    let identity = entry.application_identity();
+    if entry.arguments.is_none() && identity.reliable_registered_id().is_some() {
+        return identity
+            .deduplication_key()
+            .expect("a reliable registered identity has a deduplication key");
+    }
+
+    let launch = LaunchSpec::new(&entry.launch_target, entry.arguments.as_deref())
+        .map_or_else(
+            || format!("target:{}", normalize_target(&entry.launch_target)),
+            |launch| format!("launch:{}", launch.signature()),
+        );
+    identity
+        .reliable_registered_id()
+        .map_or(launch.clone(), |id| format!("registered:{id}:{launch}"))
 }
 
 fn normalize_target(value: &str) -> String {

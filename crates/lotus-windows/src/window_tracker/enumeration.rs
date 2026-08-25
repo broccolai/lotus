@@ -3,6 +3,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::path::PathBuf;
 
+use lotus_core::application::WindowApplicationFacts;
 use lotus_core::window::{WindowId, WindowInfo};
 use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
@@ -18,8 +19,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, Result as WindowsResult};
 
-use crate::application_identity::window_application_identity_in_apartment;
-use crate::launch::ComApartment;
 use crate::responsiveness::METRICS;
 const IMAGE_PATH_CAPACITY: usize = 32_768;
 const CLASS_NAME_CAPACITY: usize = 128;
@@ -27,7 +26,6 @@ pub(super) fn enumerate_windows(
     own_process_id: u32,
     process_cache: &mut ProcessMetadataCache,
 ) -> WindowsResult<Vec<WindowInfo>> {
-    let _apartment = ComApartment::enter();
     let mut state = EnumerationState {
         own_process_id,
         windows: Vec::new(),
@@ -82,16 +80,17 @@ fn window_info(
     let title = window_title(hwnd);
     let executable_path = window_icon_identity(&title, process.executable_path.clone());
     let id = window_id(hwnd)?;
-    let application_identity = window_application_identity_in_apartment(id);
+    let application_facts = WindowApplicationFacts {
+        process_app_user_model_id: process.app_user_model_id.clone(),
+        ..WindowApplicationFacts::default()
+    };
     Some(WindowInfo {
         id,
         process_id,
         incarnation: 0,
         title,
         executable_path,
-        app_user_model_id: application_identity
-            .and_then(|identity| identity.app_user_model_id)
-            .or_else(|| process.app_user_model_id.clone()),
+        application_facts,
     })
 }
 

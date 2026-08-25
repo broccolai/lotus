@@ -2,7 +2,6 @@ use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-use lotus_core::application::is_reliable_registered_id;
 use lotus_core::search::ApplicationEntry;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{
@@ -16,53 +15,15 @@ use windows::core::{GUID, PWSTR};
 use super::super::launch::{ComApartment, resolve_executable};
 use super::shortcuts::{ShortcutIdentity, is_chromium_web_app_shortcut, shortcut_entry};
 
-type CatalogCandidate = (u8, String, usize, String, PathBuf);
-
 pub(super) fn discover_start_menu_entries() -> Vec<ApplicationEntry> {
     let roots = [
         known_folder(&FOLDERID_Programs),
         known_folder(&FOLDERID_CommonPrograms),
     ];
     let mut entries = discover_entries(roots.into_iter().flatten());
-    extend_unique_entries(&mut entries, discover_apps_folder_entries());
-    extend_unique_entries(&mut entries, discover_desktop_web_apps());
+    entries.extend(discover_apps_folder_entries());
+    entries.extend(discover_desktop_web_apps());
     entries
-}
-
-fn extend_unique_entries(
-    entries: &mut Vec<ApplicationEntry>,
-    candidates: impl IntoIterator<Item = ApplicationEntry>,
-) {
-    for candidate in candidates {
-        if !entries
-            .iter()
-            .any(|entry| entries_describe_same_application(entry, &candidate))
-        {
-            entries.push(candidate);
-        }
-    }
-}
-
-fn entries_describe_same_application(
-    left: &ApplicationEntry,
-    right: &ApplicationEntry,
-) -> bool {
-    if !left.name.trim().eq_ignore_ascii_case(right.name.trim()) {
-        return false;
-    }
-
-    let left_id = left
-        .app_user_model_id
-        .as_deref()
-        .filter(|identity| is_reliable_registered_id(identity));
-    let right_id = right
-        .app_user_model_id
-        .as_deref()
-        .filter(|identity| is_reliable_registered_id(identity));
-    match (left_id, right_id) {
-        (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
-        _ => true,
-    }
 }
 
 fn discover_desktop_web_apps() -> Vec<ApplicationEntry> {
@@ -213,36 +174,10 @@ fn discover_entries(roots: impl IntoIterator<Item = PathBuf>) -> Vec<Application
             path_sort_key(&right.4),
         ))
     });
-    let mut retained: Vec<(CatalogCandidate, Option<ShortcutIdentity>)> =
-        Vec::with_capacity(candidates.len());
-    for candidate in candidates {
-        let identity = ShortcutIdentity::from_path(&candidate.4);
-        let duplicate = identity.as_ref().and_then(|identity| {
-            retained.iter().position(|(_, existing)| {
-                existing
-                    .as_ref()
-                    .is_some_and(|existing| identity.equivalent_to(existing))
-            })
-        });
-        if let Some(index) = duplicate {
-            let existing = retained[index]
-                .1
-                .as_ref()
-                .expect("equivalent shortcut has an identity");
-            if identity
-                .as_ref()
-                .is_some_and(|identity| identity.preferred_over(existing))
-            {
-                retained[index] = (candidate, identity);
-            }
-        } else {
-            retained.push((candidate, identity));
-        }
-    }
-
-    retained
+    candidates
         .into_iter()
-        .map(|((_, _, _, name, path), identity)| {
+        .map(|(_, _, _, name, path)| {
+            let identity = ShortcutIdentity::from_path(&path);
             shortcut_entry(name, &path, identity.as_ref())
         })
         .collect()

@@ -7,7 +7,7 @@ use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
 
 use crate::app::launcher::LauncherRuntime;
-use crate::app::switcher::SwitcherRuntime;
+use crate::app::switcher::{SwitcherApplicationContext, SwitcherRuntime};
 use crate::app::{DockRuntime, RestartError};
 
 pub(crate) fn restart_current_process() -> Result<(), RestartError> {
@@ -61,6 +61,10 @@ pub(super) fn handle_input_actions(context: &mut InputEventContext<'_>) -> bool 
                     foreground,
                     tracker.current_windows(),
                     dock_model.settings(),
+                    SwitcherApplicationContext {
+                        catalog: catalog.snapshot(),
+                        assignments: dock_model.application_assignments(),
+                    },
                     graphics,
                 ) {
                     lotus_windows::diagnostics::record_error("alt_tab.begin", &error);

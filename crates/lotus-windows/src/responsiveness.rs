@@ -3,8 +3,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use lotus_core::application::{ApplicationResolution, ResolutionEvidence};
+
+use crate::process_resources::ProcessResourceSample;
+
 const HISTOGRAM_BUCKETS: usize = 8;
 const UI_PHASES: usize = 9;
+const TRACKER_UI_PHASES: usize = 5;
 const CACHE_CLASSES: usize = 7;
 const LAYOUT_OPERATIONS: usize = 10;
 const SLOW_UI_EVENTS: usize = 48;
@@ -32,6 +37,15 @@ pub enum UiMessagePhase {
     Wake,
     MonitorSync,
     Frame,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrackerUiPhase {
+    PublishedSnapshotObservation,
+    SwitcherReconciliation,
+    DockModelRebuildForegroundUpdate,
+    VisiblePickerReconciliation,
+    PresentationStatusSynchronization,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -162,6 +176,51 @@ struct LayoutSnapshot {
     histogram: [u64; HISTOGRAM_BUCKETS],
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TrackerUiPhaseSnapshot {
+    phase: TrackerUiPhase,
+    calls: u64,
+    max_us: u64,
+    histogram: [u64; HISTOGRAM_BUCKETS],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TrackerMetricsSnapshot {
+    ui_phases: [TrackerUiPhaseSnapshot; TRACKER_UI_PHASES],
+    refresh_requests: u64,
+    refresh_requests_coalesced: u64,
+    worker_refresh_executions: u64,
+    ui_wakes_posted: u64,
+    ui_wakes_coalesced: u64,
+    ui_wake_post_failures: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ApplicationMetricsSnapshot {
+    catalog_generation: u64,
+    catalog_entries: u64,
+    catalog_duplicate_merges: u64,
+    catalog_ambiguous_aliases: u64,
+    catalog_build_max_us: u64,
+    window_fact_hits: u64,
+    window_fact_misses: u64,
+    window_fact_max_us: u64,
+    resolution_cache_hits: u64,
+    resolution_cache_misses: u64,
+    resolution_exact_registered: u64,
+    resolution_exact_relaunch: u64,
+    resolution_exact_provider: u64,
+    resolution_exact_path: u64,
+    resolution_unique_alias: u64,
+    resolution_ambiguous: u64,
+    resolution_unregistered: u64,
+    resolution_prevented: u64,
+    resolution_total_us: u64,
+    resolution_max_us: u64,
+    dock_projection_calls: u64,
+    dock_projection_max_us: u64,
+}
+
 #[derive(Clone, Copy)]
 pub struct FlyoutPhaseMetrics {
     pub worker_start: Duration,
@@ -199,6 +258,40 @@ impl UiMessagePhase {
             Self::Wake => "wake",
             Self::MonitorSync => "monitor_sync",
             Self::Frame => "frame",
+        }
+    }
+}
+
+impl TrackerUiPhase {
+    const ALL: [Self; TRACKER_UI_PHASES] = [
+        Self::PublishedSnapshotObservation,
+        Self::SwitcherReconciliation,
+        Self::DockModelRebuildForegroundUpdate,
+        Self::VisiblePickerReconciliation,
+        Self::PresentationStatusSynchronization,
+    ];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::PublishedSnapshotObservation => 0,
+            Self::SwitcherReconciliation => 1,
+            Self::DockModelRebuildForegroundUpdate => 2,
+            Self::VisiblePickerReconciliation => 3,
+            Self::PresentationStatusSynchronization => 4,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::PublishedSnapshotObservation => "published_snapshot_observation",
+            Self::SwitcherReconciliation => "switcher_reconciliation",
+            Self::DockModelRebuildForegroundUpdate => {
+                "dock_model_rebuild_foreground_update"
+            }
+            Self::VisiblePickerReconciliation => "visible_picker_reconciliation",
+            Self::PresentationStatusSynchronization => {
+                "presentation_status_synchronization"
+            }
         }
     }
 }
@@ -273,6 +366,10 @@ pub struct ResponsivenessMetrics {
     ui_message_severe: AtomicU64,
     ui_message_critical: AtomicU64,
     slow_ui_events: Mutex<SlowUiEventRing>,
+    process_resources: Mutex<Option<ProcessResourceSample>>,
+    tracker_ui_calls: [AtomicU64; TRACKER_UI_PHASES],
+    tracker_ui_max_us: [AtomicU64; TRACKER_UI_PHASES],
+    tracker_ui_histogram: [AtomicU64; TRACKER_UI_PHASES * HISTOGRAM_BUCKETS],
     layout_calls: [AtomicU64; LAYOUT_OPERATIONS],
     layout_max_us: [AtomicU64; LAYOUT_OPERATIONS],
     layout_histogram: [AtomicU64; LAYOUT_OPERATIONS * HISTOGRAM_BUCKETS],
@@ -282,6 +379,34 @@ pub struct ResponsivenessMetrics {
     window_unchanged: AtomicU64,
     process_metadata_hits: AtomicU64,
     process_metadata_misses: AtomicU64,
+    tracker_refresh_requests: AtomicU64,
+    tracker_refresh_requests_coalesced: AtomicU64,
+    tracker_worker_refresh_executions: AtomicU64,
+    tracker_ui_wakes_posted: AtomicU64,
+    tracker_ui_wakes_coalesced: AtomicU64,
+    tracker_ui_wake_post_failures: AtomicU64,
+    application_catalog_generation: AtomicU64,
+    application_catalog_entries: AtomicU64,
+    application_catalog_duplicate_merges: AtomicU64,
+    application_catalog_ambiguous_aliases: AtomicU64,
+    application_catalog_build_max_us: AtomicU64,
+    window_identity_fact_hits: AtomicU64,
+    window_identity_fact_misses: AtomicU64,
+    window_identity_fact_max_us: AtomicU64,
+    application_resolution_cache_hits: AtomicU64,
+    application_resolution_cache_misses: AtomicU64,
+    application_resolution_exact_registered: AtomicU64,
+    application_resolution_exact_relaunch: AtomicU64,
+    application_resolution_exact_provider: AtomicU64,
+    application_resolution_exact_path: AtomicU64,
+    application_resolution_unique_alias: AtomicU64,
+    application_resolution_ambiguous: AtomicU64,
+    application_resolution_unregistered: AtomicU64,
+    application_resolution_prevented: AtomicU64,
+    application_resolution_total_us: AtomicU64,
+    application_resolution_max_us: AtomicU64,
+    dock_projection_calls: AtomicU64,
+    dock_projection_max_us: AtomicU64,
     badge_events: AtomicU64,
     badge_scans: AtomicU64,
     badge_coalesced: AtomicU64,
@@ -372,6 +497,9 @@ pub struct ResponsivenessSnapshot {
     pub window_unchanged: u64,
     pub process_metadata_hits: u64,
     pub process_metadata_misses: u64,
+    tracker: TrackerMetricsSnapshot,
+    application: ApplicationMetricsSnapshot,
+    process_resources: ProcessResourceSample,
     pub badge_events: u64,
     pub badge_scans: u64,
     pub badge_coalesced: u64,
@@ -399,6 +527,10 @@ pub struct ResponsivenessSnapshot {
 }
 
 impl ResponsivenessMetrics {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the flat metrics constructor mirrors the atomic field inventory"
+    )]
     const fn new() -> Self {
         Self {
             input_callbacks: AtomicU64::new(0),
@@ -449,6 +581,11 @@ impl ResponsivenessMetrics {
             slow_ui_events: Mutex::new(SlowUiEventRing {
                 events: std::collections::VecDeque::new(),
             }),
+            process_resources: Mutex::new(None),
+            tracker_ui_calls: [const { AtomicU64::new(0) }; TRACKER_UI_PHASES],
+            tracker_ui_max_us: [const { AtomicU64::new(0) }; TRACKER_UI_PHASES],
+            tracker_ui_histogram: [const { AtomicU64::new(0) };
+                TRACKER_UI_PHASES * HISTOGRAM_BUCKETS],
             layout_calls: [const { AtomicU64::new(0) }; LAYOUT_OPERATIONS],
             layout_max_us: [const { AtomicU64::new(0) }; LAYOUT_OPERATIONS],
             layout_histogram: [const { AtomicU64::new(0) };
@@ -459,6 +596,34 @@ impl ResponsivenessMetrics {
             window_unchanged: AtomicU64::new(0),
             process_metadata_hits: AtomicU64::new(0),
             process_metadata_misses: AtomicU64::new(0),
+            tracker_refresh_requests: AtomicU64::new(0),
+            tracker_refresh_requests_coalesced: AtomicU64::new(0),
+            tracker_worker_refresh_executions: AtomicU64::new(0),
+            tracker_ui_wakes_posted: AtomicU64::new(0),
+            tracker_ui_wakes_coalesced: AtomicU64::new(0),
+            tracker_ui_wake_post_failures: AtomicU64::new(0),
+            application_catalog_generation: AtomicU64::new(0),
+            application_catalog_entries: AtomicU64::new(0),
+            application_catalog_duplicate_merges: AtomicU64::new(0),
+            application_catalog_ambiguous_aliases: AtomicU64::new(0),
+            application_catalog_build_max_us: AtomicU64::new(0),
+            window_identity_fact_hits: AtomicU64::new(0),
+            window_identity_fact_misses: AtomicU64::new(0),
+            window_identity_fact_max_us: AtomicU64::new(0),
+            application_resolution_cache_hits: AtomicU64::new(0),
+            application_resolution_cache_misses: AtomicU64::new(0),
+            application_resolution_exact_registered: AtomicU64::new(0),
+            application_resolution_exact_relaunch: AtomicU64::new(0),
+            application_resolution_exact_provider: AtomicU64::new(0),
+            application_resolution_exact_path: AtomicU64::new(0),
+            application_resolution_unique_alias: AtomicU64::new(0),
+            application_resolution_ambiguous: AtomicU64::new(0),
+            application_resolution_unregistered: AtomicU64::new(0),
+            application_resolution_prevented: AtomicU64::new(0),
+            application_resolution_total_us: AtomicU64::new(0),
+            application_resolution_max_us: AtomicU64::new(0),
+            dock_projection_calls: AtomicU64::new(0),
+            dock_projection_max_us: AtomicU64::new(0),
             badge_events: AtomicU64::new(0),
             badge_scans: AtomicU64::new(0),
             badge_coalesced: AtomicU64::new(0),
@@ -494,6 +659,10 @@ impl ResponsivenessMetrics {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the flat snapshot intentionally mirrors the atomic metric inventory"
+    )]
     pub fn snapshot(&self) -> ResponsivenessSnapshot {
         ResponsivenessSnapshot {
             input_callbacks: self.input_callbacks.load(Ordering::Relaxed),
@@ -574,6 +743,9 @@ impl ResponsivenessMetrics {
             window_unchanged: self.window_unchanged.load(Ordering::Relaxed),
             process_metadata_hits: self.process_metadata_hits.load(Ordering::Relaxed),
             process_metadata_misses: self.process_metadata_misses.load(Ordering::Relaxed),
+            tracker: self.tracker_metrics_snapshot(),
+            application: self.application_metrics_snapshot(),
+            process_resources: self.process_resource_snapshot(),
             badge_events: self.badge_events.load(Ordering::Relaxed),
             badge_scans: self.badge_scans.load(Ordering::Relaxed),
             badge_coalesced: self.badge_coalesced.load(Ordering::Relaxed),
@@ -628,10 +800,101 @@ impl ResponsivenessMetrics {
         })
     }
 
+    fn tracker_ui_phase_snapshots(&self) -> [TrackerUiPhaseSnapshot; TRACKER_UI_PHASES] {
+        std::array::from_fn(|index| TrackerUiPhaseSnapshot {
+            phase: TrackerUiPhase::ALL[index],
+            calls: self.tracker_ui_calls[index].load(Ordering::Relaxed),
+            max_us: self.tracker_ui_max_us[index].load(Ordering::Relaxed),
+            histogram: self.load_tracker_ui_histogram(index),
+        })
+    }
+
+    fn tracker_metrics_snapshot(&self) -> TrackerMetricsSnapshot {
+        TrackerMetricsSnapshot {
+            ui_phases: self.tracker_ui_phase_snapshots(),
+            refresh_requests: self.tracker_refresh_requests.load(Ordering::Relaxed),
+            refresh_requests_coalesced: self
+                .tracker_refresh_requests_coalesced
+                .load(Ordering::Relaxed),
+            worker_refresh_executions: self
+                .tracker_worker_refresh_executions
+                .load(Ordering::Relaxed),
+            ui_wakes_posted: self.tracker_ui_wakes_posted.load(Ordering::Relaxed),
+            ui_wakes_coalesced: self.tracker_ui_wakes_coalesced.load(Ordering::Relaxed),
+            ui_wake_post_failures: self
+                .tracker_ui_wake_post_failures
+                .load(Ordering::Relaxed),
+        }
+    }
+
+    fn application_metrics_snapshot(&self) -> ApplicationMetricsSnapshot {
+        ApplicationMetricsSnapshot {
+            catalog_generation: self.application_catalog_generation.load(Ordering::Relaxed),
+            catalog_entries: self.application_catalog_entries.load(Ordering::Relaxed),
+            catalog_duplicate_merges: self
+                .application_catalog_duplicate_merges
+                .load(Ordering::Relaxed),
+            catalog_ambiguous_aliases: self
+                .application_catalog_ambiguous_aliases
+                .load(Ordering::Relaxed),
+            catalog_build_max_us: self
+                .application_catalog_build_max_us
+                .load(Ordering::Relaxed),
+            window_fact_hits: self.window_identity_fact_hits.load(Ordering::Relaxed),
+            window_fact_misses: self.window_identity_fact_misses.load(Ordering::Relaxed),
+            window_fact_max_us: self.window_identity_fact_max_us.load(Ordering::Relaxed),
+            resolution_cache_hits: self
+                .application_resolution_cache_hits
+                .load(Ordering::Relaxed),
+            resolution_cache_misses: self
+                .application_resolution_cache_misses
+                .load(Ordering::Relaxed),
+            resolution_exact_registered: self
+                .application_resolution_exact_registered
+                .load(Ordering::Relaxed),
+            resolution_exact_relaunch: self
+                .application_resolution_exact_relaunch
+                .load(Ordering::Relaxed),
+            resolution_exact_provider: self
+                .application_resolution_exact_provider
+                .load(Ordering::Relaxed),
+            resolution_exact_path: self
+                .application_resolution_exact_path
+                .load(Ordering::Relaxed),
+            resolution_unique_alias: self
+                .application_resolution_unique_alias
+                .load(Ordering::Relaxed),
+            resolution_ambiguous: self
+                .application_resolution_ambiguous
+                .load(Ordering::Relaxed),
+            resolution_unregistered: self
+                .application_resolution_unregistered
+                .load(Ordering::Relaxed),
+            resolution_prevented: self
+                .application_resolution_prevented
+                .load(Ordering::Relaxed),
+            resolution_total_us: self
+                .application_resolution_total_us
+                .load(Ordering::Relaxed),
+            resolution_max_us: self.application_resolution_max_us.load(Ordering::Relaxed),
+            dock_projection_calls: self.dock_projection_calls.load(Ordering::Relaxed),
+            dock_projection_max_us: self.dock_projection_max_us.load(Ordering::Relaxed),
+        }
+    }
+
     fn slow_ui_events_snapshot(&self) -> Vec<SlowUiEvent> {
         self.slow_ui_events
             .lock()
             .map_or_else(|_| Vec::new(), |ring| ring.events.iter().cloned().collect())
+    }
+
+    fn process_resource_snapshot(&self) -> ProcessResourceSample {
+        self.process_resources.lock().map_or_else(
+            |_| crate::process_resources::current_process_resources(),
+            |sample| {
+                sample.unwrap_or_else(crate::process_resources::current_process_resources)
+            },
+        )
     }
 
     fn cache_snapshot(&self, index: usize) -> CacheSnapshot {
@@ -797,6 +1060,120 @@ impl ResponsivenessMetrics {
         }
     }
 
+    pub fn record_tracker_ui_phase(&self, phase: TrackerUiPhase, duration: Duration) {
+        let index = phase.index();
+        saturating_add(&self.tracker_ui_calls[index], 1);
+        record_duration(
+            duration_micros(duration),
+            &self.tracker_ui_max_us[index],
+            self.tracker_ui_histogram_at(index),
+        );
+    }
+
+    pub fn record_application_catalog(
+        &self,
+        generation: u64,
+        entries: usize,
+        duplicate_merges: usize,
+        ambiguous_aliases: usize,
+        duration: Duration,
+    ) {
+        self.application_catalog_generation
+            .store(generation, Ordering::Relaxed);
+        self.application_catalog_entries
+            .store(usize_as_u64(entries), Ordering::Relaxed);
+        self.application_catalog_duplicate_merges
+            .store(usize_as_u64(duplicate_merges), Ordering::Relaxed);
+        self.application_catalog_ambiguous_aliases
+            .store(usize_as_u64(ambiguous_aliases), Ordering::Relaxed);
+        self.application_catalog_build_max_us
+            .fetch_max(duration_micros(duration), Ordering::Relaxed);
+    }
+
+    pub fn record_window_identity_fact(&self, cached: bool, duration: Duration) {
+        let counter = if cached {
+            &self.window_identity_fact_hits
+        } else {
+            &self.window_identity_fact_misses
+        };
+        saturating_add(counter, 1);
+        if !cached {
+            self.window_identity_fact_max_us
+                .fetch_max(duration_micros(duration), Ordering::Relaxed);
+        }
+    }
+
+    pub fn record_application_resolution(
+        &self,
+        cached: bool,
+        resolution: &ApplicationResolution,
+    ) {
+        let cache_counter = if cached {
+            &self.application_resolution_cache_hits
+        } else {
+            &self.application_resolution_cache_misses
+        };
+        saturating_add(cache_counter, 1);
+        match resolution {
+            ApplicationResolution::Resolved { evidence, .. } => {
+                let counter = match evidence {
+                    ResolutionEvidence::ExactRegisteredId
+                    | ResolutionEvidence::ExplicitAssociation => {
+                        &self.application_resolution_exact_registered
+                    }
+                    ResolutionEvidence::ExactRelaunch => {
+                        &self.application_resolution_exact_relaunch
+                    }
+                    ResolutionEvidence::ExactProviderKey => {
+                        &self.application_resolution_exact_provider
+                    }
+                    ResolutionEvidence::ExactExecutablePath => {
+                        &self.application_resolution_exact_path
+                    }
+                    ResolutionEvidence::UniqueExecutableAlias => {
+                        &self.application_resolution_unique_alias
+                    }
+                    ResolutionEvidence::NoMatch => {
+                        &self.application_resolution_unregistered
+                    }
+                };
+                saturating_add(counter, 1);
+            }
+            ApplicationResolution::Ambiguous { .. } => {
+                saturating_add(&self.application_resolution_ambiguous, 1);
+            }
+            ApplicationResolution::Associated { .. } => {
+                saturating_add(&self.application_resolution_exact_registered, 1);
+            }
+            ApplicationResolution::Unregistered { .. } => {
+                saturating_add(&self.application_resolution_unregistered, 1);
+            }
+            ApplicationResolution::Prevented => {
+                saturating_add(&self.application_resolution_prevented, 1);
+            }
+        }
+    }
+
+    pub fn record_application_resolution_batch(&self, duration: Duration) {
+        let micros = duration_micros(duration);
+        saturating_add(&self.application_resolution_total_us, micros);
+        self.application_resolution_max_us
+            .fetch_max(micros, Ordering::Relaxed);
+    }
+
+    pub fn record_dock_projection(&self, duration: Duration) {
+        saturating_add(&self.dock_projection_calls, 1);
+        self.dock_projection_max_us
+            .fetch_max(duration_micros(duration), Ordering::Relaxed);
+    }
+
+    pub fn capture_process_resources(&self) {
+        let sample = crate::process_resources::current_process_resources();
+        if let Ok(mut current) = self.process_resources.lock() {
+            *current = Some(sample);
+        }
+    }
+
     pub fn record_layout(&self, operation: LayoutOperation, duration: Duration) {
         let index = operation.index();
         let micros = duration_micros(duration);
@@ -814,6 +1191,16 @@ impl ResponsivenessMetrics {
             self.layout_histogram[operation * HISTOGRAM_BUCKETS + bucket]
                 .load(Ordering::Relaxed)
         })
+    }
+
+    fn tracker_ui_histogram_at(&self, phase: usize) -> &[AtomicU64] {
+        let start = phase * HISTOGRAM_BUCKETS;
+        &self.tracker_ui_histogram[start..start + HISTOGRAM_BUCKETS]
+    }
+
+    fn load_tracker_ui_histogram(&self, phase: usize) -> [u64; HISTOGRAM_BUCKETS] {
+        let source = self.tracker_ui_histogram_at(phase);
+        std::array::from_fn(|index| source[index].load(Ordering::Relaxed))
     }
 
     fn ui_phase_histogram_at(&self, phase: usize) -> &[AtomicU64] {
@@ -856,6 +1243,29 @@ impl ResponsivenessMetrics {
 
     pub fn record_window_unchanged(&self) {
         saturating_add(&self.window_unchanged, 1);
+    }
+
+    pub fn record_tracker_refresh_request(&self, coalesced: bool) {
+        saturating_add(&self.tracker_refresh_requests, 1);
+        if coalesced {
+            saturating_add(&self.tracker_refresh_requests_coalesced, 1);
+        }
+    }
+
+    pub fn record_tracker_worker_refresh_execution(&self) {
+        saturating_add(&self.tracker_worker_refresh_executions, 1);
+    }
+
+    pub fn record_tracker_ui_wake_posted(&self) {
+        saturating_add(&self.tracker_ui_wakes_posted, 1);
+    }
+
+    pub fn record_tracker_ui_wake_coalesced(&self) {
+        saturating_add(&self.tracker_ui_wakes_coalesced, 1);
+    }
+
+    pub fn record_tracker_ui_wake_post_failure(&self) {
+        saturating_add(&self.tracker_ui_wake_post_failures, 1);
     }
 
     pub fn record_process_metadata(&self, cached: bool) {
@@ -1237,6 +1647,17 @@ impl ResponsivenessSnapshot {
             let _ = writeln!(output, "{prefix}_max_us={}", layout.max_us);
             write_histogram(output, &format!("{prefix}_histogram"), &layout.histogram);
         }
+        self.write_tracker_metrics(output);
+        self.write_worker_metrics(output);
+    }
+
+    fn write_tracker_metrics(&self, output: &mut String) {
+        for phase in &self.tracker.ui_phases {
+            let prefix = format!("tracker_ui_{}", phase.phase.name());
+            let _ = writeln!(output, "{prefix}_calls={}", phase.calls);
+            let _ = writeln!(output, "{prefix}_max_us={}", phase.max_us);
+            write_histogram(output, &format!("{prefix}_histogram"), &phase.histogram);
+        }
         let _ = writeln!(output, "window_enumerations={}", self.window_enumerations);
         let _ = writeln!(
             output,
@@ -1255,7 +1676,161 @@ impl ResponsivenessSnapshot {
             "process_metadata_misses={}",
             self.process_metadata_misses
         );
-        self.write_worker_metrics(output);
+        let _ = writeln!(
+            output,
+            "tracker_refresh_requests={}",
+            self.tracker.refresh_requests
+        );
+        let _ = writeln!(
+            output,
+            "tracker_refresh_requests_coalesced={}",
+            self.tracker.refresh_requests_coalesced
+        );
+        let _ = writeln!(
+            output,
+            "tracker_worker_refresh_executions={}",
+            self.tracker.worker_refresh_executions
+        );
+        let _ = writeln!(
+            output,
+            "tracker_ui_wakes_posted={}",
+            self.tracker.ui_wakes_posted
+        );
+        let _ = writeln!(
+            output,
+            "tracker_ui_wakes_coalesced={}",
+            self.tracker.ui_wakes_coalesced
+        );
+        let _ = writeln!(
+            output,
+            "tracker_ui_wake_post_failures={}",
+            self.tracker.ui_wake_post_failures
+        );
+        self.write_application_metrics(output);
+        self.write_process_resource_metrics(output);
+    }
+
+    fn write_application_metrics(&self, output: &mut String) {
+        for (name, value) in [
+            (
+                "application_catalog_generation",
+                self.application.catalog_generation,
+            ),
+            (
+                "application_catalog_entries",
+                self.application.catalog_entries,
+            ),
+            (
+                "application_catalog_duplicate_merges",
+                self.application.catalog_duplicate_merges,
+            ),
+            (
+                "application_catalog_ambiguous_aliases",
+                self.application.catalog_ambiguous_aliases,
+            ),
+            (
+                "application_catalog_build_max_us",
+                self.application.catalog_build_max_us,
+            ),
+            (
+                "window_identity_fact_hits",
+                self.application.window_fact_hits,
+            ),
+            (
+                "window_identity_fact_misses",
+                self.application.window_fact_misses,
+            ),
+            (
+                "window_identity_fact_max_us",
+                self.application.window_fact_max_us,
+            ),
+            (
+                "application_resolution_cache_hits",
+                self.application.resolution_cache_hits,
+            ),
+            (
+                "application_resolution_cache_misses",
+                self.application.resolution_cache_misses,
+            ),
+            (
+                "application_resolution_exact_registered",
+                self.application.resolution_exact_registered,
+            ),
+            (
+                "application_resolution_exact_relaunch",
+                self.application.resolution_exact_relaunch,
+            ),
+            (
+                "application_resolution_exact_provider",
+                self.application.resolution_exact_provider,
+            ),
+            (
+                "application_resolution_exact_path",
+                self.application.resolution_exact_path,
+            ),
+            (
+                "application_resolution_unique_alias",
+                self.application.resolution_unique_alias,
+            ),
+            (
+                "application_resolution_ambiguous",
+                self.application.resolution_ambiguous,
+            ),
+            (
+                "application_resolution_unregistered",
+                self.application.resolution_unregistered,
+            ),
+            (
+                "application_resolution_prevented",
+                self.application.resolution_prevented,
+            ),
+            (
+                "application_resolution_total_us",
+                self.application.resolution_total_us,
+            ),
+            (
+                "application_resolution_max_us",
+                self.application.resolution_max_us,
+            ),
+            (
+                "dock_projection_calls",
+                self.application.dock_projection_calls,
+            ),
+            (
+                "dock_projection_max_us",
+                self.application.dock_projection_max_us,
+            ),
+        ] {
+            let _ = writeln!(output, "{name}={value}");
+        }
+    }
+
+    fn write_process_resource_metrics(&self, output: &mut String) {
+        let _ = writeln!(
+            output,
+            "process_resources_success={}",
+            self.process_resources.success
+        );
+        let _ = writeln!(
+            output,
+            "process_resources_working_set_bytes={}",
+            self.process_resources.working_set_bytes
+        );
+        let _ = writeln!(
+            output,
+            "process_resources_private_bytes={}",
+            self.process_resources.private_bytes
+        );
+        let _ = writeln!(
+            output,
+            "process_resources_handle_count={}",
+            self.process_resources.handle_count
+        );
+        let _ = writeln!(
+            output,
+            "process_resources_thread_count={}",
+            self.process_resources.thread_count
+        );
     }
 
     fn write_worker_metrics(&self, output: &mut String) {

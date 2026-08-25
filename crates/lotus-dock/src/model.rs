@@ -1,20 +1,20 @@
 use std::path::Path;
 
 use lotus_core::application::{
-    ApplicationIdentity, is_reliable_application_identity, is_shared_host_executable,
+    ApplicationIdentity, RegisteredApplication, WindowApplicationAssignments,
+    is_shared_host_executable,
 };
 use lotus_core::dock::DockItem;
 use lotus_core::settings::{DockSettings, PinnedApp, SettingsStore, SettingsStoreError};
 use lotus_core::window::WindowInfo;
 
-pub fn project_snapshot<F>(
+pub fn project_snapshot(
     settings: &DockSettings,
     windows: &[WindowInfo],
-    resolve_executable: F,
-) -> Vec<DockItem>
-where
-    F: FnMut(&str) -> Option<String>,
-{
+    assignments: &WindowApplicationAssignments,
+    applications: &[RegisteredApplication],
+    pinned_applications: &[lotus_core::application::PinnedApplicationAssignment],
+) -> Vec<DockItem> {
     lotus_core::dock::project_dock(
         windows,
         lotus_core::dock::DockProjection {
@@ -22,8 +22,10 @@ where
             hidden_executables: &settings.hidden_executables,
             item_order: &settings.item_order,
             show_unpinned_running_apps: settings.show_unpinned_running_apps,
+            assignments,
+            applications,
+            pinned_applications,
         },
-        resolve_executable,
     )
 }
 
@@ -53,17 +55,7 @@ pub struct PinLaunch {
     pub arguments: Option<String>,
     pub icon_source: Option<String>,
     pub app_user_model_id: Option<String>,
-}
-
-pub struct PinUpgrade {
-    pub current_id: String,
-    pub launch: PinLaunch,
-}
-
-pub struct PinExecutableAlias {
-    pub registered_id: String,
-    pub app_user_model_id: Option<String>,
-    pub executable_name: String,
+    pub match_executables: Vec<String>,
 }
 
 impl DockModel {
@@ -198,10 +190,12 @@ impl DockModel {
                 target: item.launch_target.clone(),
                 arguments: item.arguments.clone(),
                 icon_source: Some(item.icon_source.clone()),
-                app_user_model_id: item
-                    .windows
-                    .first()
-                    .and_then(|window| window.app_user_model_id.clone()),
+                app_user_model_id: item.windows.first().and_then(|window| {
+                    window.application_facts.reliable_id().map(str::to_owned)
+                }),
+                match_executables: executable_alias(&item.executable_path)
+                    .into_iter()
+                    .collect(),
             });
             if settings.pinned_apps.iter().any(|pin| {
                 pin.application_identity(None)
@@ -217,9 +211,7 @@ impl DockModel {
                 arguments: launch.arguments,
                 icon_source: launch.icon_source,
                 app_user_model_id: launch.app_user_model_id,
-                match_executables: executable_alias(&item.executable_path)
-                    .into_iter()
-                    .collect(),
+                match_executables: launch.match_executables,
             });
             insert_item_order(&mut settings.item_order, &self.items, source_index);
         } else {
@@ -233,251 +225,6 @@ impl DockModel {
         self.settings = settings;
         Ok(true)
     }
-
-    pub fn upgrade_pins(
-        &mut self,
-        upgrades: Vec<PinUpgrade>,
-    ) -> Result<bool, SettingsStoreError> {
-        if upgrades.is_empty() {
-            return Ok(false);
-        }
-
-        let mut settings = self.settings.clone();
-        let mut changed = false;
-        for upgrade in upgrades {
-            let launch = upgrade.launch.clone();
-            let Some(pin) = settings
-                .pinned_apps
-                .iter_mut()
-                .find(|pin| pin.id.eq_ignore_ascii_case(&upgrade.current_id))
-            else {
-                continue;
-            };
-            let previous_id = pin.id.clone();
-            let previous_target = pin.launch_target.clone();
-            if pin.id.eq_ignore_ascii_case(&upgrade.launch.id)
-                && pin.name == upgrade.launch.name
-                && pin.launch_target == upgrade.launch.target
-                && pin.arguments == upgrade.launch.arguments
-                && pin.icon_source == upgrade.launch.icon_source
-                && pin.app_user_model_id == upgrade.launch.app_user_model_id
-            {
-                continue;
-            }
-
-            replace_order_identity(&mut settings.item_order, &pin.id, &upgrade.launch.id);
-            pin.id = upgrade.launch.id;
-            pin.name = upgrade.launch.name;
-            pin.launch_target = upgrade.launch.target;
-            pin.arguments = upgrade.launch.arguments;
-            pin.icon_source = upgrade.launch.icon_source;
-            pin.app_user_model_id = upgrade.launch.app_user_model_id;
-            migrate_icon_overrides(&mut settings, &previous_id, &previous_target, &launch);
-            changed = true;
-        }
-        if !changed {
-            return Ok(false);
-        }
-
-        let settings = settings.normalized();
-        self.settings_store.save(&settings)?;
-        self.settings = settings;
-        Ok(true)
-    }
-
-    pub fn reconcile_pin_executables(
-        &mut self,
-        aliases: Vec<PinExecutableAlias>,
-    ) -> Result<bool, SettingsStoreError> {
-        if aliases.is_empty() {
-            return Ok(false);
-        }
-
-        let mut settings = self.settings.clone();
-        let mut changed = false;
-        for alias in aliases {
-            if is_shared_host_executable(&alias.executable_name) {
-                continue;
-            }
-            let pin_identity =
-                if let Some(pin) = pin_for_registered_application(&mut settings, &alias) {
-                    let previous = (pin.id.clone(), pin.launch_target.clone());
-                    if let Some(identity) = registered_alias_identity(&alias)
-                        && pin.app_user_model_id.as_deref() != Some(identity)
-                    {
-                        pin.app_user_model_id = Some(identity.to_owned());
-                        changed = true;
-                    }
-                    if !pin
-                        .match_executables
-                        .iter()
-                        .any(|saved| saved.eq_ignore_ascii_case(&alias.executable_name))
-                    {
-                        pin.match_executables.push(alias.executable_name.clone());
-                        changed = true;
-                    }
-                    Some(previous)
-                } else {
-                    None
-                };
-            reconcile_icon_override_alias(
-                &mut settings,
-                &alias,
-                pin_identity.as_ref(),
-                &mut changed,
-            );
-        }
-        if !changed {
-            return Ok(false);
-        }
-
-        let settings = settings.normalized();
-        self.settings_store.save(&settings)?;
-        self.settings = settings;
-        Ok(true)
-    }
-}
-
-fn reconcile_icon_override_alias(
-    settings: &mut DockSettings,
-    alias: &PinExecutableAlias,
-    legacy_pin: Option<&(String, String)>,
-    changed: &mut bool,
-) {
-    if is_shared_host_executable(&alias.executable_name) {
-        return;
-    }
-    let identity = registered_alias_identity(alias);
-    let Some(identity) = identity else {
-        return;
-    };
-    let Some(override_) =
-        settings
-            .application_icon_overrides
-            .iter_mut()
-            .find(|override_| {
-                override_
-                    .app_user_model_id
-                    .as_deref()
-                    .is_some_and(|saved| saved.eq_ignore_ascii_case(identity))
-                    || override_.id.eq_ignore_ascii_case(identity)
-                    || legacy_pin.is_some_and(|(id, target)| {
-                        override_.id.eq_ignore_ascii_case(id)
-                            || override_.id.eq_ignore_ascii_case(target)
-                    })
-            })
-    else {
-        return;
-    };
-    if override_.app_user_model_id.as_deref() != Some(identity) {
-        override_.app_user_model_id = Some(identity.to_owned());
-        *changed = true;
-    }
-    if override_
-        .match_executables
-        .iter()
-        .any(|saved| saved.eq_ignore_ascii_case(&alias.executable_name))
-    {
-        return;
-    }
-    override_
-        .match_executables
-        .push(alias.executable_name.clone());
-    *changed = true;
-}
-
-fn registered_alias_identity(alias: &PinExecutableAlias) -> Option<&str> {
-    alias
-        .app_user_model_id
-        .as_deref()
-        .filter(|identity| is_reliable_application_identity(identity))
-        .or_else(|| {
-            is_reliable_application_identity(&alias.registered_id)
-                .then_some(alias.registered_id.as_str())
-        })
-}
-
-fn migrate_icon_overrides(
-    settings: &mut DockSettings,
-    previous_id: &str,
-    previous_target: &str,
-    launch: &PinLaunch,
-) {
-    let app_user_model_id = launch
-        .app_user_model_id
-        .as_deref()
-        .filter(|identity| is_reliable_application_identity(identity))
-        .map(str::to_owned);
-    let stable_id = app_user_model_id.as_deref().unwrap_or(&launch.id);
-    for override_ in &mut settings.application_icon_overrides {
-        let previous = override_.id.eq_ignore_ascii_case(previous_id)
-            || override_.id.eq_ignore_ascii_case(previous_target);
-        if !previous {
-            continue;
-        }
-        stable_id.clone_into(&mut override_.id);
-        override_.app_user_model_id.clone_from(&app_user_model_id);
-        override_
-            .match_executables
-            .retain(|executable| !is_shared_host_executable(executable));
-    }
-}
-
-fn pin_for_registered_application<'a>(
-    settings: &'a mut DockSettings,
-    alias: &PinExecutableAlias,
-) -> Option<&'a mut PinnedApp> {
-    let candidates = [
-        Some(alias.registered_id.as_str()),
-        alias.app_user_model_id.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|identity| is_reliable_application_identity(identity))
-    .map(|identity| {
-        ApplicationIdentity::new(
-            Some(identity),
-            Some(identity),
-            None,
-            std::iter::once(alias.executable_name.as_str()),
-        )
-    })
-    .collect::<Vec<_>>();
-    let strict = settings.pinned_apps.iter().position(|pin| {
-        candidates.iter().any(|candidate| {
-            pin.application_identity(None)
-                .match_strength(candidate)
-                .is_match()
-        })
-    });
-    let index = strict.or_else(|| legacy_pin_alias(settings, alias))?;
-    settings.pinned_apps.get_mut(index)
-}
-
-fn legacy_pin_alias(settings: &DockSettings, alias: &PinExecutableAlias) -> Option<usize> {
-    if is_shared_host_executable(&alias.executable_name) {
-        return None;
-    }
-
-    let matches = settings
-        .pinned_apps
-        .iter()
-        .enumerate()
-        .filter(|(_, pin)| {
-            pin.application_identity(None)
-                .reliable_registered_id()
-                .is_none()
-                && pin
-                    .application_identity(None)
-                    .has_executable_alias(&alias.executable_name)
-        })
-        .map(|(index, _)| index)
-        .take(2)
-        .collect::<Vec<_>>();
-    let [index] = matches.as_slice() else {
-        return None;
-    };
-    Some(*index)
 }
 
 impl PinLaunch {
@@ -495,14 +242,6 @@ fn executable_alias(path: &str) -> Option<String> {
     let executable = path.rsplit(['\\', '/']).next()?;
     (!is_shared_host_executable(executable) && !executable.is_empty())
         .then(|| executable.into())
-}
-
-fn replace_order_identity(order: &mut [String], previous: &str, current: &str) {
-    for identity in order {
-        if identity.eq_ignore_ascii_case(previous) {
-            current.clone_into(identity);
-        }
-    }
 }
 
 fn insert_item_order(order: &mut Vec<String>, items: &[DockItem], source_index: usize) {

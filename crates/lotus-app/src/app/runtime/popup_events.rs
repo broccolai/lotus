@@ -228,13 +228,7 @@ fn execute_app_menu_action(
             let registered = (!pinned)
                 .then(|| context.dock_model.item(source_index))
                 .flatten()
-                .and_then(|item| {
-                    item.windows.first().and_then(|window| {
-                        context
-                            .auxiliary
-                            .registered_application(window, &item.display_name)
-                    })
-                });
+                .and_then(|item| context.dock_model.registered_application_for_item(item));
             let changed = match context.dock_model.set_pinned(
                 source_index,
                 !pinned,

@@ -262,7 +262,7 @@ pub fn run() -> Result<(), AppError> {
         onboarding_required,
         integration: &mut integration,
     };
-    run_message_loop(
+    let result = run_message_loop(
         &mut runtime,
         &mut dock,
         &mut graphics,
@@ -270,7 +270,9 @@ pub fn run() -> Result<(), AppError> {
         &mut window_tracker,
         &mut dock_model,
         &mut auxiliary,
-    )
+    );
+    lotus_windows::responsiveness::METRICS.capture_process_resources();
+    result
 }
 
 fn create_auxiliary_windows(

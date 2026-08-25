@@ -29,6 +29,13 @@ pub(super) fn application_icon_path(
         Some(executable_path),
         std::iter::empty(),
     );
-    let custom = settings.application_icon_override_for(&identity)?;
+    application_icon_path_for_identity(settings, &identity)
+}
+
+pub(super) fn application_icon_path_for_identity(
+    settings: &DockSettings,
+    identity: &ApplicationIdentity,
+) -> Option<PathBuf> {
+    let custom = settings.application_icon_override_for(identity)?;
     Some(PathBuf::from(&custom.image_path))
 }

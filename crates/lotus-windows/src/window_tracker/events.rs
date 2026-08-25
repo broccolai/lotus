@@ -11,6 +11,7 @@ use windows::core::Error;
 
 use crate::NativeError;
 pub(super) use crate::messages::WINDOW_TRACKER_REFRESH as REFRESH_MESSAGE;
+use crate::responsiveness::METRICS;
 
 pub(super) const REFRESH_DELAY_MS: u32 = 120;
 pub(super) const RECONCILE_INTERVAL_MS: u32 = 1_000;
@@ -116,10 +117,15 @@ unsafe extern "system" fn win_event_callback(
     if !CALLBACKS_ACTIVE.load(Ordering::Acquire)
         || hwnd.0.is_null()
         || (event != EVENT_SYSTEM_FOREGROUND && object_id != OBJID_WINDOW.0)
-        || REFRESH_QUEUED.swap(true, Ordering::AcqRel)
     {
         return;
     }
+
+    if REFRESH_QUEUED.swap(true, Ordering::AcqRel) {
+        METRICS.record_tracker_refresh_request(true);
+        return;
+    }
+    METRICS.record_tracker_refresh_request(false);
 
     let thread_id = callback_thread();
     if thread_id == 0

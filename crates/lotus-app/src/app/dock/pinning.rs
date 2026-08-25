@@ -1,9 +1,9 @@
+use lotus_core::application::{ApplicationKey, ApplicationResolution};
 use lotus_core::dock::DockItem;
 use lotus_core::window::WindowInfo;
-use lotus_dock::model::{PinExecutableAlias, PinLaunch, PinUpgrade};
+use lotus_dock::model::PinLaunch;
 
 use super::DockRuntime;
-use super::projection::{projected_items, window_matches_item};
 use crate::app::AppError;
 
 impl DockRuntime {
@@ -12,7 +12,7 @@ impl DockRuntime {
         source_index: usize,
         pinned: bool,
         windows: &[WindowInfo],
-        registered: Option<lotus_windows::search_catalog::RegisteredApplication>,
+        registered: Option<lotus_core::application::RegisteredApplication>,
     ) -> Result<bool, AppError> {
         let previous = self
             .model
@@ -23,83 +23,33 @@ impl DockRuntime {
         let launch = registered.map(|application| PinLaunch {
             id: application.id,
             name: application.name,
-            target: application.launch_target,
-            arguments: application.arguments,
+            target: application.launch.target,
+            arguments: application.launch.arguments,
             icon_source: Some(application.icon_source),
             app_user_model_id: application.app_user_model_id,
+            match_executables: application
+                .executable_aliases
+                .into_iter()
+                .filter(|alias| !lotus_core::application::is_shared_host_executable(alias))
+                .collect(),
         });
         if !self.model.set_pinned(source_index, pinned, launch)? {
             return Ok(false);
         }
+        self.resolve_current_applications(windows);
         if let Some((index, item)) = previous {
             if pinned {
-                self.transient_unpinned.remove(&item.id);
+                self.transient_unpinned.remove(&item.application_key);
             } else if item.is_running() {
                 self.transient_unpinned
-                    .insert(item.id.clone(), (index, item));
+                    .insert(item.application_key.clone(), (index, item));
             }
         }
-        let mut items = projected_items(self.model.settings(), windows);
+        let mut items = self.projected_items(windows);
         self.merge_transient_unpinned(&mut items, windows);
         self.model.rebuild(items);
         self.refresh_scene_items();
         Ok(true)
-    }
-
-    pub(in crate::app) fn reconcile_unpinned_pins(
-        &mut self,
-        windows: &[WindowInfo],
-        catalog: &lotus_windows::search_catalog::SearchCatalogCache,
-    ) -> Result<bool, AppError> {
-        let aliases = projected_items(self.model.settings(), windows)
-            .iter()
-            .filter(|item| !item.is_pinned)
-            .flat_map(|item| {
-                item.windows.iter().filter_map(|window| {
-                    let application =
-                        catalog.registered_application(window, &item.display_name)?;
-                    let executable_name = window
-                        .executable_name()
-                        .and_then(|name| name.to_str())?
-                        .to_owned();
-                    Some(PinExecutableAlias {
-                        registered_id: application.id,
-                        app_user_model_id: application.app_user_model_id,
-                        executable_name,
-                    })
-                })
-            })
-            .collect();
-        Ok(self.model.reconcile_pin_executables(aliases)?)
-    }
-
-    pub(in crate::app) fn upgrade_legacy_pins(
-        &mut self,
-        catalog: &lotus_windows::search_catalog::SearchCatalogCache,
-    ) -> Result<bool, AppError> {
-        let upgrades = self
-            .model
-            .items()
-            .iter()
-            .filter(|item| item.is_pinned)
-            .filter_map(|item| {
-                let window = item.windows.first()?;
-                let application =
-                    catalog.registered_application(window, &item.display_name)?;
-                Some(PinUpgrade {
-                    current_id: item.id.clone(),
-                    launch: PinLaunch {
-                        id: application.id,
-                        name: application.name,
-                        target: application.launch_target,
-                        arguments: application.arguments,
-                        icon_source: Some(application.icon_source),
-                        app_user_model_id: application.app_user_model_id,
-                    },
-                })
-            })
-            .collect();
-        Ok(self.model.upgrade_pins(upgrades)?)
     }
 
     pub(in crate::app) fn merge_transient_unpinned(
@@ -107,15 +57,15 @@ impl DockRuntime {
         items: &mut Vec<DockItem>,
         windows: &[WindowInfo],
     ) {
-        self.transient_unpinned.retain(|_, (_, item)| {
+        let assignments = &self.application_assignments;
+        self.transient_unpinned.retain(|key, (_, item)| {
             item.windows = windows
                 .iter()
-                .filter(|window| window_matches_item(window, item))
+                .filter(|window| window_application_key(window, assignments) == *key)
                 .cloned()
                 .collect();
             !item.windows.is_empty()
         });
-
         let mut retained = self
             .transient_unpinned
             .values()
@@ -123,13 +73,33 @@ impl DockRuntime {
             .collect::<Vec<_>>();
         retained.sort_by_key(|(index, _)| *index);
         for (index, item) in retained {
-            if items
+            if let Some(current_index) = items
                 .iter()
-                .any(|current| current.id.eq_ignore_ascii_case(&item.id))
+                .position(|current| current.application_key == item.application_key)
             {
+                let current = items.remove(current_index);
+                items.insert(index.min(items.len()), current);
+                self.transient_unpinned.remove(&item.application_key);
                 continue;
             }
             items.insert(index.min(items.len()), item);
         }
+    }
+}
+
+fn window_application_key(
+    window: &WindowInfo,
+    assignments: &lotus_core::application::WindowApplicationAssignments,
+) -> ApplicationKey {
+    match assignments.by_window.get(&window.key()) {
+        Some(
+            ApplicationResolution::Resolved { key, .. }
+            | ApplicationResolution::Associated { key }
+            | ApplicationResolution::Unregistered { key, .. },
+        ) => key.clone(),
+        Some(
+            ApplicationResolution::Prevented | ApplicationResolution::Ambiguous { .. },
+        )
+        | None => ApplicationKey::Ephemeral(window.key()),
     }
 }

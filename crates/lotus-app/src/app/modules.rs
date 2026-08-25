@@ -10,7 +10,7 @@ use lotus_windows::WindowHandle;
 use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth};
 use lotus_windows::icon_hydrator::{IconHydrationResult, IconHydrator};
 use lotus_windows::input::{InputConfig, InputController};
-use lotus_windows::search_catalog::{RegisteredApplication, SearchCatalogCache};
+use lotus_windows::search_catalog::{ApplicationCatalogSnapshot, SearchCatalogCache};
 use lotus_windows::update::is_installed;
 use lotus_windows::window::{
     ContextMenuEvent, DockWindow, PointerEvent, PopupAlignment, SettingsEvent, SignedPoint,
@@ -159,19 +159,6 @@ impl ModuleHost {
         self.launcher.apply_settings(settings, dock, graphics)?;
         self.context_menu.apply_settings(settings);
         self.switcher.apply_settings(settings);
-        Ok(())
-    }
-
-    pub(super) fn adapt_to_pin_changes(
-        &mut self,
-        dock: &DockWindow,
-        dock_model: &mut DockRuntime,
-        graphics: &mut DeviceState,
-    ) -> Result<(), AppError> {
-        self.settings
-            .reconcile_application_icon_overrides(dock_model.settings());
-        self.propagate_settings(dock_model.settings(), dock, graphics)?;
-        let _changed = self.refresh_media(dock_model);
         Ok(())
     }
 
@@ -328,17 +315,10 @@ impl ModuleHost {
         )
     }
 
-    pub(super) fn application_catalog(&self) -> &SearchCatalogCache {
-        &self.applications
-    }
-
-    pub(super) fn registered_application(
+    pub(super) fn application_snapshot(
         &self,
-        window: &lotus_core::window::WindowInfo,
-        fallback_name: &str,
-    ) -> Option<RegisteredApplication> {
-        self.applications
-            .registered_application(window, fallback_name)
+    ) -> std::sync::Arc<ApplicationCatalogSnapshot> {
+        self.applications.snapshot()
     }
 
     pub(super) fn open_settings(
@@ -648,9 +628,16 @@ impl ModuleHost {
     pub(super) fn reconcile_switcher_windows(
         &mut self,
         windows: &[lotus_core::window::WindowInfo],
+        application_catalog: std::sync::Arc<ApplicationCatalogSnapshot>,
+        application_assignments: &lotus_core::application::WindowApplicationAssignments,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        self.switcher.reconcile_windows(windows, graphics)
+        self.switcher.reconcile_windows(
+            windows,
+            application_catalog,
+            application_assignments,
+            graphics,
+        )
     }
 
     pub(super) fn drain_switcher_events(&mut self, graphics: &mut DeviceState) -> bool {
