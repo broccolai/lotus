@@ -20,6 +20,10 @@ const RESTART_WAIT_MILLISECONDS: u32 = 5_000;
 pub enum StartupRegistrationError {
     #[error("Lotus could not locate its executable for Windows startup: {0}")]
     CurrentExecutable(#[from] std::io::Error),
+    #[error(
+        "Lotus is running from the temporary path `{path}` and will not register it for Windows startup"
+    )]
+    TransientExecutable { path: PathBuf },
     #[error("Windows could not update the Lotus startup entry: {0}")]
     Registry(String),
 }
@@ -31,17 +35,89 @@ impl From<windows_result::Error> for StartupRegistrationError {
 }
 
 pub fn sync(enabled: bool) -> Result<(), StartupRegistrationError> {
-    let key = windows_registry::CURRENT_USER.create(RUN_KEY)?;
     if enabled {
-        let executable = std::env::current_exe()?;
+        let executable = match stable_startup_executable() {
+            Ok(executable) => executable,
+            Err(error @ StartupRegistrationError::TransientExecutable { .. }) => {
+                remove_transient_startup_registration()?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        let key = windows_registry::CURRENT_USER.create(RUN_KEY)?;
         key.set_string(VALUE_NAME, startup_command(&executable))?;
-    } else if let Err(error) = key.remove_value(VALUE_NAME) {
-        const ERROR_FILE_NOT_FOUND: u32 = 2;
-        if error.code() != HRESULT::from_win32(ERROR_FILE_NOT_FOUND) {
-            return Err(error.into());
+    } else {
+        let key = windows_registry::CURRENT_USER.create(RUN_KEY)?;
+        if let Err(error) = key.remove_value(VALUE_NAME) {
+            const ERROR_FILE_NOT_FOUND: u32 = 2;
+            if error.code() != HRESULT::from_win32(ERROR_FILE_NOT_FOUND) {
+                return Err(error.into());
+            }
         }
     }
     Ok(())
+}
+
+fn stable_startup_executable() -> Result<PathBuf, StartupRegistrationError> {
+    let current = std::env::current_exe()?;
+    if !is_temporary_path(&current) {
+        return Ok(current);
+    }
+
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let installed = PathBuf::from(local_app_data)
+            .join("Programs")
+            .join("Lotus")
+            .join("lotus.exe");
+        if installed.is_file() && !is_temporary_path(&installed) {
+            return Ok(installed);
+        }
+    }
+
+    if let Some(registered) = registered_startup_executable()
+        && registered.is_file()
+        && !is_temporary_path(&registered)
+    {
+        return Ok(registered);
+    }
+
+    Err(StartupRegistrationError::TransientExecutable { path: current })
+}
+
+fn remove_transient_startup_registration() -> Result<(), StartupRegistrationError> {
+    let Ok(key) = windows_registry::CURRENT_USER.open(RUN_KEY) else {
+        return Ok(());
+    };
+    if registered_startup_executable_from(&key).is_some_and(|path| is_temporary_path(&path))
+    {
+        key.remove_value(VALUE_NAME)?;
+    }
+    Ok(())
+}
+
+fn registered_startup_executable() -> Option<PathBuf> {
+    let key = windows_registry::CURRENT_USER.open(RUN_KEY).ok()?;
+    registered_startup_executable_from(&key)
+}
+
+fn registered_startup_executable_from(key: &windows_registry::Key) -> Option<PathBuf> {
+    let command = key.get_string(VALUE_NAME).ok()?;
+    let command = command.trim();
+    let path = command
+        .strip_prefix('"')
+        .and_then(|command| command.strip_suffix('"'))
+        .unwrap_or(command);
+    let path = PathBuf::from(path);
+    path.file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("lotus.exe"))
+        .then_some(path)
+}
+
+fn is_temporary_path(path: &Path) -> bool {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    let temporary = std::env::temp_dir();
+    let temporary = temporary.canonicalize().unwrap_or(temporary);
+    path.starts_with(temporary)
 }
 
 fn startup_command(executable: &Path) -> String {
