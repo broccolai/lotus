@@ -254,6 +254,11 @@ pub struct ResponsivenessMetrics {
     input_cleanup_idle: AtomicU64,
     input_replay_failures: AtomicU64,
     input_sequence_cancels: AtomicU64,
+    input_win_bare_sequences: AtomicU64,
+    input_win_sequences_disqualified: AtomicU64,
+    input_start_cancel_attempts: AtomicU64,
+    input_start_cancel_successes: AtomicU64,
+    input_start_cancel_failures: AtomicU64,
     input_delivery_max_us: AtomicU64,
     input_delivery_histogram: [AtomicU64; HISTOGRAM_BUCKETS],
     ui_messages: AtomicU64,
@@ -341,6 +346,11 @@ pub struct ResponsivenessSnapshot {
     pub input_cleanup_idle: u64,
     pub input_replay_failures: u64,
     pub input_sequence_cancels: u64,
+    pub input_win_bare_sequences: u64,
+    pub input_win_sequences_disqualified: u64,
+    pub input_start_cancel_attempts: u64,
+    pub input_start_cancel_successes: u64,
+    pub input_start_cancel_failures: u64,
     pub input_delivery_max_us: u64,
     pub input_delivery_histogram: [u64; HISTOGRAM_BUCKETS],
     pub ui_messages: u64,
@@ -417,6 +427,11 @@ impl ResponsivenessMetrics {
             input_cleanup_idle: AtomicU64::new(0),
             input_replay_failures: AtomicU64::new(0),
             input_sequence_cancels: AtomicU64::new(0),
+            input_win_bare_sequences: AtomicU64::new(0),
+            input_win_sequences_disqualified: AtomicU64::new(0),
+            input_start_cancel_attempts: AtomicU64::new(0),
+            input_start_cancel_successes: AtomicU64::new(0),
+            input_start_cancel_failures: AtomicU64::new(0),
             input_delivery_max_us: AtomicU64::new(0),
             input_delivery_histogram: [const { AtomicU64::new(0) }; HISTOGRAM_BUCKETS],
             ui_messages: AtomicU64::new(0),
@@ -519,6 +534,19 @@ impl ResponsivenessMetrics {
             input_cleanup_idle: self.input_cleanup_idle.load(Ordering::Relaxed),
             input_replay_failures: self.input_replay_failures.load(Ordering::Relaxed),
             input_sequence_cancels: self.input_sequence_cancels.load(Ordering::Relaxed),
+            input_win_bare_sequences: self.input_win_bare_sequences.load(Ordering::Relaxed),
+            input_win_sequences_disqualified: self
+                .input_win_sequences_disqualified
+                .load(Ordering::Relaxed),
+            input_start_cancel_attempts: self
+                .input_start_cancel_attempts
+                .load(Ordering::Relaxed),
+            input_start_cancel_successes: self
+                .input_start_cancel_successes
+                .load(Ordering::Relaxed),
+            input_start_cancel_failures: self
+                .input_start_cancel_failures
+                .load(Ordering::Relaxed),
             input_delivery_max_us: self.input_delivery_max_us.load(Ordering::Relaxed),
             input_delivery_histogram: load_histogram(&self.input_delivery_histogram),
             ui_messages: self.ui_messages.load(Ordering::Relaxed),
@@ -536,10 +564,7 @@ impl ResponsivenessMetrics {
             ui_messages_frame: self.ui_messages_frame.load(Ordering::Relaxed),
             ui_message_severe: self.ui_message_severe.load(Ordering::Relaxed),
             ui_message_critical: self.ui_message_critical.load(Ordering::Relaxed),
-            slow_ui_events: self
-                .slow_ui_events
-                .lock()
-                .map_or_else(|_| Vec::new(), |ring| ring.events.iter().cloned().collect()),
+            slow_ui_events: self.slow_ui_events_snapshot(),
             layouts: self.layout_snapshots(),
             window_enumerations: self.window_enumerations.load(Ordering::Relaxed),
             window_enumeration_max_us: self
@@ -586,18 +611,7 @@ impl ResponsivenessMetrics {
             flyout_superseded: self.flyout_superseded.load(Ordering::Relaxed),
             switcher_requests: self.switcher_requests.load(Ordering::Relaxed),
             switcher_results: self.switcher_results.load(Ordering::Relaxed),
-            caches: std::array::from_fn(|index| CacheSnapshot {
-                class: CacheClass::ALL[index],
-                current_entries: self.cache_entries[index].load(Ordering::Relaxed),
-                current_bytes: self.cache_bytes[index].load(Ordering::Relaxed),
-                budget: self.cache_budgets[index].load(Ordering::Relaxed),
-                hits: self.cache_hits[index].load(Ordering::Relaxed),
-                misses: self.cache_misses[index].load(Ordering::Relaxed),
-                inserts: self.cache_inserts[index].load(Ordering::Relaxed),
-                replacements: self.cache_replacements[index].load(Ordering::Relaxed),
-                evictions: self.cache_evictions[index].load(Ordering::Relaxed),
-                clears: self.cache_clears[index].load(Ordering::Relaxed),
-            }),
+            caches: std::array::from_fn(|index| self.cache_snapshot(index)),
         }
     }
 
@@ -612,6 +626,27 @@ impl ResponsivenessMetrics {
             max_us: self.layout_max_us[index].load(Ordering::Relaxed),
             histogram: self.load_layout_histogram(index),
         })
+    }
+
+    fn slow_ui_events_snapshot(&self) -> Vec<SlowUiEvent> {
+        self.slow_ui_events
+            .lock()
+            .map_or_else(|_| Vec::new(), |ring| ring.events.iter().cloned().collect())
+    }
+
+    fn cache_snapshot(&self, index: usize) -> CacheSnapshot {
+        CacheSnapshot {
+            class: CacheClass::ALL[index],
+            current_entries: self.cache_entries[index].load(Ordering::Relaxed),
+            current_bytes: self.cache_bytes[index].load(Ordering::Relaxed),
+            budget: self.cache_budgets[index].load(Ordering::Relaxed),
+            hits: self.cache_hits[index].load(Ordering::Relaxed),
+            misses: self.cache_misses[index].load(Ordering::Relaxed),
+            inserts: self.cache_inserts[index].load(Ordering::Relaxed),
+            replacements: self.cache_replacements[index].load(Ordering::Relaxed),
+            evictions: self.cache_evictions[index].load(Ordering::Relaxed),
+            clears: self.cache_clears[index].load(Ordering::Relaxed),
+        }
     }
 
     pub fn record_input_hook_lotus(&self, duration: Duration) {
@@ -700,6 +735,26 @@ impl ResponsivenessMetrics {
 
     pub fn record_input_sequence_cancel(&self) {
         saturating_add(&self.input_sequence_cancels, 1);
+    }
+
+    pub fn record_input_win_bare_sequence(&self) {
+        saturating_add(&self.input_win_bare_sequences, 1);
+    }
+
+    pub fn record_input_win_sequence_disqualified(&self) {
+        saturating_add(&self.input_win_sequences_disqualified, 1);
+    }
+
+    pub fn record_input_start_cancel_attempt(&self) {
+        saturating_add(&self.input_start_cancel_attempts, 1);
+    }
+
+    pub fn record_input_start_cancel_success(&self) {
+        saturating_add(&self.input_start_cancel_successes, 1);
+    }
+
+    pub fn record_input_start_cancel_failure(&self) {
+        saturating_add(&self.input_start_cancel_failures, 1);
     }
 
     pub fn record_input_delivery(&self, duration: Duration) {
@@ -1016,6 +1071,31 @@ impl ResponsivenessSnapshot {
             output,
             "input_sequence_cancels={}",
             self.input_sequence_cancels
+        );
+        let _ = writeln!(
+            output,
+            "input_win_bare_sequences={}",
+            self.input_win_bare_sequences
+        );
+        let _ = writeln!(
+            output,
+            "input_win_sequences_disqualified={}",
+            self.input_win_sequences_disqualified
+        );
+        let _ = writeln!(
+            output,
+            "input_start_cancel_attempts={}",
+            self.input_start_cancel_attempts
+        );
+        let _ = writeln!(
+            output,
+            "input_start_cancel_successes={}",
+            self.input_start_cancel_successes
+        );
+        let _ = writeln!(
+            output,
+            "input_start_cancel_failures={}",
+            self.input_start_cancel_failures
         );
         let _ = writeln!(
             output,

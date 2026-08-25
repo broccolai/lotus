@@ -110,10 +110,6 @@ pub(super) fn handle_input_actions(context: &mut InputEventContext<'_>) -> bool 
                     changed = true;
                 }
             }
-            InputAction::ReplayIncomplete { .. } => {
-                switcher.hide();
-                changed = true;
-            }
         }
     }
     changed

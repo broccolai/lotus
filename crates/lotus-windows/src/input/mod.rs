@@ -15,30 +15,31 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, KillTimer, LLKHF_ALTDOWN,
-    LLKHF_EXTENDED, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetTimer,
-    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_QUIT, WM_TIMER,
+    CallNextHookEx, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, KillTimer, LLKHF_ALTDOWN, MSG,
+    PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetTimer, SetWindowsHookExW,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_QUIT, WM_TIMER,
 };
 
 use self::state::{
-    AltFallback, HookDecision, InputSequence, KeyEvent, ReplayKey, SequenceEffect,
+    AltFallback, HookDecision, InputSequence, KeyEvent, PressedKeys, SequenceEffect,
     Transition,
 };
 use crate::NativeError;
-use crate::messages::{INPUT_REPLAY, INPUT_WAKE};
+use crate::messages::{ALT_TAB_FALLBACK_REPLAY, INPUT_RESYNC, INPUT_WAKE};
 use crate::responsiveness::{InputFailOpenReason, METRICS};
 
 const START_TIMEOUT: Duration = Duration::from_secs(2);
 const UI_HEARTBEAT_STALE_MS: u64 = 1_000;
 const LOTUS_INPUT_MARKER: usize = 0x4C4F_5455;
+const SILENT_START_CANCELLATION_KEY: VIRTUAL_KEY = VIRTUAL_KEY(0xE8);
 const SUPPRESS: LRESULT = LRESULT(1);
 const MAILBOX_CAPACITY: usize = 64;
 const HEARTBEAT_INTERVAL_MS: u32 = 75;
-const REPLAY_CAPACITY: usize = 16;
+const ALT_TAB_FALLBACK_INPUT_CAPACITY: usize = 16;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 
 thread_local! {
@@ -71,10 +72,6 @@ pub enum InputAction {
     },
     AltTabCancel {
         sequence: u64,
-    },
-    ReplayIncomplete {
-        inserted: u32,
-        expected: u32,
     },
 }
 
@@ -279,6 +276,7 @@ struct Shared {
     decision: Mutex<DecisionState>,
     healthy_heartbeats: AtomicU32,
     worker_thread: AtomicU32,
+    pressed_resync_requested: AtomicBool,
 }
 
 impl Shared {
@@ -297,6 +295,7 @@ impl Shared {
             decision: Mutex::new(DecisionState::default()),
             healthy_heartbeats: AtomicU32::new(0),
             worker_thread: AtomicU32::new(0),
+            pressed_resync_requested: AtomicBool::new(false),
         }
     }
 }
@@ -323,8 +322,6 @@ struct HookState {
     sender: mpsc::SyncSender<InputAction>,
     shared: Arc<Shared>,
     ui_thread: u32,
-    replay: [Option<ReplayKey>; REPLAY_CAPACITY],
-    replay_len: usize,
     alt_fallback: Option<AltFallback>,
 }
 
@@ -367,14 +364,13 @@ fn input_thread(
         return;
     }
 
+    let initial_pressed = pressed_keys();
     HOOK_STATE.with(|slot| {
         *slot.borrow_mut() = Some(HookState {
-            sequence: InputSequence::new(config),
+            sequence: InputSequence::new(config, initial_pressed),
             sender,
             shared: Arc::clone(&shared),
             ui_thread,
-            replay: [None; REPLAY_CAPACITY],
-            replay_len: 0,
             alt_fallback: None,
         });
     });
@@ -397,8 +393,11 @@ fn input_thread(
         if result <= 0 || shared.stopping.load(Ordering::Acquire) {
             break;
         }
-        if message.message == INPUT_REPLAY {
-            let _ = flush_replay();
+        if message.message == ALT_TAB_FALLBACK_REPLAY {
+            let _ = flush_alt_tab_fallback();
+        }
+        if message.message == INPUT_RESYNC {
+            resync_pressed_keys_if_requested();
         }
         if message.message == WM_TIMER && message.wParam.0 == watchdog {
             watchdog_tick();
@@ -408,7 +407,7 @@ fn input_thread(
     let _ = enter_fail_open(&shared, InputFailOpenReason::Shutdown);
     let _ = request_cleanup(&shared);
     cleanup_input_state();
-    let _ = flush_replay();
+    let _ = flush_alt_tab_fallback();
     let _ = unsafe { KillTimer(None, watchdog) };
 
     HOOK_STATE.with(|slot| *slot.borrow_mut() = None);
@@ -454,12 +453,28 @@ unsafe extern "system" fn keyboard_hook(
         });
         HookOutcome::Pass
     };
-    METRICS.record_input_callback();
-    METRICS.record_input_hook_lotus(lotus_started.elapsed());
     let result = match decision {
-        HookOutcome::Pass => call_next(code, message, data),
-        HookOutcome::Suppress => SUPPRESS,
+        HookOutcome::Pass => {
+            METRICS.record_input_hook_lotus(lotus_started.elapsed());
+            call_next(code, message, data)
+        }
+        HookOutcome::Suppress => {
+            METRICS.record_input_hook_lotus(lotus_started.elapsed());
+            SUPPRESS
+        }
+        HookOutcome::PassAfterCancellingStart(shared) => {
+            METRICS.record_input_start_cancel_attempt();
+            if cancel_native_start() {
+                METRICS.record_input_start_cancel_success();
+            } else {
+                METRICS.record_input_start_cancel_failure();
+                let _ = enter_fail_open(&shared, InputFailOpenReason::WakeFailure);
+            }
+            METRICS.record_input_hook_lotus(lotus_started.elapsed());
+            call_next(code, message, data)
+        }
     };
+    METRICS.record_input_callback();
     METRICS.record_input_hook_total(total_started.elapsed());
     result
 }
@@ -467,6 +482,7 @@ unsafe extern "system" fn keyboard_hook(
 enum HookOutcome {
     Pass,
     Suppress,
+    PassAfterCancellingStart(Arc<Shared>),
 }
 
 unsafe fn keyboard_hook_inner(message: WPARAM, data: LPARAM) -> HookOutcome {
@@ -483,7 +499,6 @@ unsafe fn keyboard_hook_inner(message: WPARAM, data: LPARAM) -> HookOutcome {
     let event = KeyEvent {
         key,
         transition,
-        extended: keyboard.flags.contains(LLKHF_EXTENDED),
         alt_down: keyboard.flags.contains(LLKHF_ALTDOWN),
         self_injected: keyboard.dwExtraInfo == LOTUS_INPUT_MARKER,
     };
@@ -495,25 +510,27 @@ unsafe fn keyboard_hook_inner(message: WPARAM, data: LPARAM) -> HookOutcome {
         };
         if state.shared.fail_open.load(Ordering::Acquire) || heartbeat_stale(&state.shared)
         {
-            let captures_release = state.sequence.capture_fail_open_release(event);
+            state.sequence.capture_fail_open_event(event);
             let _ = enter_fail_open(&state.shared, InputFailOpenReason::HeartbeatStale);
-            return if captures_release {
-                HookOutcome::Suppress
-            } else {
-                HookOutcome::Pass
-            };
+            return HookOutcome::Pass;
+        }
+        if state
+            .shared
+            .pressed_resync_requested
+            .load(Ordering::Acquire)
+        {
+            state.sequence.capture_fail_open_event(event);
+            return HookOutcome::Pass;
         }
         if event.self_injected {
             return HookOutcome::Pass;
         }
-        if state
-            .sequence
-            .defer_replay_pending_windows(event, state.replay_len != 0)
-        {
-            return HookOutcome::Pass;
-        }
 
-        match state.sequence.transition(event) {
+        let (decision, win_disqualified) = state.sequence.transition(event);
+        if win_disqualified {
+            METRICS.record_input_win_sequence_disqualified();
+        }
+        match decision {
             HookDecision::Pass => HookOutcome::Pass,
             HookDecision::Suppress => HookOutcome::Suppress,
             HookDecision::Effect(effect) => {
@@ -527,35 +544,20 @@ unsafe fn keyboard_hook_inner(message: WPARAM, data: LPARAM) -> HookOutcome {
                 let _ = accept_effect(state, effect);
                 HookOutcome::Pass
             }
+            HookDecision::EffectAndPassCancellingStart(effect) => {
+                METRICS.record_input_win_bare_sequence();
+                if accept_effect(state, effect) {
+                    HookOutcome::PassAfterCancellingStart(Arc::clone(&state.shared))
+                } else {
+                    HookOutcome::Pass
+                }
+            }
         }
     })
 }
 
 fn accept_effect(state: &mut HookState, effect: SequenceEffect) -> bool {
     match effect {
-        SequenceEffect::Replay(keys) => {
-            let key_count = keys.iter().flatten().count();
-            if state.replay_len.saturating_add(key_count) > state.replay.len() {
-                let _ = enter_fail_open(&state.shared, InputFailOpenReason::WakeFailure);
-                return false;
-            }
-            let replay_start = state.replay_len;
-            for key in keys.into_iter().flatten() {
-                state.replay[state.replay_len] = Some(key);
-                state.replay_len += 1;
-            }
-            if queue_replay(state.shared.worker_thread.load(Ordering::Acquire)) {
-                true
-            } else {
-                for key in &mut state.replay[replay_start..state.replay_len] {
-                    *key = None;
-                }
-                state.replay_len = replay_start;
-                METRICS.record_input_replay_failure();
-                let _ = enter_fail_open(&state.shared, InputFailOpenReason::WakeFailure);
-                false
-            }
-        }
         SequenceEffect::Action(action) => {
             let begin_sequence = match action {
                 InputAction::AltTabBegin { sequence, .. } => Some(sequence),
@@ -719,88 +721,37 @@ fn stamp_action(action: InputAction) -> InputAction {
     }
 }
 
-fn queue_replay(thread_id: u32) -> bool {
+#[derive(Clone, Copy)]
+struct InjectedKey {
+    key: u16,
+    transition: Transition,
+    extended: bool,
+}
+
+fn queue_alt_tab_fallback(thread_id: u32) -> bool {
     if thread_id == 0 {
         return false;
     }
 
-    unsafe { PostThreadMessageW(thread_id, INPUT_REPLAY, WPARAM(0), LPARAM(0)) }.is_ok()
+    unsafe { PostThreadMessageW(thread_id, ALT_TAB_FALLBACK_REPLAY, WPARAM(0), LPARAM(0)) }
+        .is_ok()
 }
 
-fn flush_replay() -> bool {
+fn flush_alt_tab_fallback() -> bool {
     HOOK_STATE.with(|slot| {
         let mut borrowed = slot.borrow_mut();
         let Some(state) = borrowed.as_mut() else {
             return true;
         };
-        if state.replay_len == 0 && state.alt_fallback.is_none() {
+        if state.alt_fallback.is_none() {
             let requested = state.shared.cleanup_requested_epoch.load(Ordering::Acquire);
             mark_cleanup_complete(&state.shared, requested);
             return true;
         }
         let shared = Arc::clone(&state.shared);
         let requested = shared.cleanup_requested_epoch.load(Ordering::Acquire);
-        let mut keys = [None; REPLAY_CAPACITY];
-        let mut inputs = [empty_input(); REPLAY_CAPACITY];
-        let replay_len = state.replay_len;
         let alt_fallback = state.alt_fallback;
-        for (index, key) in state.replay[..replay_len]
-            .iter()
-            .flatten()
-            .copied()
-            .enumerate()
-        {
-            keys[index] = Some(key);
-            inputs[index] = input_from_replay(key);
-        }
-        let expected = u32::try_from(replay_len).unwrap_or_default();
-        state.replay = [None; REPLAY_CAPACITY];
-        state.replay_len = 0;
         drop(borrowed);
-        let inserted = unsafe {
-            SendInput(
-                &inputs[..replay_len],
-                i32::try_from(size_of::<INPUT>()).unwrap_or_default(),
-            )
-        };
-        let inserted_count = usize::try_from(inserted)
-            .unwrap_or_default()
-            .min(replay_len);
-        let retried = if inserted_count < replay_len {
-            unsafe {
-                SendInput(
-                    &inputs[inserted_count..replay_len],
-                    i32::try_from(size_of::<INPUT>()).unwrap_or_default(),
-                )
-            }
-        } else {
-            0
-        };
-        let delivered = inserted.saturating_add(retried);
-        if delivered != expected {
-            METRICS.record_input_replay_failure();
-            let delivered_count = usize::try_from(delivered)
-                .unwrap_or_default()
-                .min(replay_len);
-            compensate_replay(&keys[..delivered_count]);
-            let mut borrowed = slot.borrow_mut();
-            if let Some(state) = borrowed.as_mut() {
-                retain_undelivered_replay(state, &keys[..replay_len], delivered_count);
-                state
-                    .shared
-                    .cancelled_sequence
-                    .store(state.sequence.active_sequence(), Ordering::Release);
-                let _ = enter_fail_open(&state.shared, InputFailOpenReason::WakeFailure);
-                let _ = enqueue(
-                    state,
-                    InputAction::ReplayIncomplete {
-                        inserted: delivered,
-                        expected,
-                    },
-                );
-            }
-            return false;
-        }
         if let Some(fallback) = alt_fallback
             && !replay_alt_fallback(fallback)
         {
@@ -820,22 +771,11 @@ fn flush_replay() -> bool {
     })
 }
 
-fn retain_undelivered_replay(
-    state: &mut HookState,
-    replay: &[Option<ReplayKey>],
-    delivered: usize,
-) {
-    let pending = &replay[delivered.min(replay.len())..];
-    state.replay = [None; REPLAY_CAPACITY];
-    state.replay[..pending.len()].copy_from_slice(pending);
-    state.replay_len = pending.len();
-}
-
 fn replay_alt_fallback(fallback: AltFallback) -> bool {
     let direction = fallback.steps.signum();
     for _ in 0..fallback.steps.unsigned_abs() {
         let keys = alt_fallback_keys(fallback, direction);
-        if !send_replay_keys(&keys) {
+        if !send_alt_tab_fallback_keys(&keys) {
             return false;
         }
     }
@@ -845,9 +785,9 @@ fn replay_alt_fallback(fallback: AltFallback) -> bool {
 fn alt_fallback_keys(
     fallback: AltFallback,
     direction: i32,
-) -> [Option<ReplayKey>; REPLAY_CAPACITY] {
+) -> [Option<InjectedKey>; ALT_TAB_FALLBACK_INPUT_CAPACITY] {
     let reverse = direction < 0;
-    let mut keys = [None; REPLAY_CAPACITY];
+    let mut keys = [None; ALT_TAB_FALLBACK_INPUT_CAPACITY];
     let mut index = 0;
     if !reverse {
         index = append_shift_keys(&mut keys, index, fallback.shift_mask, Transition::Up);
@@ -857,27 +797,27 @@ fn alt_fallback_keys(
         index += 1;
     }
     if reverse && fallback.shift_mask == 0 {
-        keys[index] = Some(ReplayKey {
+        keys[index] = Some(InjectedKey {
             key: 0x10,
             transition: Transition::Down,
             extended: false,
         });
         index += 1;
     }
-    keys[index] = Some(ReplayKey {
+    keys[index] = Some(InjectedKey {
         key: 0x09,
         transition: Transition::Down,
         extended: false,
     });
     index += 1;
-    keys[index] = Some(ReplayKey {
+    keys[index] = Some(InjectedKey {
         key: 0x09,
         transition: Transition::Up,
         extended: false,
     });
     index += 1;
     if reverse && fallback.shift_mask == 0 {
-        keys[index] = Some(ReplayKey {
+        keys[index] = Some(InjectedKey {
             key: 0x10,
             transition: Transition::Up,
             extended: false,
@@ -896,14 +836,14 @@ fn alt_fallback_keys(
 }
 
 fn append_shift_keys(
-    keys: &mut [Option<ReplayKey>; REPLAY_CAPACITY],
+    keys: &mut [Option<InjectedKey>; ALT_TAB_FALLBACK_INPUT_CAPACITY],
     mut index: usize,
     mask: u8,
     transition: Transition,
 ) -> usize {
     for (bit, key) in [(0b001, 0xA0), (0b010, 0xA1), (0b100, 0x10)] {
         if mask & bit != 0 {
-            keys[index] = Some(ReplayKey {
+            keys[index] = Some(InjectedKey {
                 key,
                 transition,
                 extended: false,
@@ -914,22 +854,22 @@ fn append_shift_keys(
     index
 }
 
-fn alt_key(key: u16, transition: Transition) -> ReplayKey {
-    ReplayKey {
+fn alt_key(key: u16, transition: Transition) -> InjectedKey {
+    InjectedKey {
         key,
         transition,
         extended: key == 0xA5,
     }
 }
 
-fn send_replay_keys(keys: &[Option<ReplayKey>]) -> bool {
-    let mut inputs = [empty_input(); REPLAY_CAPACITY];
+fn send_alt_tab_fallback_keys(keys: &[Option<InjectedKey>]) -> bool {
+    let mut inputs = [empty_input(); ALT_TAB_FALLBACK_INPUT_CAPACITY];
     let count = keys
         .iter()
         .flatten()
         .enumerate()
         .map(|(index, key)| {
-            inputs[index] = input_from_replay(*key);
+            inputs[index] = input_from_injected_key(*key);
             index + 1
         })
         .last()
@@ -958,27 +898,6 @@ fn send_replay_keys(keys: &[Option<ReplayKey>]) -> bool {
     inserted.saturating_add(retry) == expected
 }
 
-fn compensate_replay(keys: &[Option<ReplayKey>]) {
-    let mut inputs = [empty_input(); REPLAY_CAPACITY];
-    let mut count = 0;
-    for key in keys.iter().flatten() {
-        inputs[count] = input_from_replay(ReplayKey {
-            key: key.key,
-            transition: Transition::Up,
-            extended: key.extended,
-        });
-        count += 1;
-    }
-    if count != 0 {
-        let _ = unsafe {
-            SendInput(
-                &inputs[..count],
-                i32::try_from(size_of::<INPUT>()).unwrap_or_default(),
-            )
-        };
-    }
-}
-
 fn empty_input() -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
@@ -987,7 +906,7 @@ fn empty_input() -> INPUT {
         },
     }
 }
-fn input_from_replay(key: ReplayKey) -> INPUT {
+fn input_from_injected_key(key: InjectedKey) -> INPUT {
     let mut flags = if key.extended {
         KEYEVENTF_EXTENDEDKEY
     } else {
@@ -1008,6 +927,69 @@ fn input_from_replay(key: ReplayKey) -> INPUT {
             },
         },
     }
+}
+
+fn cancel_native_start() -> bool {
+    let keys = [
+        InjectedKey {
+            key: SILENT_START_CANCELLATION_KEY.0,
+            transition: Transition::Down,
+            extended: false,
+        },
+        InjectedKey {
+            key: SILENT_START_CANCELLATION_KEY.0,
+            transition: Transition::Up,
+            extended: false,
+        },
+    ];
+    let inputs = keys.map(input_from_injected_key);
+    let inserted = unsafe {
+        SendInput(
+            &inputs,
+            i32::try_from(size_of::<INPUT>()).unwrap_or_default(),
+        )
+    };
+    if inserted == 2 {
+        return true;
+    }
+    if inserted == 1 {
+        let key_up = [input_from_injected_key(keys[1])];
+        let _ = unsafe {
+            SendInput(
+                &key_up,
+                i32::try_from(size_of::<INPUT>()).unwrap_or_default(),
+            )
+        };
+    }
+    false
+}
+
+fn pressed_keys() -> PressedKeys {
+    let mut pressed = PressedKeys::default();
+    for key in 0_u16..=u16::from(u8::MAX) {
+        pressed.set(key, unsafe { GetAsyncKeyState(i32::from(key)) } < 0);
+    }
+    pressed
+}
+
+fn resync_pressed_keys_if_requested() {
+    let requested = HOOK_STATE.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|state| {
+            state
+                .shared
+                .pressed_resync_requested
+                .swap(false, Ordering::AcqRel)
+        })
+    });
+    if !requested {
+        return;
+    }
+    let pressed = pressed_keys();
+    HOOK_STATE.with(|slot| {
+        if let Some(state) = slot.borrow_mut().as_mut() {
+            state.sequence.resync_pressed_keys(pressed);
+        }
+    });
 }
 fn heartbeat_stale(shared: &Shared) -> bool {
     tick_count().saturating_sub(shared.heartbeat.load(Ordering::Acquire))
@@ -1081,7 +1063,9 @@ fn try_recover_from_fail_open(shared: &Shared) {
     if shared.fail_open.load(Ordering::Acquire) && requested == completed {
         if shared.healthy_heartbeats.fetch_add(1, Ordering::AcqRel) >= 2 {
             shared.fail_open.store(false, Ordering::Release);
-            if shared.cleanup_requested_epoch.load(Ordering::Acquire) != completed {
+            if shared.cleanup_requested_epoch.load(Ordering::Acquire) == completed {
+                request_pressed_key_resync(shared);
+            } else {
                 shared.fail_open.store(true, Ordering::Release);
             }
             shared.healthy_heartbeats.store(0, Ordering::Release);
@@ -1091,7 +1075,19 @@ fn try_recover_from_fail_open(shared: &Shared) {
     }
 }
 
+fn request_pressed_key_resync(shared: &Shared) {
+    shared
+        .pressed_resync_requested
+        .store(true, Ordering::Release);
+    let thread_id = shared.worker_thread.load(Ordering::Acquire);
+    if thread_id != 0 {
+        let _ =
+            unsafe { PostThreadMessageW(thread_id, INPUT_RESYNC, WPARAM(0), LPARAM(0)) };
+    }
+}
+
 fn watchdog_tick() {
+    resync_pressed_keys_if_requested();
     if heartbeat_stale_shared() {
         HOOK_STATE.with(|slot| {
             if let Some(state) = slot.borrow().as_ref() {
@@ -1111,7 +1107,7 @@ fn heartbeat_stale_shared() -> bool {
 }
 
 fn cleanup_input_state() {
-    let mut direct_replay = false;
+    let mut direct_alt_tab_fallback = false;
     HOOK_STATE.with(|slot| {
         let mut borrowed = slot.borrow_mut();
         let Some(state) = borrowed.as_mut() else {
@@ -1137,15 +1133,11 @@ fn cleanup_input_state() {
                 decision.rejected_sequence == sequence,
             )
         };
-        let (replay, _, alt_fallback) = state.sequence.fail_open_replay(if rejected {
+        let (_, alt_fallback) = state.sequence.fail_open_cleanup(if rejected {
             0
         } else {
             acknowledged
         });
-        if state.replay_len == 0 {
-            state.replay[..replay.len()].copy_from_slice(&replay);
-            state.replay_len = state.replay.iter().flatten().count();
-        }
         state.alt_fallback = state.alt_fallback.or(alt_fallback);
         for slot in &state.shared.cycle_slots {
             slot.store(0, Ordering::Release);
@@ -1161,15 +1153,16 @@ fn cleanup_input_state() {
         } else {
             METRICS.record_input_cleanup_idle();
         }
-        let replay_required = state.replay_len != 0 || state.alt_fallback.is_some();
-        if !replay_required {
+        if state.alt_fallback.is_none() {
             mark_cleanup_complete(&state.shared, requested);
-        } else if !queue_replay(state.shared.worker_thread.load(Ordering::Acquire)) {
-            direct_replay = true;
+        } else if !queue_alt_tab_fallback(
+            state.shared.worker_thread.load(Ordering::Acquire),
+        ) {
+            direct_alt_tab_fallback = true;
         }
     });
-    if direct_replay {
-        let _ = flush_replay();
+    if direct_alt_tab_fallback {
+        let _ = flush_alt_tab_fallback();
     }
 }
 

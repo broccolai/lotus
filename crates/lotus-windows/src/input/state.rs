@@ -14,6 +14,7 @@ pub(super) enum Transition {
     Down,
     Up,
 }
+
 impl Transition {
     pub(super) const fn from_message(message: u32) -> Option<Self> {
         match message {
@@ -23,20 +24,15 @@ impl Transition {
         }
     }
 }
+
 #[derive(Clone, Copy)]
 pub(super) struct KeyEvent {
     pub(super) key: u16,
     pub(super) transition: Transition,
-    pub(super) extended: bool,
     pub(super) alt_down: bool,
     pub(super) self_injected: bool,
 }
-#[derive(Clone, Copy)]
-pub(super) struct ReplayKey {
-    pub(super) key: u16,
-    pub(super) transition: Transition,
-    pub(super) extended: bool,
-}
+
 #[derive(Clone, Copy)]
 pub(super) struct AltFallback {
     pub(super) steps: i32,
@@ -44,24 +40,76 @@ pub(super) struct AltFallback {
     pub(super) alt_key: u16,
     pub(super) shift_mask: u8,
 }
+
 #[derive(Clone, Copy)]
 pub(super) enum SequenceEffect {
     Action(InputAction),
     Cycle(Direction),
-    Replay([Option<ReplayKey>; 8]),
 }
+
 #[derive(Clone, Copy)]
 pub(super) enum HookDecision {
     Pass,
     Suppress,
     Effect(SequenceEffect),
     EffectAndPass(SequenceEffect),
+    EffectAndPassCancellingStart(SequenceEffect),
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct PressedKeys([u64; 4]);
+
+#[derive(Clone, Copy)]
+struct KeyStateChange {
+    was_down: bool,
+    is_down: bool,
+}
+
+impl PressedKeys {
+    pub(super) fn set(&mut self, key: u16, pressed: bool) {
+        let word = usize::from(key / 64);
+        let mask = 1_u64 << (key % 64);
+        if pressed {
+            self.0[word] |= mask;
+        } else {
+            self.0[word] &= !mask;
+        }
+    }
+
+    fn is_down(&self, key: u16) -> bool {
+        self.0[usize::from(key / 64)] & (1_u64 << (key % 64)) != 0
+    }
+
+    fn apply(&mut self, event: KeyEvent) -> KeyStateChange {
+        let was_down = self.is_down(event.key);
+        let is_down = event.transition == Transition::Down;
+        self.set(event.key, is_down);
+        KeyStateChange { was_down, is_down }
+    }
+
+    fn any_non_windows_down(&self) -> bool {
+        self.0
+            .iter()
+            .enumerate()
+            .any(|(index, word)| *word & !windows_mask(index) != 0)
+    }
+
+    fn any_windows_down(&self) -> bool {
+        self.is_down(VK_LWIN.0) || self.is_down(VK_RWIN.0)
+    }
+
+    fn another_windows_key_down(&self, key: u16) -> bool {
+        [VK_LWIN.0, VK_RWIN.0]
+            .into_iter()
+            .any(|windows_key| windows_key != key && self.is_down(windows_key))
+    }
 }
 
 pub(super) struct InputSequence {
     config: InputConfig,
-    windows: Option<u16>,
-    replayed: bool,
+    pressed: PressedKeys,
+    win_candidate: Option<u16>,
+    win_disqualified: bool,
     alt_active: bool,
     shift_mask: u8,
     alt_mask: u8,
@@ -69,17 +117,16 @@ pub(super) struct InputSequence {
     captured: Option<u16>,
     sequence: u64,
     next_sequence: u64,
-    pending_windows_replay: Option<(u64, u16)>,
     pending_alt_tab_replay: Option<(u64, i32)>,
-    passthrough_windows: u8,
-    windows_released_during_fail_open: bool,
 }
+
 impl InputSequence {
-    pub(super) fn new(config: InputConfig) -> Self {
+    pub(super) fn new(config: InputConfig, pressed: PressedKeys) -> Self {
         Self {
             config,
-            windows: None,
-            replayed: false,
+            pressed,
+            win_candidate: None,
+            win_disqualified: false,
             alt_active: false,
             shift_mask: 0,
             alt_mask: 0,
@@ -87,100 +134,50 @@ impl InputSequence {
             captured: None,
             sequence: 0,
             next_sequence: 1,
-            pending_windows_replay: None,
             pending_alt_tab_replay: None,
-            passthrough_windows: 0,
-            windows_released_during_fail_open: false,
         }
     }
+
     pub(super) const fn active_sequence(&self) -> u64 {
         self.sequence
     }
 
+    pub(super) fn resync_pressed_keys(&mut self, pressed: PressedKeys) {
+        self.pressed = pressed;
+        self.clear_win_candidate();
+    }
+
     pub(super) fn has_active_cleanup_state(&self) -> bool {
-        self.windows.is_some()
-            || self.captured.is_some()
-            || self.alt_active
-            || self.pending_windows_replay.is_some()
-            || self.pending_alt_tab_replay.is_some()
+        self.captured.is_some() || self.alt_active || self.pending_alt_tab_replay.is_some()
     }
-    pub(super) fn defer_replay_pending_windows(
-        &mut self,
-        event: KeyEvent,
-        replay_pending: bool,
-    ) -> bool {
-        let bit = windows_bit(event.key);
-        if event.transition == Transition::Up && self.passthrough_windows & bit != 0 {
-            self.passthrough_windows &= !bit;
-            return true;
-        }
-        if bit != 0
-            && event.transition == Transition::Down
-            && replay_pending
-            && self.windows.is_none()
-            && self.pending_alt_tab_replay.is_none()
-        {
-            self.passthrough_windows |= bit;
-            return true;
-        }
-        false
-    }
-    pub(super) fn transition(&mut self, event: KeyEvent) -> HookDecision {
+
+    pub(super) fn transition(&mut self, event: KeyEvent) -> (HookDecision, bool) {
         if event.self_injected {
-            return HookDecision::Pass;
+            return (HookDecision::Pass, false);
         }
+        let change = self.pressed.apply(event);
+        if change.was_down == change.is_down {
+            return (HookDecision::Pass, false);
+        }
+
         self.track_shift(event);
         self.track_alt(event);
         if self.config.custom_alt_tab
             && let Some(decision) = self.alt_tab(event)
         {
-            return decision;
+            return (decision, false);
         }
         if self.config.windows_key_search {
             return self.windows_key(event);
         }
-        HookDecision::Pass
+        (HookDecision::Pass, false)
     }
-    pub(super) fn fail_open_replay(
+
+    pub(super) fn fail_open_cleanup(
         &mut self,
         acknowledged: u64,
-    ) -> ([Option<ReplayKey>; 8], u64, Option<AltFallback>) {
+    ) -> (u64, Option<AltFallback>) {
         let sequence = self.sequence;
-        let mut replay = [None; 8];
-        match (self.windows, self.replayed, self.pending_windows_replay) {
-            (Some(key), false, _) if self.windows_released_during_fail_open => {
-                replay[0] = Some(ReplayKey {
-                    key,
-                    transition: Transition::Down,
-                    extended: true,
-                });
-                replay[1] = Some(ReplayKey {
-                    key,
-                    transition: Transition::Up,
-                    extended: true,
-                });
-            }
-            (Some(key), false, _) => {
-                replay[0] = Some(ReplayKey {
-                    key,
-                    transition: Transition::Down,
-                    extended: true,
-                });
-            }
-            (None, _, Some((pending, key))) if pending > acknowledged => {
-                replay[0] = Some(ReplayKey {
-                    key,
-                    transition: Transition::Down,
-                    extended: true,
-                });
-                replay[1] = Some(ReplayKey {
-                    key,
-                    transition: Transition::Up,
-                    extended: true,
-                });
-            }
-            _ => {}
-        }
         let alt_fallback = self.pending_alt_tab_replay.and_then(|(pending, steps)| {
             (pending > acknowledged).then_some(AltFallback {
                 steps,
@@ -190,32 +187,28 @@ impl InputSequence {
             })
         });
 
-        self.windows = None;
-        self.replayed = false;
+        self.clear_win_candidate();
         self.alt_active = false;
         self.captured = None;
-        self.pending_windows_replay = None;
         self.pending_alt_tab_replay = None;
-        self.windows_released_during_fail_open = false;
-        (replay, sequence, alt_fallback)
+        (sequence, alt_fallback)
     }
 
-    pub(super) fn capture_fail_open_release(&mut self, event: KeyEvent) -> bool {
+    pub(super) fn capture_fail_open_event(&mut self, event: KeyEvent) {
+        if event.self_injected {
+            return;
+        }
+        let change = self.pressed.apply(event);
+        if change.was_down == change.is_down {
+            return;
+        }
         self.track_shift(event);
         self.track_alt(event);
-        let bit = windows_bit(event.key);
-        if event.transition == Transition::Up && self.passthrough_windows & bit != 0 {
-            self.passthrough_windows &= !bit;
-            return false;
-        }
-        let captures_release = event.transition == Transition::Up
-            && !self.replayed
-            && self.windows == Some(event.key);
-        self.windows_released_during_fail_open |= captures_release;
-        captures_release
+        self.clear_win_candidate();
     }
 
     pub(super) fn invalidate(&mut self) -> u64 {
+        self.clear_win_candidate();
         self.alt_active = false;
         self.captured = None;
         self.sequence
@@ -229,6 +222,7 @@ impl InputSequence {
             self.pending_alt_tab_replay = None;
         }
     }
+
     fn alt_tab(&mut self, event: KeyEvent) -> Option<HookDecision> {
         if event.key == VK_LMENU.0 || event.key == VK_RMENU.0 {
             if event.transition == Transition::Up && self.alt_active {
@@ -343,73 +337,53 @@ impl InputSequence {
             Transition::Up => self.alt_mask &= !bit,
         }
     }
-    fn windows_key(&mut self, event: KeyEvent) -> HookDecision {
-        if event.key == VK_LWIN.0 || event.key == VK_RWIN.0 {
-            if event.transition == Transition::Down {
-                if self.windows.is_none() && !self.replayed {
-                    self.windows = Some(event.key);
+
+    fn windows_key(&mut self, event: KeyEvent) -> (HookDecision, bool) {
+        let was_disqualified = self.win_disqualified;
+        if is_windows_key(event.key) {
+            match event.transition {
+                Transition::Down if self.win_candidate.is_none() => {
+                    self.win_candidate = Some(event.key);
+                    self.win_disqualified = self.pressed.any_non_windows_down()
+                        || self.pressed.another_windows_key_down(event.key);
                 }
-                return HookDecision::Suppress;
-            }
-            let action = if self.replayed {
-                self.windows.map(|key| {
-                    SequenceEffect::Replay([
-                        Some(ReplayKey {
-                            key,
-                            transition: Transition::Up,
-                            extended: true,
-                        }),
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                    ])
-                })
-            } else {
-                self.windows.map(|_| {
+                Transition::Down => self.win_disqualified = true,
+                Transition::Up
+                    if self.win_candidate == Some(event.key)
+                        && !self.win_disqualified
+                        && !self.pressed.any_windows_down() =>
+                {
+                    self.clear_win_candidate();
                     self.sequence = self.next_sequence;
                     self.next_sequence += 1;
-                    self.pending_windows_replay =
-                        self.windows.map(|key| (self.sequence, key));
-                    SequenceEffect::Action(InputAction::ToggleSearch {
-                        sequence: self.sequence,
-                        captured_at: 0,
-                    })
-                })
-            };
-            self.windows = None;
-            self.replayed = false;
-            return action.map_or(HookDecision::Suppress, HookDecision::Effect);
+                    return (
+                        HookDecision::EffectAndPassCancellingStart(SequenceEffect::Action(
+                            InputAction::ToggleSearch {
+                                sequence: self.sequence,
+                                captured_at: 0,
+                            },
+                        )),
+                        false,
+                    );
+                }
+                Transition::Up if !self.pressed.any_windows_down() => {
+                    self.clear_win_candidate();
+                }
+                Transition::Up => {}
+            }
+        } else if event.transition == Transition::Down && self.win_candidate.is_some() {
+            self.win_disqualified = true;
         }
-        if !self.replayed
-            && event.transition == Transition::Down
-            && let Some(windows) = self.windows
-        {
-            self.replayed = true;
-            self.pending_windows_replay = None;
-            return HookDecision::Effect(SequenceEffect::Replay([
-                Some(ReplayKey {
-                    key: windows,
-                    transition: Transition::Down,
-                    extended: true,
-                }),
-                Some(ReplayKey {
-                    key: event.key,
-                    transition: Transition::Down,
-                    extended: event.extended,
-                }),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            ]));
-        }
-        HookDecision::Pass
+
+        (
+            HookDecision::Pass,
+            !was_disqualified && self.win_disqualified,
+        )
+    }
+
+    fn clear_win_candidate(&mut self) {
+        self.win_candidate = None;
+        self.win_disqualified = false;
     }
 }
 
@@ -420,12 +394,16 @@ const fn direction_delta(direction: Direction) -> i32 {
     }
 }
 
-const fn windows_bit(key: u16) -> u8 {
-    if key == VK_LWIN.0 {
-        0b001
-    } else if key == VK_RWIN.0 {
-        0b010
-    } else {
-        0
+const fn is_windows_key(key: u16) -> bool {
+    key == VK_LWIN.0 || key == VK_RWIN.0
+}
+
+fn windows_mask(word: usize) -> u64 {
+    let mut mask = 0_u64;
+    for key in [VK_LWIN.0, VK_RWIN.0] {
+        if usize::from(key / 64) == word {
+            mask |= 1_u64 << (key % 64);
+        }
     }
+    mask
 }
