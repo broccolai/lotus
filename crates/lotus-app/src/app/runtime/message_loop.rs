@@ -447,7 +447,7 @@ impl MessageLoop<'_, '_> {
             )?;
         }
         if wakes.icon_hydration {
-            self.auxiliary.drain_hydrated_icons()?;
+            self.auxiliary.drain_hydrated_icons(self.dock_model)?;
             changed = true;
         }
 

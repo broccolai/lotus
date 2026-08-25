@@ -2,6 +2,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::NonNull;
 
+use lotus_core::window::TrackedWindowKey;
 use lotus_ui::icon::RasterIcon;
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Gdi::{
@@ -13,7 +14,11 @@ use windows::Win32::UI::Shell::{
     SHDefExtractIconW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_PIDL,
     SHGetFileInfoW, SHParseDisplayName,
 };
-use windows::Win32::UI::WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CopyIcon, DI_NORMAL, DestroyIcon, DrawIconEx, GCLP_HICON, GCLP_HICONSM,
+    GET_CLASS_LONG_INDEX, GetClassLongPtrW, HICON, ICON_BIG, ICON_SMALL, ICON_SMALL2,
+    SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_GETICON,
+};
 use windows::core::{Error, PCWSTR};
 
 use super::{CacheKey, NativeIconError};
@@ -30,15 +35,65 @@ pub(super) fn extract_icon(
         return Ok(None);
     };
 
-    let black = render_icon(icon.get(), key.size, 0)?;
-    let white = render_icon(icon.get(), key.size, u8::MAX)?;
-    let pixels = compose_premultiplied_bgra(&black, &white);
-    Ok(Some(RasterIcon::new(
+    rasterize_icon(
+        icon.get(),
         format!("native:{}@{}px", key.normalized_path, key.size),
         key.size,
-        key.size,
-        pixels,
-    )?))
+    )
+    .map(Some)
+}
+
+pub(super) fn copy_window_icon(window: TrackedWindowKey) -> Option<OwnedIcon> {
+    crate::window_tracker::with_live_tracked_window(window, |hwnd| {
+        let icon = window_icon(hwnd, usize::try_from(ICON_SMALL2).ok()?)
+            .or_else(|| window_icon(hwnd, usize::try_from(ICON_SMALL).ok()?))
+            .or_else(|| window_icon(hwnd, usize::try_from(ICON_BIG).ok()?))
+            .or_else(|| class_icon(hwnd, GCLP_HICONSM))
+            .or_else(|| class_icon(hwnd, GCLP_HICON));
+        icon.and_then(copy_icon)
+    })
+    .flatten()
+}
+
+pub(super) fn rasterize_icon(
+    icon: HICON,
+    identity: String,
+    size: u32,
+) -> Result<RasterIcon, NativeIconError> {
+    let black = render_icon(icon, size, 0)?;
+    let white = render_icon(icon, size, u8::MAX)?;
+    let pixels = compose_premultiplied_bgra(&black, &white);
+    RasterIcon::new(identity, size, size, pixels).map_err(NativeIconError::from)
+}
+
+fn window_icon(hwnd: windows::Win32::Foundation::HWND, kind: usize) -> Option<HICON> {
+    let mut result = usize::default();
+    let sent = unsafe {
+        SendMessageTimeoutW(
+            hwnd,
+            WM_GETICON,
+            windows::Win32::Foundation::WPARAM(kind),
+            windows::Win32::Foundation::LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            100,
+            Some(&raw mut result),
+        )
+    };
+    (sent.0 != 0).then_some(())?;
+    (!result.eq(&0)).then(|| HICON(std::ptr::with_exposed_provenance_mut(result)))
+}
+
+fn class_icon(
+    hwnd: windows::Win32::Foundation::HWND,
+    index: GET_CLASS_LONG_INDEX,
+) -> Option<HICON> {
+    let icon = unsafe { GetClassLongPtrW(hwnd, index) };
+    (icon != 0).then(|| HICON(std::ptr::with_exposed_provenance_mut(icon)))
+}
+
+fn copy_icon(icon: HICON) -> Option<OwnedIcon> {
+    let icon = unsafe { CopyIcon(icon) }.ok()?;
+    (!icon.0.is_null()).then_some(OwnedIcon(icon))
 }
 
 fn load_shell_icon(
@@ -199,10 +254,10 @@ fn raster_byte_len(size: u32) -> Result<usize, NativeIconError> {
     .map_err(|_| NativeIconError::RasterTooLarge)
 }
 
-struct OwnedIcon(HICON);
+pub(super) struct OwnedIcon(HICON);
 
 impl OwnedIcon {
-    const fn get(&self) -> HICON {
+    pub(super) const fn get(&self) -> HICON {
         self.0
     }
 }

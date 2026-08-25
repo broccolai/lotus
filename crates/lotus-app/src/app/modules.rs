@@ -44,13 +44,14 @@ pub(super) struct ModuleHost {
 impl ModuleHost {
     pub(super) fn create(
         dock: &DockWindow,
-        dock_model: &DockRuntime,
+        dock_model: &mut DockRuntime,
         usage: SearchUsage,
         usage_store: SearchUsageStore,
         modules_active: bool,
     ) -> Result<Self, AppError> {
         let search_window = dock.create_search_window()?;
         let icon_hydrator = IconHydrator::start()?;
+        dock_model.attach_icon_hydrator(icon_hydrator.dock_client());
         lotus_windows::backdrop::apply_search_settings(
             search_window.handle(),
             dock_model.settings(),
@@ -559,19 +560,25 @@ impl ModuleHost {
             .hydrate_application_previews(&self.applications, dock_items);
     }
 
-    pub(super) fn drain_hydrated_icons(&mut self) -> Result<(), AppError> {
+    pub(super) fn drain_hydrated_icons(
+        &mut self,
+        dock_model: &mut DockRuntime,
+    ) -> Result<(), AppError> {
         let mut launcher = Vec::new();
         let mut switcher = Vec::new();
+        let mut dock = Vec::new();
 
         for result in self.icon_hydrator.drain() {
             match result {
                 IconHydrationResult::Launcher(result) => launcher.push(result),
                 IconHydrationResult::Switcher(result) => switcher.push(result),
+                IconHydrationResult::Dock(result) => dock.push(result),
             }
         }
 
         let _changed = self.launcher.drain_hydrated_icons(launcher)?;
         self.switcher.drain_hydrated_icons(switcher);
+        dock_model.drain_hydrated_window_icons(dock);
         Ok(())
     }
 

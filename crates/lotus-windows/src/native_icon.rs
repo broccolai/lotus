@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use lotus_core::window::TrackedWindowKey;
 use lotus_ui::icon::{RasterIcon, RasterIconError};
 use thiserror::Error;
 use windows::core::Error;
@@ -88,4 +89,20 @@ impl NativeIconCache {
         }
         Ok(image)
     }
+}
+
+pub fn window_icon(
+    window: TrackedWindowKey,
+    size: u32,
+) -> Result<Option<RasterIcon>, NativeIconError> {
+    source::validate_size(size)?;
+    let Some(icon) = raster::copy_window_icon(window) else {
+        return Ok(None);
+    };
+    raster::rasterize_icon(
+        icon.get(),
+        format!("window:{}@{size}px", window.id.get()),
+        size,
+    )
+    .map(Some)
 }

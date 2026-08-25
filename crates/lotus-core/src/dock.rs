@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::application::{
-    ApplicationIdentity, ApplicationKey, ApplicationResolution, LaunchSpec,
-    PinnedApplicationAssignment, RegisteredApplication, WindowApplicationAssignments,
-    is_reliable_application_identity, normalized_path,
+    ApplicationIdentity, ApplicationKey, ApplicationPresentationIcon,
+    ApplicationResolution, LaunchSpec, PinnedApplicationAssignment, RegisteredApplication,
+    WindowApplicationAssignments, is_reliable_application_identity, normalized_path,
 };
 use crate::settings::PinnedApp;
 use crate::window::WindowInfo;
@@ -18,6 +18,7 @@ pub struct DockItem {
     pub arguments: Option<String>,
     pub executable_path: String,
     pub icon_source: String,
+    pub presentation_icon: ApplicationPresentationIcon,
     pub app_user_model_id: Option<String>,
     pub is_pinned: bool,
     pub windows: Vec<WindowInfo>,
@@ -113,6 +114,15 @@ pub fn project_dock(windows: &[WindowInfo], settings: DockProjection<'_>) -> Vec
             },
             |window| path_text(&window.executable_path),
         );
+        let icon_source = registered.map_or_else(
+            || {
+                pinned
+                    .icon_source
+                    .clone()
+                    .unwrap_or_else(|| executable_path.clone())
+            },
+            |application| application.icon_source.clone(),
+        );
 
         items.push(DockItem {
             application_key: key,
@@ -123,15 +133,8 @@ pub fn project_dock(windows: &[WindowInfo], settings: DockProjection<'_>) -> Vec
             ),
             launch_target: pinned.launch_target.clone(),
             arguments: pinned.arguments.clone(),
-            icon_source: registered.map_or_else(
-                || {
-                    pinned
-                        .icon_source
-                        .clone()
-                        .unwrap_or_else(|| executable_path.clone())
-                },
-                |application| application.icon_source.clone(),
-            ),
+            icon_source: icon_source.clone(),
+            presentation_icon: ApplicationPresentationIcon::Source(icon_source),
             app_user_model_id: pinned
                 .app_user_model_id
                 .as_deref()
@@ -193,7 +196,7 @@ fn append_unpinned(
     }
 
     groups.sort_by(|left, right| {
-        group_name(left, applications).cmp(&group_name(right, applications))
+        group_name(left, assignments).cmp(&group_name(right, assignments))
     });
 
     items.extend(groups.into_iter().map(|(key, registered_index, windows)| {
@@ -209,16 +212,20 @@ fn append_unpinned(
         let executable_path = windows
             .first()
             .map_or_else(String::new, |window| path_text(&window.executable_path));
+        let Some(presentation) = windows
+            .iter()
+            .find_map(|window| assignments.presentation_by_window.get(&window.key()))
+        else {
+            unreachable!("resolved dock groups always have centralized presentation")
+        };
+        let icon_source = presentation.icon.fallback_path().to_owned();
         DockItem {
             application_key: key.clone(),
             id: registered.map_or_else(
                 || application_key_text(&key),
                 |application| application.id.clone(),
             ),
-            display_name: registered.map_or_else(
-                || file_stem(&executable_path),
-                |application| application.name.clone(),
-            ),
+            display_name: presentation.display_name.clone(),
             launch_target: registered.map_or_else(
                 || {
                     unregistered_launch.as_ref().map_or_else(
@@ -232,10 +239,8 @@ fn append_unpinned(
                 || unregistered_launch.and_then(|launch| launch.arguments),
                 |application| application.launch.arguments.clone(),
             ),
-            icon_source: registered.map_or_else(
-                || executable_path.clone(),
-                |application| application.icon_source.clone(),
-            ),
+            icon_source,
+            presentation_icon: presentation.icon.clone(),
             app_user_model_id: registered
                 .and_then(|application| application.app_user_model_id.clone())
                 .or_else(|| {
@@ -301,19 +306,15 @@ fn application_key_text(key: &ApplicationKey) -> String {
 
 fn group_name(
     group: &(ApplicationKey, Option<usize>, Vec<WindowInfo>),
-    applications: &[RegisteredApplication],
+    assignments: &WindowApplicationAssignments,
 ) -> String {
     group
-        .1
-        .and_then(|index| applications.get(index))
-        .map_or_else(
-            || {
-                group.2.first().map_or_else(String::new, |window| {
-                    file_stem(&path_text(&window.executable_path))
-                })
-            },
-            |application| application.name.clone(),
-        )
+        .2
+        .iter()
+        .find_map(|window| assignments.presentation_by_window.get(&window.key()))
+        .map_or_else(String::new, |presentation| {
+            presentation.display_name.clone()
+        })
         .to_lowercase()
 }
 
@@ -329,18 +330,6 @@ fn apply_saved_order(items: &mut [DockItem], saved_order: &[String]) {
             .copied()
             .unwrap_or(usize::MAX)
     });
-}
-
-fn file_stem(path: &str) -> String {
-    if path.eq_ignore_ascii_case(
-        r"shell:AppsFolder\windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel",
-    ) {
-        return "Settings".to_owned();
-    }
-    let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
-    name.rsplit_once('.')
-        .map_or(name, |(stem, _)| stem)
-        .to_owned()
 }
 
 fn case_key(value: &str) -> String {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use lotus_core::application::WindowApplicationAssignments;
+use lotus_core::application::{ApplicationPresentationIcon, WindowApplicationAssignments};
 use lotus_core::dock::DockItem;
 use lotus_core::notification::count_for_item;
 use lotus_core::settings::{DockSettings, DockZone, NotificationBadgeStyle};
@@ -61,6 +61,14 @@ impl DockRuntime {
                     Some(&item.id),
                     Path::new(&item.executable_path),
                 )
+                .or_else(|| match &item.presentation_icon {
+                    ApplicationPresentationIcon::NativeWindow { key, .. } => self
+                        .hydrated_window_icons
+                        .get(&item.id)
+                        .filter(|icon| icon.window == *key && icon.pixel_size == icon_size)
+                        .and_then(|icon| icon.icon.clone()),
+                    ApplicationPresentationIcon::Source(_) => None,
+                })
                 .or_else(|| {
                     self.native_icons
                         .icon(Path::new(&item.icon_source), icon_size)

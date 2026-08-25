@@ -156,6 +156,27 @@ impl InputSequence {
             return (HookDecision::Pass, false);
         }
         let change = self.pressed.apply(event);
+        let repeated_alt_tab = self.config.custom_alt_tab
+            && event.key == VK_TAB.0
+            && change.was_down
+            && change.is_down;
+        if repeated_alt_tab {
+            if self.alt_active {
+                let direction = if self.shift_mask != 0 {
+                    Direction::Reverse
+                } else {
+                    Direction::Forward
+                };
+                self.record_alt_tab_cycle(direction);
+                return (
+                    HookDecision::Effect(SequenceEffect::Cycle(direction)),
+                    false,
+                );
+            }
+            if event.alt_down || self.captured == Some(VK_TAB.0) {
+                return (HookDecision::Suppress, false);
+            }
+        }
         if change.was_down == change.is_down {
             return (HookDecision::Pass, false);
         }

@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
-use lotus_core::window::WindowId;
+use lotus_core::application::ApplicationPresentationIcon;
+use lotus_core::window::{TrackedWindowKey, WindowId};
 use lotus_ui::icon::RasterIcon;
 use thiserror::Error;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -29,11 +30,19 @@ pub struct LauncherIconRequest {
 #[derive(Clone, Debug)]
 pub struct SwitcherIconRequest {
     pub generation: u64,
-    pub window: WindowId,
-    pub executable_path: PathBuf,
+    pub window: TrackedWindowKey,
+    pub presentation_icon: Option<ApplicationPresentationIcon>,
     pub custom_image_path: Option<PathBuf>,
     pub pixel_size: u32,
     pub settings_revision: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct DockIconRequest {
+    pub identity: String,
+    pub window: TrackedWindowKey,
+    pub fallback_path: PathBuf,
+    pub pixel_size: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -54,10 +63,19 @@ pub struct HydratedSwitcherIcon {
     pub icon: Option<RasterIcon>,
 }
 
+#[derive(Clone, Debug)]
+pub struct HydratedDockIcon {
+    pub identity: String,
+    pub window: TrackedWindowKey,
+    pub pixel_size: u32,
+    pub icon: Option<RasterIcon>,
+}
+
 #[derive(Debug)]
 pub enum IconHydrationResult {
     Launcher(HydratedLauncherIcon),
     Switcher(HydratedSwitcherIcon),
+    Dock(HydratedDockIcon),
 }
 
 #[derive(Debug, Error)]
@@ -75,10 +93,16 @@ pub struct LauncherIconClient {
 enum Consumer {
     Launcher,
     Switcher,
+    Dock,
 }
 
 #[derive(Clone)]
 pub struct SwitcherIconClient {
+    shared: Arc<SharedState>,
+}
+
+#[derive(Clone)]
+pub struct DockIconClient {
     shared: Arc<SharedState>,
 }
 
@@ -102,6 +126,7 @@ struct SharedState {
 struct State {
     launcher: Option<Vec<LauncherIconRequest>>,
     switcher: Option<Vec<SwitcherIconRequest>>,
+    dock: Option<Vec<DockIconRequest>>,
     next: Consumer,
     results: Vec<IconHydrationResult>,
 }
@@ -112,6 +137,7 @@ impl IconHydrator {
             state: Mutex::new(State {
                 launcher: None,
                 switcher: None,
+                dock: None,
                 next: Consumer::Launcher,
                 results: Vec::new(),
             }),
@@ -138,6 +164,12 @@ impl IconHydrator {
 
     pub fn switcher_client(&self) -> SwitcherIconClient {
         SwitcherIconClient {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
+    pub fn dock_client(&self) -> DockIconClient {
+        DockIconClient {
             shared: Arc::clone(&self.shared),
         }
     }
@@ -182,6 +214,16 @@ impl SwitcherIconClient {
     }
 }
 
+impl DockIconClient {
+    pub fn request_dock(&self, requests: Vec<DockIconRequest>) {
+        self.request(Work::Dock(requests));
+    }
+
+    fn request(&self, work: Work) {
+        request(&self.shared, work);
+    }
+}
+
 fn request(shared: &SharedState, work: Work) {
     let mut state = lock(&shared.state);
     if shared.stopping.load(Ordering::Acquire) {
@@ -197,6 +239,7 @@ fn request(shared: &SharedState, work: Work) {
             }
             state.switcher = (!requests.is_empty()).then_some(requests);
         }
+        Work::Dock(requests) => state.dock = (!requests.is_empty()).then_some(requests),
     }
     drop(state);
     shared.wake.notify_one();
@@ -205,6 +248,7 @@ fn request(shared: &SharedState, work: Work) {
 enum Work {
     Launcher(Vec<LauncherIconRequest>),
     Switcher(Vec<SwitcherIconRequest>),
+    Dock(Vec<DockIconRequest>),
 }
 
 fn hydrate_icons(shared: &SharedState) {
@@ -234,6 +278,12 @@ fn hydrate_icons(shared: &SharedState) {
                     ))
                 })
                 .collect(),
+            Work::Dock(requests) => requests
+                .iter()
+                .map(|request| {
+                    IconHydrationResult::Dock(hydrate_dock_icon(request, &mut native_icons))
+                })
+                .collect(),
         };
         publish(results, shared);
     }
@@ -250,17 +300,23 @@ fn next_work(shared: &SharedState) -> Option<Work> {
                 .launcher
                 .take()
                 .map(Work::Launcher)
-                .or_else(|| state.switcher.take().map(Work::Switcher)),
+                .or_else(|| state.switcher.take().map(Work::Switcher))
+                .or_else(|| take_dock_quantum(&mut state)),
             Consumer::Switcher => state
                 .switcher
                 .take()
                 .map(Work::Switcher)
+                .or_else(|| take_dock_quantum(&mut state))
                 .or_else(|| state.launcher.take().map(Work::Launcher)),
+            Consumer::Dock => take_dock_quantum(&mut state)
+                .or_else(|| state.launcher.take().map(Work::Launcher))
+                .or_else(|| state.switcher.take().map(Work::Switcher)),
         };
         if let Some(work) = work {
             state.next = match work {
                 Work::Launcher(_) => Consumer::Switcher,
-                Work::Switcher(_) => Consumer::Launcher,
+                Work::Switcher(_) => Consumer::Dock,
+                Work::Dock(_) => Consumer::Launcher,
             };
             return Some(work);
         }
@@ -268,6 +324,34 @@ fn next_work(shared: &SharedState) -> Option<Work> {
             .wake
             .wait(state)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+}
+
+fn take_dock_quantum(state: &mut State) -> Option<Work> {
+    let mut requests = state.dock.take()?;
+    let remainder = requests.split_off(1);
+    state.dock = (!remainder.is_empty()).then_some(remainder);
+    Some(Work::Dock(requests))
+}
+
+fn hydrate_dock_icon(
+    request: &DockIconRequest,
+    native_icons: &mut NativeIconCache,
+) -> HydratedDockIcon {
+    let icon = crate::native_icon::window_icon(request.window, request.pixel_size)
+        .ok()
+        .flatten()
+        .or_else(|| {
+            native_icons
+                .icon(&request.fallback_path, request.pixel_size)
+                .ok()
+                .flatten()
+        });
+    HydratedDockIcon {
+        identity: request.identity.clone(),
+        window: request.window,
+        pixel_size: request.pixel_size,
+        icon,
     }
 }
 
@@ -304,15 +388,26 @@ fn hydrate_switcher_icon(
         .custom_image_path
         .as_deref()
         .and_then(|path| custom_images.image(path).ok())
-        .or_else(|| {
-            native_icons
-                .icon(&request.executable_path, request.pixel_size)
+        .or_else(|| match request.presentation_icon.as_ref()? {
+            ApplicationPresentationIcon::Source(path) => native_icons
+                .icon(path.as_ref(), request.pixel_size)
                 .ok()
-                .flatten()
+                .flatten(),
+            ApplicationPresentationIcon::NativeWindow { key, fallback_path } => {
+                crate::native_icon::window_icon(*key, request.pixel_size)
+                    .ok()
+                    .flatten()
+                    .or_else(|| {
+                        native_icons
+                            .icon(fallback_path.as_ref(), request.pixel_size)
+                            .ok()
+                            .flatten()
+                    })
+            }
         });
     HydratedSwitcherIcon {
         generation: request.generation,
-        window: request.window,
+        window: request.window.id,
         pixel_size: request.pixel_size,
         settings_revision: request.settings_revision,
         icon,

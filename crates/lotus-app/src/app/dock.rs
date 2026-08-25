@@ -23,6 +23,7 @@ use lotus_windows::custom_image::{
     CustomImageCache, MascotAnimation, MascotLoopCount, load_mascot_image,
 };
 use lotus_windows::graphics::assets::SvgAsset;
+use lotus_windows::icon_hydrator::{DockIconClient, DockIconRequest, HydratedDockIcon};
 use lotus_windows::media::decode_artwork;
 use lotus_windows::native_icon::NativeIconCache;
 use lotus_windows::search_catalog::{
@@ -47,6 +48,8 @@ pub(super) struct DockRuntime {
     model: DockModel,
     scene: DockScene,
     native_icons: NativeIconCache,
+    icon_hydrator: Option<DockIconClient>,
+    hydrated_window_icons: HashMap<String, HydratedDockIcon>,
     custom_images: CustomImageCache,
     notifications: Vec<NotificationSource>,
     interaction: DockInteraction,
@@ -104,6 +107,8 @@ impl DockRuntime {
             model: DockModel::new(settings, settings_store, items),
             scene,
             native_icons: NativeIconCache::default(),
+            icon_hydrator: None,
+            hydrated_window_icons: HashMap::new(),
             custom_images: CustomImageCache::default(),
             notifications: Vec::new(),
             interaction: DockInteraction::new(drag_threshold),
@@ -155,6 +160,7 @@ impl DockRuntime {
         let mut items = self.projected_items(windows);
         self.merge_transient_unpinned(&mut items, windows);
         self.model.rebuild(items);
+        self.retain_current_window_icons();
         let final_items = self.scene_items();
         if let Some(transition) = departure_transition(
             &previous_model,
@@ -171,6 +177,7 @@ impl DockRuntime {
             self.exit_deadline = None;
         }
         self.mark_changed();
+        self.request_native_window_icons();
     }
 
     pub(in crate::app) fn registered_application_for_item(
@@ -246,11 +253,13 @@ impl DockRuntime {
     }
 
     pub(super) fn refresh_scene_items(&mut self) {
+        self.retain_current_window_icons();
         let scene_items = self.scene_items();
         self.scene.replace_items(scene_items);
         self.pending_items = None;
         self.exit_deadline = None;
         self.mark_changed();
+        self.request_native_window_icons();
     }
 
     pub(super) fn advance_departure(&mut self, now: Instant) -> bool {
@@ -465,6 +474,101 @@ impl DockRuntime {
                 .flatten()
                 .map(DockIcon::Raster)
         })
+    }
+
+    pub(in crate::app) fn drain_hydrated_window_icons(
+        &mut self,
+        results: impl IntoIterator<Item = HydratedDockIcon>,
+    ) -> bool {
+        let icon_size = self
+            .scene
+            .icon_size_pixels()
+            .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
+        let mut changed = false;
+
+        for result in results {
+            let current = self.model.items().iter().any(|item| {
+                item.id == result.identity
+                    && item.presentation_icon.native_window() == Some(result.window)
+                    && result.pixel_size == icon_size
+            });
+            if current && result.icon.is_some() {
+                self.hydrated_window_icons
+                    .insert(result.identity.clone(), result);
+                changed = true;
+            }
+        }
+        if changed {
+            self.refresh_scene_items();
+        }
+        changed
+    }
+
+    fn request_native_window_icons(&self) {
+        let pixel_size = self
+            .scene
+            .icon_size_pixels()
+            .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
+        let requests = self
+            .model
+            .items()
+            .iter()
+            .filter_map(|item| {
+                let window = item.presentation_icon.native_window()?;
+                if self
+                    .hydrated_window_icons
+                    .get(&item.id)
+                    .is_some_and(|icon| {
+                        icon.window == window && icon.pixel_size == pixel_size
+                    })
+                {
+                    return None;
+                }
+                let identity = item.application_identity();
+                crate::app::icon_override::application_icon_path_for_identity(
+                    self.model.settings(),
+                    &identity,
+                )
+                .is_none()
+                .then(|| DockIconRequest {
+                    identity: item.id.clone(),
+                    window,
+                    fallback_path: item.icon_source.clone().into(),
+                    pixel_size,
+                })
+            })
+            .collect();
+        if let Some(icon_hydrator) = &self.icon_hydrator {
+            icon_hydrator.request_dock(requests);
+        }
+    }
+
+    fn retain_current_window_icons(&mut self) {
+        let pixel_size = self
+            .scene
+            .icon_size_pixels()
+            .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
+        let current = self
+            .model
+            .items()
+            .iter()
+            .filter_map(|item| {
+                item.presentation_icon
+                    .native_window()
+                    .map(|window| (item.id.clone(), window))
+            })
+            .collect::<HashMap<_, _>>();
+        self.hydrated_window_icons.retain(|identity, icon| {
+            icon.pixel_size == pixel_size
+                && current
+                    .get(identity)
+                    .is_some_and(|window| *window == icon.window)
+        });
+    }
+
+    pub(in crate::app) fn attach_icon_hydrator(&mut self, icon_hydrator: DockIconClient) {
+        self.icon_hydrator = Some(icon_hydrator);
+        self.request_native_window_icons();
     }
 }
 

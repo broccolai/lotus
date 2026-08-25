@@ -208,7 +208,7 @@ pub fn run() -> Result<(), AppError> {
     startup_phases.badge_worker_dispatch = startup_phases.complete();
     let mut auxiliary = create_auxiliary_windows(
         &dock,
-        &dock_model,
+        &mut dock_model,
         usage,
         usage_store,
         !onboarding_required,
@@ -277,7 +277,7 @@ pub fn run() -> Result<(), AppError> {
 
 fn create_auxiliary_windows(
     dock: &DockWindow,
-    dock_model: &DockRuntime,
+    dock_model: &mut DockRuntime,
     usage: SearchUsage,
     usage_store: SearchUsageStore,
     modules_active: bool,

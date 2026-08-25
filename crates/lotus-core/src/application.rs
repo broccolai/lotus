@@ -114,11 +114,48 @@ pub enum ApplicationResolution {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationPresentation {
+    pub display_name: String,
+    pub icon: ApplicationPresentationIcon,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ApplicationPresentationIcon {
+    Source(String),
+    NativeWindow {
+        key: TrackedWindowKey,
+        fallback_path: String,
+    },
+}
+
+impl ApplicationPresentationIcon {
+    #[must_use]
+    pub fn fallback_path(&self) -> &str {
+        match self {
+            Self::Source(path)
+            | Self::NativeWindow {
+                fallback_path: path,
+                ..
+            } => path,
+        }
+    }
+
+    #[must_use]
+    pub const fn native_window(&self) -> Option<TrackedWindowKey> {
+        match self {
+            Self::Source(_) => None,
+            Self::NativeWindow { key, .. } => Some(*key),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct WindowApplicationAssignments {
     pub catalog_generation: u64,
     pub window_revision: u64,
     pub by_window: HashMap<TrackedWindowKey, ApplicationResolution>,
+    pub presentation_by_window: HashMap<TrackedWindowKey, ApplicationPresentation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

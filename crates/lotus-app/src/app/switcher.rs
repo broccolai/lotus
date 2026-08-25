@@ -516,8 +516,12 @@ impl SwitcherRuntime {
                 );
                 Some(SwitcherIconRequest {
                     generation: self.icon_generation,
-                    window: window.id,
-                    executable_path: window.executable_path.clone(),
+                    window: window.key(),
+                    presentation_icon: self
+                        .application_assignments
+                        .presentation_by_window
+                        .get(&window.key())
+                        .map(|presentation| presentation.icon.clone()),
                     custom_image_path:
                         crate::app::icon_override::application_icon_path_for_identity(
                             &self.icon_settings,
@@ -554,12 +558,13 @@ fn switcher_title(
     }) {
         return name.to_owned();
     }
-    window
-        .executable_path
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or("Application")
-        .to_owned()
+    assignments
+        .presentation_by_window
+        .get(&window.key())
+        .map_or_else(
+            || "Application".to_owned(),
+            |presentation| presentation.display_name.clone(),
+        )
 }
 
 fn executable_is_hidden(window: &WindowInfo, hidden: &[String]) -> bool {

@@ -1,11 +1,13 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Instant;
 
 use lotus_core::application::{
-    ApplicationKey, ApplicationResolution, LaunchSpec, RegisteredApplication,
-    ResolutionEvidence, WindowApplicationAssignments, WindowApplicationFacts,
-    application_provider_keys, is_reliable_registered_id, is_shared_host_executable,
-    normalized_executable_name, normalized_path, normalized_value,
+    ApplicationKey, ApplicationPresentation, ApplicationPresentationIcon,
+    ApplicationResolution, LaunchSpec, RegisteredApplication, ResolutionEvidence,
+    WindowApplicationAssignments, WindowApplicationFacts, application_provider_keys,
+    is_reliable_registered_id, is_shared_host_executable, normalized_executable_name,
+    normalized_path, normalized_value,
 };
 use lotus_core::search::ApplicationEntry;
 use lotus_core::settings::PinnedApp;
@@ -304,41 +306,43 @@ impl ApplicationResolver {
         }
         self.cache
             .retain(|key, _| windows.iter().any(|window| window.key() == *key));
-        let by_window = windows
-            .iter()
-            .map(|window| {
-                let key = window.key();
-                let fingerprint = WindowIdentityFingerprint::from_window(window);
-                let cached = self
-                    .cache
-                    .get(&key)
-                    .filter(|cached| {
-                        cached.generation == catalog.generation
-                            && cached.fingerprint == fingerprint
-                    })
-                    .map(|cached| cached.resolution.clone());
-                let was_cached = cached.is_some();
-                let resolution = cached.unwrap_or_else(|| {
-                    let resolution = resolve_window(window, catalog, associations);
-                    self.cache.insert(
-                        key,
-                        CachedResolution {
-                            generation: catalog.generation,
-                            fingerprint,
-                            resolution: resolution.clone(),
-                        },
-                    );
-                    resolution
-                });
-                METRICS.record_application_resolution(was_cached, &resolution);
-                (key, resolution)
-            })
-            .collect();
+        let mut by_window = HashMap::with_capacity(windows.len());
+        let mut presentation_by_window = HashMap::with_capacity(windows.len());
+        for window in windows {
+            let key = window.key();
+            let fingerprint = WindowIdentityFingerprint::from_window(window);
+            let cached = self
+                .cache
+                .get(&key)
+                .filter(|cached| {
+                    cached.generation == catalog.generation
+                        && cached.fingerprint == fingerprint
+                })
+                .map(|cached| cached.resolution.clone());
+            let was_cached = cached.is_some();
+            let resolution = cached.unwrap_or_else(|| {
+                let resolution = resolve_window(window, catalog, associations);
+                self.cache.insert(
+                    key,
+                    CachedResolution {
+                        generation: catalog.generation,
+                        fingerprint,
+                        resolution: resolution.clone(),
+                    },
+                );
+                resolution
+            });
+            let presentation = application_presentation(window, &resolution, catalog);
+            METRICS.record_application_resolution(was_cached, &resolution);
+            by_window.insert(key, resolution);
+            presentation_by_window.insert(key, presentation);
+        }
         METRICS.record_application_resolution_batch(started.elapsed());
         WindowApplicationAssignments {
             catalog_generation: catalog.generation,
             window_revision,
             by_window,
+            presentation_by_window,
         }
     }
 
@@ -382,6 +386,65 @@ impl ApplicationResolver {
             resolution,
         }
     }
+}
+
+fn application_presentation(
+    window: &WindowInfo,
+    resolution: &ApplicationResolution,
+    catalog: &ApplicationCatalogSnapshot,
+) -> ApplicationPresentation {
+    if let Some(application) = registered_presentation(resolution, catalog) {
+        return ApplicationPresentation {
+            display_name: application.name.clone(),
+            icon: ApplicationPresentationIcon::Source(application.icon_source.clone()),
+        };
+    }
+
+    let executable_path = window.executable_path.to_string_lossy().into_owned();
+    let display_name = window
+        .application_facts
+        .display_name
+        .as_deref()
+        .and_then(nonblank)
+        .or_else(|| nonblank(&window.title))
+        .map_or_else(|| executable_stem(&window.executable_path), str::to_owned);
+    ApplicationPresentation {
+        display_name,
+        icon: ApplicationPresentationIcon::NativeWindow {
+            key: window.key(),
+            fallback_path: executable_path,
+        },
+    }
+}
+
+fn registered_presentation<'a>(
+    resolution: &ApplicationResolution,
+    catalog: &'a ApplicationCatalogSnapshot,
+) -> Option<&'a RegisteredApplication> {
+    match resolution {
+        ApplicationResolution::Resolved {
+            registered_index, ..
+        } => catalog.application(*registered_index),
+        ApplicationResolution::Associated { key } => catalog
+            .application_index_for_key(key)
+            .and_then(|index| catalog.application(index)),
+        ApplicationResolution::Prevented
+        | ApplicationResolution::Ambiguous { .. }
+        | ApplicationResolution::Unregistered { .. } => None,
+    }
+}
+
+fn nonblank(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn executable_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|name| name.to_str())
+        .and_then(nonblank)
+        .unwrap_or("Application")
+        .to_owned()
 }
 
 impl WindowIdentityFingerprint {
