@@ -160,7 +160,6 @@ pub struct WindowApplicationAssignments {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PinnedApplicationAssignment {
-    pub pin_id: String,
     pub key: ApplicationKey,
     pub registered_index: Option<usize>,
 }
@@ -179,6 +178,7 @@ pub struct RegisteredApplication {
     pub canonical_executables: Vec<String>,
     pub executable_aliases: Vec<String>,
     pub provider_keys: Vec<String>,
+    pub is_host_app: bool,
 }
 
 impl RegisteredApplication {
@@ -406,7 +406,7 @@ pub fn is_shared_host_executable(value: &str) -> bool {
     normalized_executable_name(value).is_some_and(|executable| {
         matches!(
             executable.as_str(),
-            "chrome.exe" | "msedge.exe" | "applicationframehost.exe"
+            "chrome.exe" | "msedge.exe" | "brave.exe" | "applicationframehost.exe"
         )
     })
 }
@@ -414,7 +414,8 @@ pub fn is_shared_host_executable(value: &str) -> bool {
 #[must_use]
 pub fn application_provider_keys(
     registered_id: Option<&str>,
-    arguments: Option<&str>,
+    executable: Option<&str>,
+    arguments: &[String],
 ) -> Vec<String> {
     let mut keys = Vec::new();
     if let Some(id) = registered_id
@@ -423,7 +424,8 @@ pub fn application_provider_keys(
     {
         keys.push(format!("squirrel:registered:{}", id.to_lowercase()));
     }
-    let mut arguments = arguments.unwrap_or_default().split_ascii_whitespace();
+    let profile_context = chromium_profile_context(arguments);
+    let mut arguments = arguments.iter().map(String::as_str);
     while let Some(argument) = arguments.next() {
         let (name, inline_value) = argument
             .split_once('=')
@@ -433,18 +435,91 @@ pub fn application_provider_keys(
                 .then(|| arguments.next())
                 .flatten()
         });
-        let Some(value) = value.map(|value| value.trim_matches('"')) else {
+        let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
             continue;
         };
         if name.eq_ignore_ascii_case("--app-id") {
-            keys.push(format!("chromium-id:{}", value.to_lowercase()));
+            keys.push(chromium_provider_key(
+                executable,
+                "id",
+                value,
+                &profile_context,
+            ));
         } else if name.eq_ignore_ascii_case("--app") {
-            keys.push(format!("chromium-url:{value}"));
+            keys.push(chromium_provider_key(
+                executable,
+                "app",
+                value,
+                &profile_context,
+            ));
         }
     }
     keys.sort();
     keys.dedup();
     keys
+}
+
+fn chromium_provider_key(
+    executable: Option<&str>,
+    kind: &str,
+    identity: &str,
+    profile_context: &(String, String),
+) -> String {
+    let identity = if kind == "app" {
+        trimmed_value(identity).unwrap_or_default()
+    } else {
+        normalized_value(identity).unwrap_or_default()
+    };
+    format!(
+        "chromium:{kind}:{}:{}:{}:{}",
+        executable
+            .and_then(chromium_executable_identity)
+            .unwrap_or_else(|| "default-browser".into()),
+        identity,
+        profile_context.0,
+        profile_context.1,
+    )
+}
+
+fn chromium_executable_identity(executable: &str) -> Option<String> {
+    let executable = normalized_path(executable)?;
+    let (directory, name) = executable
+        .rsplit_once('\\')
+        .map_or((None, executable.as_str()), |(directory, name)| {
+            (Some(directory), name)
+        });
+    let Some(browser_name) = name.strip_suffix("_proxy.exe") else {
+        return Some(executable);
+    };
+    Some(directory.map_or_else(
+        || format!("{browser_name}.exe"),
+        |directory| format!("{directory}\\{browser_name}.exe"),
+    ))
+}
+
+fn chromium_profile_context(arguments: &[String]) -> (String, String) {
+    let mut user_data = None;
+    let mut profile = None;
+    let mut arguments = arguments.iter().map(String::as_str);
+    while let Some(argument) = arguments.next() {
+        let Some((name, value)) = argument.split_once('=') else {
+            if argument.eq_ignore_ascii_case("--user-data-dir") {
+                user_data = arguments.next().and_then(normalized_path);
+            } else if argument.eq_ignore_ascii_case("--profile-directory") {
+                profile = arguments.next().and_then(normalized_value);
+            }
+            continue;
+        };
+        if name.eq_ignore_ascii_case("--user-data-dir") {
+            user_data = normalized_path(value);
+        } else if name.eq_ignore_ascii_case("--profile-directory") {
+            profile = normalized_value(value);
+        }
+    }
+    (
+        user_data.unwrap_or_else(|| "default-user-data".into()),
+        profile.unwrap_or_else(|| "default-profile".into()),
+    )
 }
 
 #[must_use]

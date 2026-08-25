@@ -4,14 +4,14 @@ use std::path::Path;
 
 use lotus_core::application::{LaunchSpec, WindowApplicationFacts};
 use lotus_core::window::WindowId;
-use windows::Win32::Foundation::{HLOCAL, HWND, LocalFree, PROPERTYKEY};
+use windows::Win32::Foundation::{HWND, PROPERTYKEY};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ,
 };
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IPropertyStore, SHGetPropertyStoreForWindow,
 };
-use windows::Win32::UI::Shell::{CommandLineToArgvW, IShellLinkW, ShellLink};
+use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 use windows::core::{BSTR, GUID, Interface, PCWSTR};
 
@@ -92,20 +92,10 @@ fn parse_relaunch_application(
     command: &str,
     is_launchable: impl Fn(&str) -> bool,
 ) -> Option<RelaunchApplication> {
-    let command = wide_null(OsStr::new(command));
-    let mut argument_count = 0;
-    let arguments =
-        unsafe { CommandLineToArgvW(PCWSTR(command.as_ptr()), &raw mut argument_count) };
-    if arguments.is_null() || argument_count <= 0 {
+    let values = crate::launch::command_line_arguments(command);
+    if values.is_empty() {
         return None;
     }
-    let arguments = LocalArguments(arguments);
-    let values = unsafe {
-        std::slice::from_raw_parts(arguments.0, usize::try_from(argument_count).ok()?)
-    }
-    .iter()
-    .map(|value| unsafe { value.to_string() }.ok())
-    .collect::<Option<Vec<_>>>()?;
     let target_length =
         (1..=values.len()).find(|length| is_launchable(&values[..*length].join(" ")))?;
     let target = values[..target_length].join(" ");
@@ -181,12 +171,4 @@ fn quote_argument(value: &str) -> String {
     quoted.push_str(&"\\".repeat(backslashes * 2));
     quoted.push('"');
     quoted
-}
-
-struct LocalArguments(*mut windows::core::PWSTR);
-
-impl Drop for LocalArguments {
-    fn drop(&mut self) {
-        let _ = unsafe { LocalFree(Some(HLOCAL(self.0.cast::<c_void>()))) };
-    }
 }

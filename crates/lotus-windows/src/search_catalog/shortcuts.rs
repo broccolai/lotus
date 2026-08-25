@@ -4,7 +4,9 @@ use lotus_core::application::is_reliable_registered_id;
 use lotus_core::search::ApplicationEntry;
 
 use super::super::application_identity::shortcut_application_id;
-use super::super::launch::{resolve_executable, shortcut_arguments};
+use super::super::launch::{
+    command_line_arguments, resolve_executable, shortcut_arguments,
+};
 
 pub(super) fn shortcut_entry(
     name: String,
@@ -61,8 +63,8 @@ fn chromium_web_app_identity(arguments: Option<&str>, target: Option<&Path>) -> 
 }
 
 fn chromium_web_app_arguments(arguments: &str) -> bool {
-    arguments.split_ascii_whitespace().any(|argument| {
-        let argument = argument.trim_matches('"').to_ascii_lowercase();
+    command_line_arguments(arguments).iter().any(|argument| {
+        let argument = argument.to_ascii_lowercase();
         argument.starts_with("--app-id=") || argument.starts_with("--app=")
     })
 }

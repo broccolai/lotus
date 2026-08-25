@@ -13,6 +13,7 @@ use lotus_core::search::ApplicationEntry;
 use lotus_core::settings::PinnedApp;
 use lotus_core::window::{TrackedWindowKey, WindowInfo};
 
+use crate::launch::command_line_arguments;
 use crate::responsiveness::METRICS;
 
 #[derive(Clone, Debug, Default)]
@@ -25,6 +26,8 @@ pub struct ApplicationCatalogIndex {
     provider_keys: HashMap<String, CandidateSet>,
     executable_paths: HashMap<String, CandidateSet>,
     executable_aliases: HashMap<String, CandidateSet>,
+    host_executable_paths: HashMap<String, CandidateSet>,
+    host_executable_aliases: HashMap<String, CandidateSet>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,6 +90,13 @@ impl ApplicationCatalogSnapshot {
             }
             for path in &application.canonical_executables {
                 insert(&mut index.executable_paths, normalized_path(path), position);
+                if application.is_host_app {
+                    insert(
+                        &mut index.host_executable_paths,
+                        normalized_path(path),
+                        position,
+                    );
+                }
             }
             for alias in &application.executable_aliases {
                 insert(
@@ -94,6 +104,13 @@ impl ApplicationCatalogSnapshot {
                     normalized_executable_name(alias),
                     position,
                 );
+                if application.is_host_app {
+                    insert(
+                        &mut index.host_executable_aliases,
+                        normalized_executable_name(alias),
+                        position,
+                    );
+                }
             }
         }
         Self {
@@ -133,18 +150,19 @@ impl ApplicationCatalogSnapshot {
                 Lookup::Missing => normalized_value(value).map(ApplicationKey::Registered),
             };
         }
-        if let Lookup::Unique(index) =
-            lookup(&self.index.executable_paths, normalized_path(value))
-        {
+        if let Lookup::Unique(index) = self.safe_executable_lookup(
+            &self.index.executable_paths,
+            normalized_path(value),
+            true,
+        ) {
             return self
                 .application(index)
                 .map(|application| application.key.clone());
         }
         let alias = normalized_executable_name(value)?;
-        if is_shared_host_executable(&alias) {
-            return None;
-        }
-        if let Lookup::Unique(index) = lookup(&self.index.executable_aliases, Some(alias)) {
+        if let Lookup::Unique(index) =
+            self.safe_executable_lookup(&self.index.executable_aliases, Some(alias), false)
+        {
             return self
                 .application(index)
                 .map(|application| application.key.clone());
@@ -185,12 +203,10 @@ impl ApplicationCatalogSnapshot {
                 .map(|application| application.key.clone());
         }
         for alias in executable_aliases {
-            if is_shared_host_executable(alias) {
-                continue;
-            }
-            if let Lookup::Unique(index) = lookup(
+            if let Lookup::Unique(index) = self.safe_executable_lookup(
                 &self.index.executable_aliases,
                 normalized_executable_name(alias),
+                false,
             ) {
                 return self
                     .application(index)
@@ -199,6 +215,115 @@ impl ApplicationCatalogSnapshot {
         }
         Some(ApplicationKey::from_launch_fallback(launch))
     }
+
+    #[must_use]
+    pub fn safe_executable_aliases(
+        &self,
+        application: &RegisteredApplication,
+    ) -> Vec<String> {
+        application
+            .executable_aliases
+            .iter()
+            .filter(|alias| {
+                matches!(
+                    self.safe_executable_lookup(
+                        &self.index.executable_aliases,
+                        normalized_executable_name(alias),
+                        false
+                    ),
+                    Lookup::Unique(_)
+                )
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn is_safe_executable_alias(&self, alias: &str) -> bool {
+        matches!(
+            self.safe_executable_lookup(
+                &self.index.executable_aliases,
+                normalized_executable_name(alias),
+                false
+            ),
+            Lookup::Unique(_)
+        )
+    }
+
+    fn is_shared_executable(&self, executable: &str) -> bool {
+        let path = normalized_path(executable);
+        let alias = normalized_executable_name(executable);
+        alias.as_deref().is_some_and(is_shared_host_executable)
+            || !matches!(
+                lookup(&self.index.host_executable_paths, path.clone()),
+                Lookup::Missing
+            )
+            || !matches!(
+                lookup(&self.index.host_executable_aliases, alias.clone()),
+                Lookup::Missing
+            )
+            || matches!(
+                lookup(&self.index.executable_paths, path),
+                Lookup::Ambiguous(_)
+            )
+            || matches!(
+                lookup(&self.index.executable_aliases, alias),
+                Lookup::Ambiguous(_)
+            )
+    }
+
+    fn safe_executable_lookup(
+        &self,
+        index: &HashMap<String, CandidateSet>,
+        key: Option<String>,
+        path_evidence: bool,
+    ) -> Lookup {
+        let Some(key) = key else {
+            return Lookup::Missing;
+        };
+        if is_shared_host_executable(&key) {
+            return Lookup::Missing;
+        }
+        if path_evidence
+            && !matches!(
+                lookup(&self.index.host_executable_paths, Some(key.clone())),
+                Lookup::Missing
+            )
+        {
+            return Lookup::Missing;
+        }
+        if !path_evidence
+            && !matches!(
+                lookup(&self.index.host_executable_aliases, Some(key.clone())),
+                Lookup::Missing
+            )
+        {
+            return Lookup::Missing;
+        }
+        match lookup(index, Some(key)) {
+            Lookup::Ambiguous(_) => Lookup::Missing,
+            lookup => lookup,
+        }
+    }
+
+    fn resolve_safe_executable(
+        &self,
+        index: &HashMap<String, CandidateSet>,
+        key: Option<String>,
+        path_evidence: bool,
+        evidence: ResolutionEvidence,
+    ) -> Option<ApplicationResolution> {
+        let Lookup::Unique(index) = self.safe_executable_lookup(index, key, path_evidence)
+        else {
+            return None;
+        };
+        self.application(index)
+            .map(|application| ApplicationResolution::Resolved {
+                key: application.key.clone(),
+                registered_index: index,
+                evidence,
+            })
+    }
 }
 
 fn runtime_launch_signature_is_safe(
@@ -206,11 +331,12 @@ fn runtime_launch_signature_is_safe(
     launch: &LaunchSpec,
 ) -> bool {
     launch.arguments.is_some()
-        || !application
-            .canonical_executables
-            .iter()
-            .filter_map(|path| normalized_executable_name(path))
-            .any(|name| is_shared_host_executable(&name))
+        || !(application.is_host_app
+            || application
+                .canonical_executables
+                .iter()
+                .filter_map(|path| normalized_executable_name(path))
+                .any(|name| is_shared_host_executable(&name)))
 }
 
 #[derive(Default)]
@@ -252,7 +378,7 @@ impl ApplicationAssociations {
                 let Some(alias) = normalized_executable_name(alias) else {
                     continue;
                 };
-                if is_shared_host_executable(&alias) {
+                if !catalog.is_safe_executable_alias(&alias) {
                     continue;
                 }
                 insert_association(&mut executable_aliases, alias, key.clone());
@@ -381,7 +507,10 @@ impl ApplicationResolver {
                 .relaunch
                 .as_ref()
                 .map(LaunchSpec::signature),
-            provider_keys: provider_keys(&window.application_facts),
+            provider_keys: provider_keys(
+                &window.application_facts,
+                &window.executable_path.to_string_lossy(),
+            ),
             selected_application,
             resolution,
         }
@@ -471,14 +600,6 @@ fn resolve_window(
     }
     let window_id = reliable_id(facts.window_app_user_model_id.as_deref());
     let process_id = reliable_id(facts.process_app_user_model_id.as_deref());
-    if let (Some(left), Some(right)) = (&window_id, &process_id)
-        && left != right
-    {
-        return ApplicationResolution::Ambiguous {
-            evidence: ResolutionEvidence::ExactRegisteredId,
-            candidate_count: 2,
-        };
-    }
     if let Some(id) = window_id.as_deref().or(process_id.as_deref()) {
         return resolve_lookup(
             &catalog.index.registered_ids,
@@ -491,9 +612,30 @@ fn resolve_window(
             launch: facts.relaunch.clone(),
         });
     }
-    if let Some(alias) =
-        normalized_executable_name(&window.executable_path.to_string_lossy())
-        && !is_shared_host_executable(&alias)
+    if let Some(relaunch) = facts.relaunch.as_ref()
+        && let Some(resolution) = resolve_lookup(
+            &catalog.index.launch_signatures,
+            Some(relaunch.signature()),
+            catalog,
+            ResolutionEvidence::ExactRelaunch,
+        )
+    {
+        return resolution;
+    }
+    for provider_key in provider_keys(facts, &window.executable_path.to_string_lossy()) {
+        if let Some(resolution) = resolve_lookup(
+            &catalog.index.provider_keys,
+            Some(provider_key),
+            catalog,
+            ResolutionEvidence::ExactProviderKey,
+        ) {
+            return resolution;
+        }
+    }
+    let executable_path = window.executable_path.to_string_lossy();
+    let shared = catalog.is_shared_executable(&executable_path);
+    if let Some(alias) = normalized_executable_name(&executable_path)
+        && !shared
         && let Some(association) = associations.executable_aliases.get(&alias)
     {
         return match association {
@@ -508,44 +650,20 @@ fn resolve_window(
             }
         };
     }
-    if let Some(relaunch) = facts.relaunch.as_ref()
-        && let Some(resolution) = resolve_lookup(
-            &catalog.index.launch_signatures,
-            Some(relaunch.signature()),
-            catalog,
-            ResolutionEvidence::ExactRelaunch,
-        )
-    {
-        return resolution;
-    }
-    for provider_key in provider_keys(facts) {
-        if let Some(resolution) = resolve_lookup(
-            &catalog.index.provider_keys,
-            Some(provider_key),
-            catalog,
-            ResolutionEvidence::ExactProviderKey,
-        ) {
-            return resolution;
-        }
-    }
-    let executable = normalized_path(&window.executable_path.to_string_lossy());
-    let shared = executable
-        .as_deref()
-        .and_then(normalized_executable_name)
-        .is_some_and(|name| is_shared_host_executable(&name));
+    let executable = normalized_path(&executable_path);
     if !shared {
-        if let Some(resolution) = resolve_lookup(
+        if let Some(resolution) = catalog.resolve_safe_executable(
             &catalog.index.executable_paths,
             executable.clone(),
-            catalog,
+            true,
             ResolutionEvidence::ExactExecutablePath,
         ) {
             return resolution;
         }
-        if let Some(resolution) = resolve_lookup(
+        if let Some(resolution) = catalog.resolve_safe_executable(
             &catalog.index.executable_aliases,
             executable.as_deref().and_then(normalized_executable_name),
-            catalog,
+            false,
             ResolutionEvidence::UniqueExecutableAlias,
         ) {
             return resolution;
@@ -581,14 +699,14 @@ fn reliable_id(value: Option<&str>) -> Option<String> {
         .and_then(normalized_value)
 }
 
-fn provider_keys(facts: &WindowApplicationFacts) -> Vec<String> {
-    application_provider_keys(
-        facts.reliable_id(),
-        facts
-            .relaunch
-            .as_ref()
-            .and_then(|launch| launch.arguments.as_deref()),
-    )
+fn provider_keys(facts: &WindowApplicationFacts, executable: &str) -> Vec<String> {
+    let arguments = facts
+        .relaunch
+        .as_ref()
+        .and_then(|launch| launch.arguments.as_deref())
+        .map(command_line_arguments)
+        .unwrap_or_default();
+    application_provider_keys(facts.reliable_id(), Some(executable), &arguments)
 }
 
 enum Lookup {

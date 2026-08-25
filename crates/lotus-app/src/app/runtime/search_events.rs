@@ -32,6 +32,7 @@ pub(super) fn refresh_catalog(
         return Ok(false);
     }
     let application_catalog = auxiliary.application_snapshot();
+    dock_model.adopt_catalogue_pins(&application_catalog)?;
     dock_model.rebuild(windows, application_catalog.clone());
     auxiliary.reconcile_switcher_windows(
         windows,

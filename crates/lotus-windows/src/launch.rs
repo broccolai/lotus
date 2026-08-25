@@ -1,17 +1,17 @@
-use std::ffi::OsString;
+use std::ffi::{OsString, c_void};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::{fs, ptr};
 
-use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+use windows::Win32::Foundation::{HLOCAL, LocalFree, RPC_E_CHANGED_MODE};
 use windows::Win32::Storage::FileSystem::SearchPathW;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
     CoUninitialize, IPersistFile, STGM_READ,
 };
 use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
-use windows::Win32::UI::Shell::{IShellLinkW, SLGP_RAWPATH, ShellLink};
-use windows::core::{Interface, PCWSTR};
+use windows::Win32::UI::Shell::{CommandLineToArgvW, IShellLinkW, SLGP_RAWPATH, ShellLink};
+use windows::core::{Interface, PCWSTR, PWSTR};
 
 const WINDOWS_PATH_CAPACITY: usize = 32_768;
 
@@ -79,6 +79,38 @@ pub(crate) fn shortcut_arguments(shortcut_path: &Path) -> Option<String> {
     let arguments = String::from_utf16_lossy(utf16_without_nul(&arguments));
     let arguments = arguments.trim();
     (!arguments.is_empty()).then(|| arguments.to_owned())
+}
+
+pub(crate) fn command_line_arguments(arguments: &str) -> Vec<String> {
+    if arguments.trim().is_empty() {
+        return Vec::new();
+    }
+    let arguments = wide_null(arguments);
+    let mut argument_count = 0;
+    let raw =
+        unsafe { CommandLineToArgvW(PCWSTR(arguments.as_ptr()), &raw mut argument_count) };
+    if raw.is_null() || argument_count <= 0 {
+        return Vec::new();
+    }
+    let arguments = LocalArguments(raw);
+    unsafe {
+        std::slice::from_raw_parts(
+            arguments.0,
+            usize::try_from(argument_count).unwrap_or_default(),
+        )
+    }
+    .iter()
+    .map(|value| unsafe { value.to_string() }.ok())
+    .collect::<Option<Vec<_>>>()
+    .unwrap_or_default()
+}
+
+struct LocalArguments(*mut PWSTR);
+
+impl Drop for LocalArguments {
+    fn drop(&mut self) {
+        let _ = unsafe { LocalFree(Some(HLOCAL(self.0.cast::<c_void>()))) };
+    }
 }
 
 pub(crate) fn resolve_internet_shortcut_icon(

@@ -17,7 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 use super::identity::compose_catalog;
 use super::resolver::ApplicationCatalogSnapshot;
 use super::sources::discover_start_menu_entries;
-use crate::launch::{resolve_executable, shortcut_arguments};
+use crate::launch::{command_line_arguments, resolve_executable, shortcut_arguments};
 use crate::messages::SEARCH_CATALOG_WAKE as SEARCH_CATALOG_WAKE_MESSAGE;
 use crate::responsiveness::METRICS;
 
@@ -278,10 +278,23 @@ fn materialize_registered_application(entry: ApplicationEntry) -> Option<Catalog
         .and_then(normalized_executable_name)
         .into_iter()
         .collect::<Vec<_>>();
-    let provider_keys =
-        application_provider_keys(entry.app_user_model_id.as_deref(), arguments.as_deref());
-    if let Some(arguments) = arguments.as_deref() {
-        let mut values = arguments.split_ascii_whitespace();
+    let parsed_arguments = arguments
+        .as_deref()
+        .map(command_line_arguments)
+        .unwrap_or_default();
+    let provider_keys = application_provider_keys(
+        entry.app_user_model_id.as_deref(),
+        executable.as_deref(),
+        &parsed_arguments,
+    );
+    let is_host_app = provider_keys.iter().any(|key| key.starts_with("chromium:"))
+        || executable
+            .as_deref()
+            .and_then(normalized_executable_name)
+            .as_deref()
+            .is_some_and(is_host_application);
+    if !parsed_arguments.is_empty() {
+        let mut values = parsed_arguments.iter().map(String::as_str);
         while let Some(argument) = values.next() {
             if argument.eq_ignore_ascii_case("--processStart")
                 && let Some(value) = values.next().and_then(normalized_executable_name)
@@ -320,9 +333,10 @@ fn materialize_registered_application(entry: ApplicationEntry) -> Option<Catalog
             .app_user_model_id
             .clone()
             .filter(|id| is_reliable_registered_id(id)),
-        canonical_executables: executable.into_iter().collect(),
+        canonical_executables: executable.clone().into_iter().collect(),
         executable_aliases: aliases,
         provider_keys,
+        is_host_app,
     };
     let search_entry = entry.with_embedded_arguments(arguments.as_deref());
     Some(CatalogCandidate {
@@ -332,13 +346,21 @@ fn materialize_registered_application(entry: ApplicationEntry) -> Option<Catalog
     })
 }
 
+fn is_host_application(executable: &str) -> bool {
+    windows_registry::CLASSES_ROOT
+        .open(format!("Applications\\{executable}"))
+        .and_then(|key| key.get_value("IsHostApp"))
+        .is_ok()
+}
+
 fn catalog_preference(
     arguments: Option<&str>,
     resolved_target: Option<&std::path::Path>,
 ) -> u8 {
     if arguments.is_some_and(|arguments| {
-        arguments
-            .split_ascii_whitespace()
+        command_line_arguments(arguments)
+            .iter()
+            .map(String::as_str)
             .any(|argument| argument.eq_ignore_ascii_case("--processStart"))
     }) {
         return 0;
@@ -359,11 +381,12 @@ fn strong_merge_keys(application: &RegisteredApplication) -> Vec<String> {
     if let Some(id) = application.app_user_model_id.as_deref() {
         keys.push(format!("registered:{}", id.to_lowercase()));
     }
-    let shared_host = application
-        .canonical_executables
-        .iter()
-        .filter_map(|path| normalized_executable_name(path))
-        .any(|name| is_shared_host_executable(&name));
+    let shared_host = application.is_host_app
+        || application
+            .canonical_executables
+            .iter()
+            .filter_map(|path| normalized_executable_name(path))
+            .any(|name| is_shared_host_executable(&name));
     if !shared_host {
         keys.push(format!("launch:{}", application.launch.signature()));
         keys.extend(
@@ -410,6 +433,7 @@ fn merge_registered_application(
     retained
         .provider_keys
         .extend(duplicate.provider_keys.iter().cloned());
+    retained.is_host_app |= duplicate.is_host_app;
     retained.launch_aliases.sort();
     retained.launch_aliases.dedup();
     retained.canonical_executables.sort();

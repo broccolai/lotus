@@ -20,18 +20,31 @@ impl DockRuntime {
             .get(source_index)
             .cloned()
             .map(|item| (source_index, item));
-        let launch = registered.map(|application| PinLaunch {
-            id: application.id,
-            name: application.name,
-            target: application.launch.target,
-            arguments: application.launch.arguments,
-            icon_source: Some(application.icon_source),
-            app_user_model_id: application.app_user_model_id,
-            match_executables: application
-                .executable_aliases
-                .into_iter()
-                .filter(|alias| !lotus_core::application::is_shared_host_executable(alias))
-                .collect(),
+        if pinned
+            && previous.as_ref().is_some_and(|(_, item)| {
+                super::pinned_application_assignments(
+                    self.model.settings(),
+                    &self.application_catalog,
+                )
+                .iter()
+                .any(|assignment| assignment.key == item.application_key)
+            })
+        {
+            return Ok(false);
+        }
+        let launch = registered.map(|application| {
+            let match_executables = self
+                .application_catalog
+                .safe_executable_aliases(&application);
+            PinLaunch {
+                id: application.id,
+                name: application.name,
+                target: application.launch.target,
+                arguments: application.launch.arguments,
+                icon_source: Some(application.icon_source),
+                app_user_model_id: application.app_user_model_id,
+                match_executables,
+            }
         });
         if !self.model.set_pinned(source_index, pinned, launch)? {
             return Ok(false);

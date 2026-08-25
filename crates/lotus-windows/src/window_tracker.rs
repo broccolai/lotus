@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use lotus_core::application::WindowApplicationFacts;
+use lotus_core::application::{WindowApplicationFacts, is_reliable_registered_id};
 use lotus_core::window::{TrackedWindowKey, WindowId, WindowInfo};
 use windows::Win32::Foundation::{E_FAIL, HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
@@ -29,6 +29,11 @@ use crate::{NativeError, WindowHandle};
 
 const MAX_RECONCILE_INTERVAL_MS: u32 = 30_000;
 const STALE_TARGET_TOMBSTONE_LIFETIME: Duration = Duration::from_secs(2);
+const IDENTITY_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(50),
+    Duration::from_millis(250),
+    Duration::from_secs(1),
+];
 
 static STALE_TARGETS: std::sync::LazyLock<Mutex<Vec<(TrackedWindowKey, Instant)>>> =
     std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
@@ -188,9 +193,36 @@ struct WorkerState {
     fullscreen_revision: u64,
     failures: u32,
     debounce_timer: Option<usize>,
+    identity_timer: Option<usize>,
     reconcile_timer: usize,
     process_cache: enumeration::ProcessMetadataCache,
     application_facts: HashMap<TrackedWindowKey, WindowApplicationFacts>,
+    identity_stabilization: HashMap<TrackedWindowKey, IdentityStabilization>,
+}
+
+#[derive(Clone, Copy)]
+struct IdentityStabilization {
+    retry_index: usize,
+    retry_at: Instant,
+}
+
+impl IdentityStabilization {
+    fn first(now: Instant) -> Self {
+        Self::at_retry(0, now)
+    }
+
+    fn next(self, now: Instant) -> Option<Self> {
+        let retry_index = self.retry_index + 1;
+        (retry_index < IDENTITY_RETRY_DELAYS.len())
+            .then(|| Self::at_retry(retry_index, now))
+    }
+
+    fn at_retry(retry_index: usize, now: Instant) -> Self {
+        Self {
+            retry_index,
+            retry_at: now + IDENTITY_RETRY_DELAYS[retry_index],
+        }
+    }
 }
 
 impl WindowTracker {
@@ -397,9 +429,11 @@ fn run_worker(
         fullscreen_revision: 0,
         failures: 0,
         debounce_timer: None,
+        identity_timer: None,
         reconcile_timer,
         process_cache: enumeration::ProcessMetadataCache::default(),
         application_facts: HashMap::new(),
+        identity_stabilization: HashMap::new(),
     };
     state.refresh();
     if !state.shared.running.load(AtomicOrdering::Acquire) {
@@ -432,6 +466,10 @@ fn worker_message_loop(state: &mut WorkerState) {
             WM_TIMER if state.debounce_timer == Some(message.wParam.0) => {
                 state.cancel_debounce_timer();
                 events::clear_refresh_notification();
+                state.refresh();
+            }
+            WM_TIMER if state.identity_timer == Some(message.wParam.0) => {
+                state.cancel_identity_timer();
                 state.refresh();
             }
             WM_TIMER if message.wParam.0 == state.reconcile_timer => state.refresh(),
@@ -495,20 +533,89 @@ impl WorkerState {
     fn hydrate_application_facts(&mut self, windows: &mut [WindowInfo]) {
         self.application_facts
             .retain(|key, _| windows.iter().any(|window| window.key() == *key));
+        self.identity_stabilization
+            .retain(|key, _| windows.iter().any(|window| window.key() == *key));
+
+        let now = Instant::now();
         for window in windows {
-            if let Some(facts) = self.application_facts.get(&window.key()) {
+            let key = window.key();
+            let retry = self.identity_stabilization.get(&key).copied();
+            if self.application_facts.contains_key(&key)
+                && retry.is_none_or(|stabilization| stabilization.retry_at > now)
+            {
                 METRICS.record_window_identity_fact(true, Duration::ZERO);
-                window.application_facts.clone_from(facts);
+                self.apply_cached_application_facts(window);
                 continue;
             }
-            let process_id = window.application_facts.process_app_user_model_id.clone();
-            let started = Instant::now();
-            let mut facts =
-                window_application_identity_in_apartment(window.id).unwrap_or_default();
-            facts.process_app_user_model_id = process_id;
-            METRICS.record_window_identity_fact(false, started.elapsed());
-            window.application_facts.clone_from(&facts);
-            self.application_facts.insert(window.key(), facts);
+
+            self.refresh_application_facts(window, retry, now);
+        }
+
+        self.reschedule_identity_timer();
+    }
+
+    fn apply_cached_application_facts(&self, window: &mut WindowInfo) {
+        let process_app_user_model_id =
+            window.application_facts.process_app_user_model_id.clone();
+        let Some(facts) = self.application_facts.get(&window.key()) else {
+            return;
+        };
+        window.application_facts.clone_from(facts);
+        window.application_facts.process_app_user_model_id = process_app_user_model_id;
+    }
+
+    fn refresh_application_facts(
+        &mut self,
+        window: &mut WindowInfo,
+        retry: Option<IdentityStabilization>,
+        now: Instant,
+    ) {
+        let process_app_user_model_id =
+            window.application_facts.process_app_user_model_id.clone();
+        let started = Instant::now();
+        let mut facts =
+            window_application_identity_in_apartment(window.id).unwrap_or_default();
+        facts.process_app_user_model_id = process_app_user_model_id;
+        METRICS.record_window_identity_fact(false, started.elapsed());
+
+        let key = window.key();
+        if let Some(previous) = self.application_facts.get(&key) {
+            if facts.window_app_user_model_id.is_none() {
+                facts
+                    .window_app_user_model_id
+                    .clone_from(&previous.window_app_user_model_id);
+            }
+            if facts.relaunch.is_none() {
+                facts.relaunch.clone_from(&previous.relaunch);
+            }
+            if facts.display_name.is_none() {
+                facts.display_name.clone_from(&previous.display_name);
+            }
+            if facts.icon_resource.is_none() {
+                facts.icon_resource.clone_from(&previous.icon_resource);
+            }
+            facts.prevent_pinning |= previous.prevent_pinning;
+        }
+        let stabilized = has_strong_window_identity(&facts);
+        self.application_facts.insert(key, facts.clone());
+        window.application_facts = facts;
+
+        match (stabilized, retry) {
+            (true, _) => {
+                self.identity_stabilization.remove(&key);
+            }
+            (false, Some(stabilization)) => match stabilization.next(now) {
+                Some(next) => {
+                    self.identity_stabilization.insert(key, next);
+                }
+                None => {
+                    self.identity_stabilization.remove(&key);
+                }
+            },
+            (false, None) => {
+                self.identity_stabilization
+                    .insert(key, IdentityStabilization::first(now));
+            }
         }
     }
 
@@ -577,6 +684,34 @@ impl WorkerState {
         }
     }
 
+    fn reschedule_identity_timer(&mut self) {
+        self.cancel_identity_timer();
+        let Some(retry_at) = self
+            .identity_stabilization
+            .values()
+            .map(|stabilization| stabilization.retry_at)
+            .min()
+        else {
+            return;
+        };
+        let interval = retry_at
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .max(1)
+            .try_into()
+            .unwrap_or(u32::MAX);
+        let timer = create_thread_timer(interval);
+        if timer != 0 {
+            self.identity_timer = Some(timer);
+        }
+    }
+
+    fn cancel_identity_timer(&mut self) {
+        if let Some(timer) = self.identity_timer.take() {
+            cancel_timer(timer);
+        }
+    }
+
     fn reschedule_reconcile(&mut self) {
         let multiplier = 1_u32.checked_shl(self.failures.min(4)).unwrap_or(u32::MAX);
         let interval = events::RECONCILE_INTERVAL_MS
@@ -592,8 +727,20 @@ impl WorkerState {
 
     fn cancel_timers(&mut self) {
         self.cancel_debounce_timer();
+        self.cancel_identity_timer();
         cancel_timer(self.reconcile_timer);
     }
+}
+
+fn has_strong_window_identity(facts: &WindowApplicationFacts) -> bool {
+    facts
+        .window_app_user_model_id
+        .as_deref()
+        .is_some_and(is_reliable_registered_id)
+        || facts
+            .relaunch
+            .as_ref()
+            .is_some_and(|relaunch| relaunch.arguments.is_some())
 }
 
 fn assign_window_incarnations(windows: &mut [WindowInfo]) {

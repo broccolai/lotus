@@ -71,31 +71,24 @@ pub fn project_dock(windows: &[WindowInfo], settings: DockProjection<'_>) -> Vec
     let mut unmatched = vec![true; visible_windows.len()];
     let mut items = Vec::new();
 
-    for pinned in settings.pinned_apps {
-        let key = settings
-            .pinned_applications
-            .iter()
-            .find(|assignment| assignment.pin_id.eq_ignore_ascii_case(&pinned.id))
-            .map_or_else(
-                || {
-                    LaunchSpec::new(&pinned.launch_target, pinned.arguments.as_deref())
-                        .map_or_else(
-                            || {
-                                ApplicationKey::ExecutablePath(
-                                    normalized_path(&pinned.launch_target).unwrap_or_else(
-                                        || pinned.launch_target.to_lowercase(),
-                                    ),
-                                )
-                            },
-                            |launch| ApplicationKey::from_launch_fallback(&launch),
-                        )
-                },
-                |assignment| assignment.key.clone(),
-            );
-        let registered = settings
-            .pinned_applications
-            .iter()
-            .find(|assignment| assignment.pin_id.eq_ignore_ascii_case(&pinned.id))
+    for (pin_index, pinned) in settings.pinned_apps.iter().enumerate() {
+        let assignment = settings.pinned_applications.get(pin_index);
+        let key = assignment.map_or_else(
+            || {
+                LaunchSpec::new(&pinned.launch_target, pinned.arguments.as_deref())
+                    .map_or_else(
+                        || {
+                            ApplicationKey::ExecutablePath(
+                                normalized_path(&pinned.launch_target)
+                                    .unwrap_or_else(|| pinned.launch_target.to_lowercase()),
+                            )
+                        },
+                        |launch| ApplicationKey::from_launch_fallback(&launch),
+                    )
+            },
+            |assignment| assignment.key.clone(),
+        );
+        let registered = assignment
             .and_then(|assignment| assignment.registered_index)
             .and_then(|index| settings.applications.get(index));
         let mut matches = Vec::new();

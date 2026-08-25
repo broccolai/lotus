@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use lotus_core::application::{
-    ApplicationIdentity, RegisteredApplication, WindowApplicationAssignments,
-    is_shared_host_executable,
+    ApplicationIdentity, ApplicationKey, PinnedApplicationAssignment,
+    RegisteredApplication, WindowApplicationAssignments, is_shared_host_executable,
 };
 use lotus_core::dock::DockItem;
 use lotus_core::settings::{DockSettings, PinnedApp, SettingsStore, SettingsStoreError};
@@ -13,7 +14,7 @@ pub fn project_snapshot(
     windows: &[WindowInfo],
     assignments: &WindowApplicationAssignments,
     applications: &[RegisteredApplication],
-    pinned_applications: &[lotus_core::application::PinnedApplicationAssignment],
+    pinned_applications: &[PinnedApplicationAssignment],
 ) -> Vec<DockItem> {
     lotus_core::dock::project_dock(
         windows,
@@ -85,6 +86,100 @@ impl DockModel {
 
     pub fn rebuild(&mut self, items: Vec<DockItem>) {
         self.items = items;
+    }
+
+    pub fn repair_catalogue_pins(
+        &mut self,
+        assignments: &[PinnedApplicationAssignment],
+        applications: &[RegisteredApplication],
+        safe_aliases: &[Vec<String>],
+    ) -> Result<bool, SettingsStoreError> {
+        let mut next = self.settings.clone();
+        let mut retained = HashMap::<ApplicationKey, usize>::new();
+        let mut removed = Vec::new();
+        let mut aliases = HashMap::<usize, Vec<String>>::new();
+
+        for (index, assignment) in assignments.iter().enumerate() {
+            let strong = assignment.registered_index.is_some()
+                || matches!(
+                    assignment.key,
+                    ApplicationKey::Registered(_) | ApplicationKey::LaunchSignature(_)
+                );
+            if !strong {
+                continue;
+            }
+            if let Some(&first) = retained.get(&assignment.key) {
+                removed.push((index, first));
+                aliases
+                    .entry(first)
+                    .or_default()
+                    .extend(safe_aliases.get(index).into_iter().flatten().cloned());
+            } else {
+                retained.insert(assignment.key.clone(), index);
+            }
+        }
+
+        let mut renamed = HashMap::new();
+        for (index, assignment) in assignments.iter().enumerate() {
+            let Some(application) = assignment
+                .registered_index
+                .and_then(|index| applications.get(index))
+            else {
+                continue;
+            };
+            let Some(pin) = next.pinned_apps.get_mut(index) else {
+                continue;
+            };
+            renamed
+                .entry(pin.id.to_ascii_lowercase())
+                .or_insert_with(|| application.id.clone());
+            pin.id.clone_from(&application.id);
+            pin.name.clone_from(&application.name);
+            pin.launch_target.clone_from(&application.launch.target);
+            pin.arguments.clone_from(&application.launch.arguments);
+            pin.icon_source = Some(application.icon_source.clone());
+            pin.app_user_model_id
+                .clone_from(&application.app_user_model_id);
+            let mut merged_aliases = safe_aliases.get(index).cloned().unwrap_or_default();
+            merged_aliases.extend(aliases.remove(&index).unwrap_or_default());
+            merged_aliases.sort();
+            merged_aliases.dedup();
+            pin.match_executables = merged_aliases;
+        }
+        for &(index, first) in &removed {
+            let Some(duplicate) = self.settings.pinned_apps.get(index) else {
+                continue;
+            };
+            let Some(retained) = next.pinned_apps.get(first) else {
+                continue;
+            };
+            renamed
+                .entry(duplicate.id.to_ascii_lowercase())
+                .or_insert_with(|| retained.id.clone());
+        }
+        for &(index, _) in removed.iter().rev() {
+            next.pinned_apps.remove(index);
+        }
+        next.item_order = next
+            .item_order
+            .into_iter()
+            .map(|id| renamed.get(&id.to_ascii_lowercase()).cloned().unwrap_or(id))
+            .fold(Vec::new(), |mut order, id| {
+                if !order
+                    .iter()
+                    .any(|saved: &String| saved.eq_ignore_ascii_case(&id))
+                {
+                    order.push(id);
+                }
+                order
+            });
+        let next = next.normalized();
+        if next == self.settings {
+            return Ok(false);
+        }
+        self.settings_store.save(&next)?;
+        self.settings = next;
+        Ok(true)
     }
 
     pub fn apply_settings(

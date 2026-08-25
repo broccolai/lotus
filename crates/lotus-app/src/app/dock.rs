@@ -64,6 +64,7 @@ pub(super) struct DockRuntime {
     application_resolver: ApplicationResolver,
     application_catalog: Arc<ApplicationCatalogSnapshot>,
     application_assignments: WindowApplicationAssignments,
+    adopted_catalog_generation: u64,
 }
 
 struct MascotPlayback {
@@ -123,6 +124,7 @@ impl DockRuntime {
             application_resolver,
             application_catalog,
             application_assignments,
+            adopted_catalog_generation: 0,
         };
         runtime.reset_mascot_animation();
         runtime.refresh_scene_items();
@@ -178,6 +180,44 @@ impl DockRuntime {
         }
         self.mark_changed();
         self.request_native_window_icons();
+    }
+
+    pub(in crate::app) fn adopt_catalogue_pins(
+        &mut self,
+        catalog: &ApplicationCatalogSnapshot,
+    ) -> Result<(), AppError> {
+        if catalog.generation == 0 || self.adopted_catalog_generation == catalog.generation
+        {
+            return Ok(());
+        }
+        let assignments = pinned_application_assignments(self.model.settings(), catalog);
+        let safe_aliases = assignments
+            .iter()
+            .zip(&self.model.settings().pinned_apps)
+            .map(|(assignment, pin)| {
+                let mut aliases = assignment
+                    .registered_index
+                    .and_then(|index| catalog.application(index))
+                    .map(|application| catalog.safe_executable_aliases(application))
+                    .unwrap_or_default();
+                aliases.extend(
+                    pin.match_executables
+                        .iter()
+                        .filter(|alias| catalog.is_safe_executable_alias(alias))
+                        .cloned(),
+                );
+                aliases.sort();
+                aliases.dedup();
+                aliases
+            })
+            .collect::<Vec<_>>();
+        let _ = self.model.repair_catalogue_pins(
+            &assignments,
+            &catalog.applications,
+            &safe_aliases,
+        )?;
+        self.adopted_catalog_generation = catalog.generation;
+        Ok(())
     }
 
     pub(in crate::app) fn registered_application_for_item(
@@ -579,7 +619,7 @@ fn pinned_application_assignments(
     settings
         .pinned_apps
         .iter()
-        .filter_map(|pin| {
+        .map(|pin| {
             lotus_core::application::LaunchSpec::new(
                 &pin.launch_target,
                 pin.arguments.as_deref(),
@@ -594,9 +634,23 @@ fn pinned_application_assignments(
                     )
                     .map(|key| PinnedApplicationAssignment {
                         registered_index: catalog.application_index_for_key(&key),
-                        pin_id: pin.id.clone(),
                         key,
                     })
+            })
+            .unwrap_or_else(|| PinnedApplicationAssignment {
+                key: ApplicationKey::from_launch_fallback(
+                    &lotus_core::application::LaunchSpec::new(
+                        &pin.launch_target,
+                        pin.arguments.as_deref(),
+                    )
+                    .unwrap_or_else(|| {
+                        lotus_core::application::LaunchSpec {
+                            target: pin.launch_target.clone(),
+                            arguments: pin.arguments.clone(),
+                        }
+                    }),
+                ),
+                registered_index: None,
             })
         })
         .collect()
