@@ -413,6 +413,7 @@ impl MessageLoop<'_, '_> {
 
     fn process_wakes(&mut self, wakes: WakeEvents) -> Result<bool, AppError> {
         let mut changed = false;
+        let mut presented_size = self.dock_model.scene().desired_size();
         if wakes.update {
             update_events::handle_update_results(self.auxiliary.settings_runtime());
             changed = true;
@@ -433,11 +434,12 @@ impl MessageLoop<'_, '_> {
                 self.auxiliary,
                 self.dock_model,
             )?;
+            presented_size = self.dock_model.scene().desired_size();
             self.render_dock();
             changed = true;
         }
         if wakes.search_catalog {
-            changed |= search_events::refresh_catalog(
+            let catalog_changed = search_events::refresh_catalog(
                 self.dock,
                 self.graphics,
                 self.surface,
@@ -445,9 +447,24 @@ impl MessageLoop<'_, '_> {
                 self.dock_model,
                 self.auxiliary,
             )?;
+            if catalog_changed {
+                presented_size = self.dock_model.scene().desired_size();
+                changed = true;
+            }
         }
         if wakes.icon_hydration {
             self.auxiliary.drain_hydrated_icons(self.dock_model)?;
+            changed = true;
+        }
+
+        if self.dock_model.scene().desired_size() != presented_size {
+            present_dock_change(
+                self.dock,
+                self.graphics,
+                self.surface,
+                self.auxiliary,
+                self.dock_model,
+            )?;
             changed = true;
         }
 
