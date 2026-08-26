@@ -237,7 +237,7 @@ pub fn recover_startup(
         ));
         write_journal(&journal)?;
     }
-    cleanup_staging_directory(&journal.staging_directory)?;
+    cleanup_journal_staging(&journal)?;
     let diagnostic = journal.diagnostic;
     clear_journal()?;
     Ok(diagnostic)
@@ -265,7 +265,7 @@ pub fn complete_post_install_health(
                     ),
                 );
             }
-            cleanup_staging_directory(&journal.staging_directory)?;
+            cleanup_journal_staging(&journal)?;
             clear_journal()?;
         } else {
             journal.phase = UpdatePhase::Failed;
@@ -296,12 +296,19 @@ pub fn cleanup_stale_staging() -> Vec<UpdateInstallError> {
         .collect()
 }
 
+pub fn cleanup_requested_staging_directory(path: &Path) -> Result<(), UpdateInstallError> {
+    let journal = read_journal()?.ok_or(UpdateInstallError::MissingJournal)?;
+    validate_journal(&journal)?;
+    let directory = named_staging_directory_from_path(path)?;
+    if !paths_equal(directory, &journal.staging_directory) {
+        return Err(UpdateInstallError::InvalidCleanupPath(path.to_owned()));
+    }
+    cleanup_journal_staging(&journal)
+}
+
 pub fn cleanup_staging_directory(path: &Path) -> Result<(), UpdateInstallError> {
     let directory = staging_directory_from_path(path)?;
-    if directory.exists() {
-        fs::remove_dir_all(directory).map_err(UpdateInstallError::Cleanup)?;
-    }
-    Ok(())
+    remove_staging_directory(directory)
 }
 pub const fn is_update_wake(message: u32) -> bool {
     message == UPDATE_WAKE_MESSAGE
@@ -441,13 +448,42 @@ fn clear_journal() -> Result<(), UpdateInstallError> {
     Ok(())
 }
 fn validate_journal(journal: &UpdateJournal) -> Result<(), UpdateInstallError> {
-    validate_staging_reference(&journal.staging_directory)?;
+    validate_journal_staging(journal)?;
     if journal
         .source_executable
         .file_name()
         .is_none_or(|name| !name.eq_ignore_ascii_case("lotus.exe"))
     {
         return Err(UpdateInstallError::InvalidSource);
+    }
+    Ok(())
+}
+
+fn validate_journal_staging(journal: &UpdateJournal) -> Result<(), UpdateInstallError> {
+    let path = &journal.staging_directory;
+    if !path.is_absolute() || !has_staging_name(path) {
+        return Err(UpdateInstallError::InvalidCleanupPath(path.to_owned()));
+    }
+    if !path.exists() {
+        return Ok(());
+    }
+    let marker = fs::read_to_string(path.join(STAGING_MARKER_NAME))
+        .map_err(|_| UpdateInstallError::InvalidCleanupPath(path.to_owned()))?;
+    if marker == journal.target_version {
+        Ok(())
+    } else {
+        Err(UpdateInstallError::InvalidCleanupPath(path.to_owned()))
+    }
+}
+
+fn cleanup_journal_staging(journal: &UpdateJournal) -> Result<(), UpdateInstallError> {
+    validate_journal_staging(journal)?;
+    remove_staging_directory(&journal.staging_directory)
+}
+
+fn remove_staging_directory(directory: &Path) -> Result<(), UpdateInstallError> {
+    if directory.exists() {
+        fs::remove_dir_all(directory).map_err(UpdateInstallError::Cleanup)?;
     }
     Ok(())
 }
@@ -465,6 +501,23 @@ fn staging_directory_from_path(path: &Path) -> Result<&Path, UpdateInstallError>
         && has_staging_path_shape(parent)
     {
         validate_staging_reference(parent)?;
+        Ok(parent)
+    } else {
+        Err(UpdateInstallError::InvalidCleanupPath(path.to_owned()))
+    }
+}
+fn named_staging_directory_from_path(path: &Path) -> Result<&Path, UpdateInstallError> {
+    if has_staging_name(path) {
+        return Ok(path);
+    }
+    let Some(parent) = path.parent() else {
+        return Err(UpdateInstallError::InvalidCleanupPath(path.to_owned()));
+    };
+    if path
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("lotus-setup.exe"))
+        && has_staging_name(parent)
+    {
         Ok(parent)
     } else {
         Err(UpdateInstallError::InvalidCleanupPath(path.to_owned()))
@@ -492,10 +545,12 @@ fn validate_staging_reference(path: &Path) -> Result<(), UpdateInstallError> {
 fn has_staging_path_shape(path: &Path) -> bool {
     path.parent()
         .is_some_and(|parent| paths_equal(parent, &std::env::temp_dir()))
-        && path
-            .file_name()
-            .and_then(OsStr::to_str)
-            .is_some_and(|name| name.starts_with("lotus-update-"))
+        && has_staging_name(path)
+}
+fn has_staging_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.starts_with("lotus-update-"))
 }
 fn is_stale(path: &Path) -> bool {
     path.metadata()

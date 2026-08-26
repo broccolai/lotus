@@ -183,7 +183,8 @@ pub fn run() -> Result<(), AppError> {
         || lotus_windows::update::post_install_health_pending().unwrap_or(true)
         || lotus_windows::update::interrupted_install_health_pending().unwrap_or(true);
     if let Some(directory) = startup.cleanup_update.as_deref()
-        && let Err(error) = lotus_windows::update::cleanup_staging_directory(directory)
+        && let Err(error) =
+            lotus_windows::update::cleanup_requested_staging_directory(directory)
     {
         lotus_windows::diagnostics::record_error("update.cleanup_requested", &error);
     }
