@@ -34,13 +34,46 @@ impl From<WindowsError> for SettingsFileError {
 pub fn choose_export_path(
     owner: WindowHandle,
 ) -> Result<Option<PathBuf>, SettingsFileError> {
+    choose_path(owner, ExportKind::Settings)
+}
+
+pub fn choose_diagnostics_export_path(
+    owner: WindowHandle,
+) -> Result<Option<PathBuf>, SettingsFileError> {
+    choose_path(owner, ExportKind::Diagnostics)
+}
+
+#[derive(Clone, Copy)]
+enum ExportKind {
+    Settings,
+    Diagnostics,
+}
+
+fn choose_path(
+    owner: WindowHandle,
+    kind: ExportKind,
+) -> Result<Option<PathBuf>, SettingsFileError> {
+    let (filter_name, filter_spec, file_name, extension) = match kind {
+        ExportKind::Settings => (
+            w!("JSON settings"),
+            w!("*.json"),
+            w!("lotus-settings.json"),
+            w!("json"),
+        ),
+        ExportKind::Diagnostics => (
+            w!("Text diagnostics"),
+            w!("*.txt"),
+            w!("lotus-diagnostics.txt"),
+            w!("txt"),
+        ),
+    };
     let _apartment = ComApartment::enter().ok_or(SettingsFileError::ComUnavailable)?;
     let dialog: IFileSaveDialog =
         unsafe { CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER) }?;
     let filters = [
         COMDLG_FILTERSPEC {
-            pszName: w!("JSON settings"),
-            pszSpec: w!("*.json"),
+            pszName: filter_name,
+            pszSpec: filter_spec,
         },
         COMDLG_FILTERSPEC {
             pszName: w!("All files"),
@@ -49,8 +82,8 @@ pub fn choose_export_path(
     ];
     unsafe {
         dialog.SetFileTypes(&filters)?;
-        dialog.SetFileName(w!("lotus-settings.json"))?;
-        dialog.SetDefaultExtension(w!("json"))?;
+        dialog.SetFileName(file_name)?;
+        dialog.SetDefaultExtension(extension)?;
         dialog.SetOptions(FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_OVERWRITEPROMPT)?;
     }
     match unsafe { dialog.Show(Some(owner.raw())) } {

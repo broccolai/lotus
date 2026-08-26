@@ -428,6 +428,7 @@ impl SettingsScene {
             SettingsControl::RestartIntegration => SettingsAction::RestartIntegration,
             SettingsControl::ReplaySetup => SettingsAction::ReplaySetup,
             SettingsControl::ExportSettings => SettingsAction::ExportSettings,
+            SettingsControl::ExportDiagnostics => SettingsAction::ExportDiagnostics,
             SettingsControl::ResetLotus => SettingsAction::ResetLotus,
             SettingsControl::OnboardingModule(module) => {
                 self.draft.set_onboarding_module(

@@ -122,6 +122,16 @@ pub fn recover() -> TrayIntegrationHealth {
     coordinator().recover()
 }
 
+pub fn current_health() -> Option<TrayIntegrationHealth> {
+    COORDINATOR.get().map(|coordinator| {
+        if coordinator.state.worker_running.load(Ordering::Acquire) {
+            TrayIntegrationHealth::Healthy
+        } else {
+            TrayIntegrationHealth::Degraded
+        }
+    })
+}
+
 #[derive(Clone, Copy)]
 enum TrayRequest {
     Overflow {

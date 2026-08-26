@@ -110,13 +110,21 @@ impl SettingsStore {
         settings: &DockSettings,
         destination: &Path,
     ) -> Result<(), SettingsStoreError> {
+        self.validate_export_destination(destination)?;
+
+        Self::write_settings(destination, settings, "exported settings")
+    }
+
+    pub fn validate_export_destination(
+        &self,
+        destination: &Path,
+    ) -> Result<(), SettingsStoreError> {
         if paths_alias(destination, &self.settings_path())? {
             return Err(SettingsStoreError::ExportAliasesLiveSettings {
                 path: destination.to_owned(),
             });
         }
-
-        Self::write_settings(destination, settings, "exported settings")
+        Ok(())
     }
 
     pub fn reset(&self) -> Result<SettingsReset, SettingsStoreError> {

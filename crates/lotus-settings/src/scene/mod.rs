@@ -223,6 +223,7 @@ pub enum SettingsControl {
     RestartIntegration,
     ReplaySetup,
     ExportSettings,
+    ExportDiagnostics,
     ResetLotus,
     OnboardingModule(OnboardingModule),
     OnboardingZone(OnboardingModule),
@@ -250,6 +251,7 @@ pub enum SettingsAction {
     RestartIntegration,
     ReplaySetup,
     ExportSettings,
+    ExportDiagnostics,
     ResetLotus,
     CompleteOnboarding(Box<DockSettings>),
     Apply(Box<DockSettings>),
@@ -412,6 +414,7 @@ impl SettingsSize {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SettingsScene {
     dpi: NonZeroU32,
+    available_size: Option<SettingsSize>,
     page: SettingsPage,
     draft: SettingsDraft,
     hovered: Option<SettingsControl>,
@@ -433,6 +436,7 @@ impl SettingsScene {
         let settings = settings.normalized();
         Some(Self {
             dpi,
+            available_size: None,
             page: SettingsPage::General,
             draft: SettingsDraft::new(settings),
             hovered: None,
@@ -453,6 +457,21 @@ impl SettingsScene {
         self.dpi.get()
     }
 
+    pub fn effective_dpi(&self) -> u32 {
+        let raw_dpi = u64::from(self.dpi.get());
+        let Some(available) = self.available_size else {
+            return self.dpi.get();
+        };
+        let full_width = scaled_at_dpi(WIDTH_DIP, raw_dpi);
+        let full_height = scaled_at_dpi(HEIGHT_DIP, raw_dpi);
+        let numerator = u64::from(available.width())
+            .saturating_mul(full_height)
+            .min(u64::from(available.height()).saturating_mul(full_width));
+        let denominator = full_width.saturating_mul(full_height).max(1);
+        let fitted = raw_dpi.saturating_mul(numerator.min(denominator)) / denominator;
+        u32::try_from(fitted).unwrap_or(u32::MAX).max(1)
+    }
+
     pub fn set_dpi(&mut self, dpi: u32) -> bool {
         let Some(dpi) = NonZeroU32::new(dpi) else {
             return false;
@@ -461,6 +480,15 @@ impl SettingsScene {
             return false;
         }
         self.dpi = dpi;
+        true
+    }
+
+    pub fn set_available_size(&mut self, width: u32, height: u32) -> bool {
+        let size = SettingsSize::new(width, height);
+        if self.available_size == size {
+            return false;
+        }
+        self.available_size = size;
         true
     }
 
@@ -644,10 +672,10 @@ impl SettingsScene {
     }
 
     pub fn desired_size(&self) -> SettingsSize {
-        SettingsSize {
+        self.available_size.unwrap_or_else(|| SettingsSize {
             width: nonzero(self.scale(WIDTH_DIP)),
             height: nonzero(self.scale(HEIGHT_DIP)),
-        }
+        })
     }
 
     pub fn scroll(&mut self, direction: i32) -> bool {
@@ -763,6 +791,7 @@ impl SettingsScene {
             | SettingsControl::RestartIntegration
             | SettingsControl::ReplaySetup
             | SettingsControl::ExportSettings
+            | SettingsControl::ExportDiagnostics
             | SettingsControl::ResetLotus
             | SettingsControl::OnboardingModule(_)
             | SettingsControl::OnboardingZone(_)
@@ -934,9 +963,13 @@ impl SettingsScene {
     }
 
     fn scale(&self, dips: u32) -> u32 {
-        let scaled = u64::from(dips) * u64::from(self.dpi.get());
-        u32::try_from((scaled + DIPS_PER_INCH / 2) / DIPS_PER_INCH).unwrap_or(u32::MAX)
+        u32::try_from(scaled_at_dpi(dips, u64::from(self.effective_dpi())))
+            .unwrap_or(u32::MAX)
     }
+}
+
+fn scaled_at_dpi(dips: u32, dpi: u64) -> u64 {
+    (u64::from(dips).saturating_mul(dpi) + DIPS_PER_INCH / 2) / DIPS_PER_INCH
 }
 
 fn nonzero(value: u32) -> NonZeroU32 {
@@ -965,6 +998,7 @@ fn is_page_content(control: SettingsControl) -> bool {
             | SettingsControl::RestartIntegration
             | SettingsControl::ReplaySetup
             | SettingsControl::ExportSettings
+            | SettingsControl::ExportDiagnostics
             | SettingsControl::ResetLotus
     )
 }

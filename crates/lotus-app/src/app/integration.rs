@@ -115,6 +115,39 @@ impl IntegrationRecovery {
         }
     }
 
+    pub(super) fn diagnostic_snapshot(
+        &self,
+        graphics: &DeviceState,
+        auxiliary: &ModuleHost,
+    ) -> String {
+        let lifecycle = match self.lifecycle.health() {
+            SystemLifecycleHealth::Healthy => "healthy",
+            SystemLifecycleHealth::Degraded => "degraded",
+        };
+        let input = if auxiliary
+            .input()
+            .is_none_or(lotus_windows::input::InputController::is_healthy)
+        {
+            "healthy"
+        } else {
+            "degraded"
+        };
+        let tray = lotus_windows::tray::current_health()
+            .map_or("not_initialized".to_owned(), |health| format!("{health:?}"));
+
+        format!(
+            "shell={:?}\nlifecycle={}\ngraphics={:?}\ntray={}\nmonitors={:?}\nmonitor_replicas={}\nmonitor_topology_generation={}\ninput={}",
+            self.shell.health(),
+            lifecycle,
+            graphics.health(),
+            tray,
+            auxiliary.monitor_integration_health(),
+            auxiliary.monitor_replica_count(),
+            auxiliary.monitor_topology_generation(),
+            input,
+        )
+    }
+
     pub(super) fn recover(
         &mut self,
         source: IntegrationRecoverySource,

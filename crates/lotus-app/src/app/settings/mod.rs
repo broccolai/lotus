@@ -93,6 +93,8 @@ impl SettingsRuntime {
         let _ = self.scene.set_dpi(self.window.dpi());
 
         let (width, height) = self.window.client_size()?;
+        let _ = self.scene.set_available_size(width, height);
+        self.window.set_layout_dpi(self.scene.effective_dpi());
         let size =
             SettingsSize::new(width, height).ok_or(AppError::InvalidSettingsScene)?;
         let surface_size = SurfaceSize::new(size.width(), size.height())
@@ -172,6 +174,7 @@ impl SettingsRuntime {
 
     pub(in crate::app) fn set_dpi(&mut self, dpi: u32) {
         let _ = self.scene.set_dpi(dpi);
+        self.window.set_layout_dpi(self.scene.effective_dpi());
     }
 
     pub(in crate::app) fn onboarding_active(&self) -> bool {
@@ -260,6 +263,8 @@ impl SettingsRuntime {
         let Some(size) = SettingsSize::new(width, height) else {
             return Ok(());
         };
+        let _ = self.scene.set_available_size(width, height);
+        self.window.set_layout_dpi(self.scene.effective_dpi());
         let Some(surface) = &mut self.surface else {
             return Ok(());
         };

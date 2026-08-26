@@ -133,18 +133,25 @@ impl SettingsScene {
                 SettingsControl::RestartIntegration => {
                     HEIGHT_DIP
                         - FOOTER_HEIGHT_DIP
+                        - 5 * ROW_HEIGHT_DIP
+                        - 4 * ROW_GAP_DIP
+                        - 22
+                }
+                SettingsControl::ReplaySetup => {
+                    HEIGHT_DIP
+                        - FOOTER_HEIGHT_DIP
                         - 4 * ROW_HEIGHT_DIP
                         - 3 * ROW_GAP_DIP
                         - 22
                 }
-                SettingsControl::ReplaySetup => {
+                SettingsControl::ExportSettings => {
                     HEIGHT_DIP
                         - FOOTER_HEIGHT_DIP
                         - 3 * ROW_HEIGHT_DIP
                         - 2 * ROW_GAP_DIP
                         - 22
                 }
-                SettingsControl::ExportSettings => {
+                SettingsControl::ExportDiagnostics => {
                     HEIGHT_DIP - FOOTER_HEIGHT_DIP - 2 * ROW_HEIGHT_DIP - ROW_GAP_DIP - 22
                 }
                 SettingsControl::ResetLotus => {
@@ -300,6 +307,7 @@ impl SettingsScene {
                 SettingsControl::RestartIntegration,
                 SettingsControl::ReplaySetup,
                 SettingsControl::ExportSettings,
+                SettingsControl::ExportDiagnostics,
                 SettingsControl::ResetLotus,
             ],
             SettingsPage::Taskbar | SettingsPage::Status | SettingsPage::Search => self

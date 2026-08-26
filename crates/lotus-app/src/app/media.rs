@@ -78,14 +78,17 @@ impl MediaRuntime {
                             outcome,
                             activation::ActivationOutcome::ForegroundDenied
                         ) {
-                            show_error(
-                                owner,
-                                "Lotus media",
-                                "Windows prevented Lotus from focusing the media application.",
+                            lotus_windows::diagnostics::record_diagnostic(
+                                "activation.media_foreground_denied",
+                                "Windows denied a media-source foreground request",
                             );
                         }
                     }
                     Err(error) => {
+                        lotus_windows::diagnostics::record_error(
+                            "activation.media_source",
+                            &error,
+                        );
                         show_error(
                             owner,
                             "Lotus media",

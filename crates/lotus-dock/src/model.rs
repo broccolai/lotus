@@ -86,6 +86,13 @@ impl DockModel {
         self.settings_store.export(&self.settings, destination)
     }
 
+    pub fn validate_export_destination(
+        &self,
+        destination: &Path,
+    ) -> Result<(), SettingsStoreError> {
+        self.settings_store.validate_export_destination(destination)
+    }
+
     pub fn reset_settings(&self) -> Result<SettingsReset, SettingsStoreError> {
         self.settings_store.reset()
     }

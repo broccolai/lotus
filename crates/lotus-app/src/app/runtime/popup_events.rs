@@ -149,14 +149,14 @@ fn execute_popup_action(
                         .record_window_activation(source_index, window);
                 }
                 if matches!(outcome, activation::ActivationOutcome::ForegroundDenied) {
-                    show_error(
-                        context.dock.handle(),
-                        "Lotus",
-                        "Windows prevented Lotus from bringing that window to the foreground.",
+                    lotus_windows::diagnostics::record_diagnostic(
+                        "activation.popup_foreground_denied",
+                        "Windows denied a picker foreground request",
                     );
                 }
             }
             Err(error) => {
+                lotus_windows::diagnostics::record_error("activation.popup_window", &error);
                 show_error(
                     context.dock.handle(),
                     "Lotus",
@@ -166,6 +166,7 @@ fn execute_popup_action(
         },
         PopupAction::CloseWindow(key) => {
             if let Err(error) = activation::request_close(key, false) {
+                lotus_windows::diagnostics::record_error("activation.popup_close", &error);
                 show_error(
                     context.dock.handle(),
                     "Lotus",
@@ -263,6 +264,10 @@ fn execute_app_menu_action(
                 .unwrap_or_default();
             for key in window_keys {
                 if let Err(error) = activation::request_close(key, false) {
+                    lotus_windows::diagnostics::record_error(
+                        "activation.app_menu_close",
+                        &error,
+                    );
                     show_error(
                         context.dock.handle(),
                         "Lotus",
@@ -280,6 +285,10 @@ fn execute_app_menu_action(
                 .unwrap_or_default();
             for key in window_keys {
                 if let Err(error) = activation::request_close(key, true) {
+                    lotus_windows::diagnostics::record_error(
+                        "activation.app_menu_force_close",
+                        &error,
+                    );
                     show_error(
                         context.dock.handle(),
                         "Lotus",

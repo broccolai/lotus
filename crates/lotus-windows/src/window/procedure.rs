@@ -58,6 +58,7 @@ pub struct WindowState {
     pub(super) mascot_animation_delay_ms: Cell<Option<u32>>,
     pub(super) pending_high_surrogate: Cell<Option<u16>>,
     pub(super) pointer_cursor: Cell<PointerCursor>,
+    pub(super) settings_layout_dpi: Cell<u32>,
     pub(super) kind: WindowKind,
 }
 
@@ -119,6 +120,9 @@ impl WindowState {
     pub fn set_pointer_cursor(&self, cursor: PointerCursor) {
         self.pointer_cursor.set(cursor);
         let _ = cursor.apply();
+    }
+    pub fn set_settings_layout_dpi(&self, dpi: u32) {
+        self.settings_layout_dpi.set(dpi);
     }
 
     pub fn set_animation_active(&self, hwnd: HWND, active: bool) -> Result<()> {

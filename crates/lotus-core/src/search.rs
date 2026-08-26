@@ -285,6 +285,7 @@ impl SearchCatalog {
             |(left, left_score, left_usage), (right, right_score, right_usage)| {
                 Reverse(left_score.quality)
                     .cmp(&Reverse(right_score.quality))
+                    .then_with(|| Reverse(left_usage).cmp(&Reverse(right_usage)))
                     .then_with(|| {
                         if normalized_query.is_empty() {
                             std::cmp::Ordering::Equal
@@ -293,7 +294,6 @@ impl SearchCatalog {
                         }
                     })
                     .then_with(|| left_score.penalty.cmp(&right_score.penalty))
-                    .then_with(|| Reverse(left_usage).cmp(&Reverse(right_usage)))
                     .then_with(|| {
                         if normalized_query.is_empty() {
                             left.ordinal.cmp(&right.ordinal)

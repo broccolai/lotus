@@ -351,6 +351,14 @@ impl DockRuntime {
         Ok(())
     }
 
+    pub(super) fn validate_export_destination(
+        &self,
+        destination: &Path,
+    ) -> Result<(), AppError> {
+        self.model.validate_export_destination(destination)?;
+        Ok(())
+    }
+
     pub(super) fn reset_settings(
         &self,
     ) -> Result<lotus_core::settings::SettingsReset, AppError> {

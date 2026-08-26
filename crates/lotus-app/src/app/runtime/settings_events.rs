@@ -261,6 +261,10 @@ fn apply_settings_action(
             export_settings(context);
             Ok(())
         }
+        SettingsAction::ExportDiagnostics => {
+            export_diagnostics(context);
+            Ok(())
+        }
         SettingsAction::ResetLotus => {
             reset_lotus(context);
             Ok(())
@@ -327,6 +331,60 @@ fn export_settings(context: &mut SettingsEventContext<'_>) {
                     "Lotus could not export settings to {}.\n\n{error}",
                     destination.display()
                 ),
+            );
+        }
+    }
+}
+
+fn export_diagnostics(context: &mut SettingsEventContext<'_>) {
+    let owner = context.auxiliary.settings_owner();
+    let destination =
+        match lotus_windows::settings_file::choose_diagnostics_export_path(owner) {
+            Ok(Some(destination)) => destination,
+            Ok(None) => return,
+            Err(error) => {
+                lotus_windows::diagnostics::record_error(
+                    "diagnostics.export_dialog_failed",
+                    &error,
+                );
+                show_error(
+                    owner,
+                    "Lotus diagnostics",
+                    &format!(
+                        "Lotus could not open the diagnostics export dialog.\n\n{error}"
+                    ),
+                );
+                return;
+            }
+        };
+
+    if let Err(error) = context.dock_model.validate_export_destination(&destination) {
+        lotus_windows::diagnostics::record_error("diagnostics.export_rejected", &error);
+        show_error(
+            owner,
+            "Lotus diagnostics",
+            &format!("Lotus could not export diagnostics.\n\n{error}"),
+        );
+        return;
+    }
+    let integration = context
+        .integration
+        .diagnostic_snapshot(context.graphics, context.auxiliary);
+    match lotus_windows::diagnostics::export_support_report(
+        &destination,
+        context.dock_model.settings(),
+        &integration,
+    ) {
+        Ok(()) => lotus_windows::diagnostics::record_diagnostic(
+            "diagnostics.exported",
+            "support report exported",
+        ),
+        Err(error) => {
+            lotus_windows::diagnostics::record_error("diagnostics.export_failed", &error);
+            show_error(
+                owner,
+                "Lotus diagnostics",
+                &format!("Lotus could not export diagnostics.\n\n{error}"),
             );
         }
     }

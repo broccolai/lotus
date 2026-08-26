@@ -18,12 +18,15 @@ use super::{
     is_dock_context_window, is_dock_window, is_settings_window, low_word,
     push_window_event, window_kind, with_window_state,
 };
+use crate::platform::windows::display::{nearest_display, nearest_display_to_point};
 use crate::platform::windows::interaction::{key_is_pressed, request_exit};
+use crate::window::settings::fit_size_within;
 
 const SETTINGS_MIN_WIDTH_DIPS: u32 = 780;
 const SETTINGS_MIN_HEIGHT_DIPS: u32 = 540;
 const SETTINGS_SIDEBAR_WIDTH_DIPS: u32 = 209;
 const SETTINGS_DRAG_REGION_HEIGHT_DIPS: u32 = 18;
+const SETTINGS_WORK_AREA_MARGIN_DIPS: u32 = 16;
 
 pub(super) fn dispatch(
     hwnd: HWND,
@@ -130,8 +133,30 @@ fn dispatch_close_message(hwnd: HWND) -> LRESULT {
 fn apply_settings_minimum_size(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let limits = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
     let dpi = DpiScale::from_system(unsafe { GetDpiForWindow(hwnd) });
-    limits.ptMinTrackSize.x = dpi.physical_i32(SETTINGS_MIN_WIDTH_DIPS);
-    limits.ptMinTrackSize.y = dpi.physical_i32(SETTINGS_MIN_HEIGHT_DIPS);
+    let Ok(display) = nearest_display(hwnd) else {
+        return LRESULT(0);
+    };
+    let work_width = display
+        .work_area
+        .right
+        .saturating_sub(display.work_area.left);
+    let work_height = display
+        .work_area
+        .bottom
+        .saturating_sub(display.work_area.top);
+    let margin = dpi.physical_i32(SETTINGS_WORK_AREA_MARGIN_DIPS);
+    let maximum_width = work_width.saturating_sub(margin.saturating_mul(2)).max(1);
+    let maximum_height = work_height.saturating_sub(margin.saturating_mul(2)).max(1);
+    let minimum = fit_size_within(
+        dpi.physical_i32(SETTINGS_MIN_WIDTH_DIPS),
+        dpi.physical_i32(SETTINGS_MIN_HEIGHT_DIPS),
+        maximum_width,
+        maximum_height,
+    );
+    limits.ptMinTrackSize.x = minimum.0;
+    limits.ptMinTrackSize.y = minimum.1;
+    limits.ptMaxTrackSize.x = maximum_width;
+    limits.ptMaxTrackSize.y = maximum_height;
     LRESULT(0)
 }
 
@@ -147,7 +172,13 @@ fn settings_header_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     if !converted || !bounds_read {
         return LRESULT(isize::try_from(HTCLIENT).unwrap_or_default());
     }
-    let dpi = DpiScale::from_system(unsafe { GetDpiForWindow(hwnd) });
+    let mut layout_dpi = 0;
+    with_window_state(hwnd, |state| layout_dpi = state.settings_layout_dpi.get());
+    let dpi = DpiScale::from_system(if layout_dpi == 0 {
+        unsafe { GetDpiForWindow(hwnd) }
+    } else {
+        layout_dpi
+    });
     let draggable = client.x >= 0
         && client.x
             < dpi
@@ -167,14 +198,15 @@ fn settings_header_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 
 fn apply_dpi_change(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let suggested = unsafe { &*(lparam.0 as *const RECT) };
+    let bounds = settings_dpi_bounds(hwnd, suggested, wparam);
     let _ = unsafe {
         SetWindowPos(
             hwnd,
             None,
-            suggested.left,
-            suggested.top,
-            suggested.right - suggested.left,
-            suggested.bottom - suggested.top,
+            bounds.left,
+            bounds.top,
+            bounds.right - bounds.left,
+            bounds.bottom - bounds.top,
             SWP_NOACTIVATE | SWP_NOZORDER,
         )
     };
@@ -186,6 +218,63 @@ fn apply_dpi_change(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         },
     );
     LRESULT(0)
+}
+
+fn settings_dpi_bounds(hwnd: HWND, suggested: &RECT, wparam: WPARAM) -> RECT {
+    if !is_settings_window(hwnd) {
+        return *suggested;
+    }
+    let center_x = suggested
+        .left
+        .saturating_add((suggested.right - suggested.left) / 2);
+    let center_y = suggested
+        .top
+        .saturating_add((suggested.bottom - suggested.top) / 2);
+    let Ok(display) = nearest_display_to_point(center_x, center_y) else {
+        return *suggested;
+    };
+    let dpi = DpiScale::from_system(u32::try_from(wparam.0 & 0xFFFF).unwrap_or_default());
+    let margin = dpi.physical_i32(SETTINGS_WORK_AREA_MARGIN_DIPS);
+    let maximum_width = display
+        .work_area
+        .right
+        .saturating_sub(display.work_area.left)
+        .saturating_sub(margin.saturating_mul(2))
+        .max(1);
+    let maximum_height = display
+        .work_area
+        .bottom
+        .saturating_sub(display.work_area.top)
+        .saturating_sub(margin.saturating_mul(2))
+        .max(1);
+    let (width, height) = fit_size_within(
+        suggested.right.saturating_sub(suggested.left),
+        suggested.bottom.saturating_sub(suggested.top),
+        maximum_width,
+        maximum_height,
+    );
+    let left = suggested.left.clamp(
+        display.work_area.left.saturating_add(margin),
+        display
+            .work_area
+            .right
+            .saturating_sub(margin)
+            .saturating_sub(width),
+    );
+    let top = suggested.top.clamp(
+        display.work_area.top.saturating_add(margin),
+        display
+            .work_area
+            .bottom
+            .saturating_sub(margin)
+            .saturating_sub(height),
+    );
+    RECT {
+        left,
+        top,
+        right: left.saturating_add(width),
+        bottom: top.saturating_add(height),
+    }
 }
 
 fn apply_configured_region(hwnd: HWND) {

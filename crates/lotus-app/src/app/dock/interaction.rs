@@ -351,13 +351,25 @@ impl DockRuntime {
             Ok(outcome) => {
                 if let Some(window) = outcome.focused_key() {
                     self.record_window_activation(source_index, window);
+                } else if matches!(outcome, activation::ActivationOutcome::ForegroundDenied)
+                {
+                    lotus_windows::diagnostics::record_diagnostic(
+                        "activation.dock_foreground_denied",
+                        "Windows denied a dock foreground request",
+                    );
                 }
             }
-            Err(error) => show_error(
-                owner,
-                "Lotus",
-                &format!("Lotus could not activate {display_name}.\n\n{error}"),
-            ),
+            Err(error) => {
+                lotus_windows::diagnostics::record_error(
+                    "activation.dock_application",
+                    &error,
+                );
+                show_error(
+                    owner,
+                    "Lotus",
+                    &format!("Lotus could not activate {display_name}.\n\n{error}"),
+                );
+            }
         }
     }
 }

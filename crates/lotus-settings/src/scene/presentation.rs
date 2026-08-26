@@ -65,7 +65,7 @@ impl SettingsScene {
                 scale(self, 160),
                 scale(self, 44),
             ),
-            brand_leading(22.0),
+            brand_leading(self, 22.0),
             theme.text,
         ));
         for page in SettingsPage::ALL {
@@ -349,6 +349,14 @@ impl SettingsScene {
                     false,
                 );
             }
+            SettingsControl::ExportDiagnostics => self.present_button(
+                output,
+                bounds,
+                control,
+                "Export diagnostics",
+                true,
+                false,
+            ),
             SettingsControl::ResetLotus => self.present_button(
                 output,
                 bounds,
@@ -998,9 +1006,9 @@ impl SettingsScene {
             onboarding_title(step),
             title_bounds,
             if step == OnboardingStep::Welcome {
-                brand(88.0)
+                brand(self, 88.0)
             } else {
-                brand_regular(30.0)
+                brand_regular(self, 30.0)
             },
             if step == OnboardingStep::Welcome {
                 self.theme().accent
@@ -1380,26 +1388,61 @@ fn style(size: f32, family: FontFamily, weight: FontWeight, centered: bool) -> T
         vertical: VerticalAlignment::Center,
     }
 }
-fn brand(size: f32) -> TextStyle {
-    style(size, FontFamily::Brand, FontWeight::Semibold, true)
+fn brand(scene: &SettingsScene, size: f32) -> TextStyle {
+    style(
+        size * scale_factor(scene),
+        FontFamily::Brand,
+        FontWeight::Semibold,
+        true,
+    )
 }
-fn brand_leading(size: f32) -> TextStyle {
-    style(size, FontFamily::Brand, FontWeight::Semibold, false)
+fn brand_leading(scene: &SettingsScene, size: f32) -> TextStyle {
+    style(
+        size * scale_factor(scene),
+        FontFamily::Brand,
+        FontWeight::Semibold,
+        false,
+    )
 }
-fn brand_regular(size: f32) -> TextStyle {
-    style(size, FontFamily::Brand, FontWeight::Normal, true)
+fn brand_regular(scene: &SettingsScene, size: f32) -> TextStyle {
+    style(
+        size * scale_factor(scene),
+        FontFamily::Brand,
+        FontWeight::Normal,
+        true,
+    )
 }
-fn body(_scene: &SettingsScene, centered: bool) -> TextStyle {
-    style(14.0, FontFamily::Interface, FontWeight::Normal, centered)
+fn body(scene: &SettingsScene, centered: bool) -> TextStyle {
+    style(
+        14.0 * scale_factor(scene),
+        FontFamily::Interface,
+        FontWeight::Normal,
+        centered,
+    )
 }
-fn small(_scene: &SettingsScene, centered: bool) -> TextStyle {
-    style(12.5, FontFamily::Interface, FontWeight::Normal, centered)
+fn small(scene: &SettingsScene, centered: bool) -> TextStyle {
+    style(
+        12.5 * scale_factor(scene),
+        FontFamily::Interface,
+        FontWeight::Normal,
+        centered,
+    )
 }
-fn title(_scene: &SettingsScene, centered: bool) -> TextStyle {
-    style(18.0, FontFamily::Interface, FontWeight::Semibold, centered)
+fn title(scene: &SettingsScene, centered: bool) -> TextStyle {
+    style(
+        18.0 * scale_factor(scene),
+        FontFamily::Interface,
+        FontWeight::Semibold,
+        centered,
+    )
 }
-fn button(_scene: &SettingsScene) -> TextStyle {
-    style(13.5, FontFamily::Interface, FontWeight::Semibold, true)
+fn button(scene: &SettingsScene) -> TextStyle {
+    style(
+        13.5 * scale_factor(scene),
+        FontFamily::Interface,
+        FontWeight::Semibold,
+        true,
+    )
 }
 fn rect(left: u32, top: u32, width: u32, height: u32) -> PresentationRect {
     PresentationRect::new(
@@ -1430,13 +1473,14 @@ fn inset_all(value: SettingsRect, amount: u32) -> SettingsRect {
     inset(value, amount, amount)
 }
 fn scale(scene: &SettingsScene, dips: u32) -> u32 {
-    u32::try_from((u64::from(dips) * u64::from(scene.dpi()) + 48) / 96).unwrap_or(u32::MAX)
+    u32::try_from((u64::from(dips) * u64::from(scene.effective_dpi()) + 48) / 96)
+        .unwrap_or(u32::MAX)
 }
 fn scaled(scene: &SettingsScene, dips: f32) -> f32 {
     dips * scale_factor(scene)
 }
 fn scale_factor(scene: &SettingsScene) -> f32 {
-    f32::from(u16::try_from(scene.dpi()).unwrap_or(u16::MAX)) / 96.0
+    f32::from(u16::try_from(scene.effective_dpi()).unwrap_or(u16::MAX)) / 96.0
 }
 #[allow(
     clippy::cast_precision_loss,

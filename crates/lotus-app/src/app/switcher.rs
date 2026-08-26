@@ -341,6 +341,10 @@ impl SwitcherRuntime {
                     if let Some(key) = key
                         && let Err(error) = activation::request_close(key, false)
                     {
+                        lotus_windows::diagnostics::record_error(
+                            "activation.switcher_close",
+                            &error,
+                        );
                         show_error(
                             self.window.handle(),
                             "Lotus",
