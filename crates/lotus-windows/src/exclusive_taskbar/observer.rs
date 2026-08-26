@@ -59,6 +59,19 @@ impl TaskbarEventObserver {
             .as_ref()
             .is_none_or(thread::JoinHandle::is_finished)
     }
+
+    pub(super) fn reassert_hidden(&self) {
+        if self.thread_id != 0 {
+            let _ = unsafe {
+                PostThreadMessageW(
+                    self.thread_id,
+                    TASKBAR_EVENT_MESSAGE,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
+            };
+        }
+    }
 }
 
 impl Drop for TaskbarEventObserver {
@@ -107,8 +120,12 @@ fn taskbar_event_loop(ready: &mpsc::SyncSender<Result<u32, Error>>, stop: &Atomi
             break;
         }
         if message.message == TASKBAR_EVENT_MESSAGE {
-            let hwnd = HWND(std::ptr::with_exposed_provenance_mut(message.wParam.0));
-            windows.hide(hwnd);
+            if message.wParam.0 == 0 {
+                windows.hide_existing();
+            } else {
+                let hwnd = HWND(std::ptr::with_exposed_provenance_mut(message.wParam.0));
+                windows.hide(hwnd);
+            }
         }
     }
 

@@ -101,7 +101,14 @@ impl WindowState {
     }
 
     pub(super) fn push(&self, event: WindowEvent) {
-        self.pending.borrow_mut().push_back(event);
+        let mut pending = self.pending.borrow_mut();
+        if pending
+            .back_mut()
+            .is_some_and(|previous| coalesce_window_event(previous, event))
+        {
+            return;
+        }
+        pending.push_back(event);
     }
     pub fn drain(&self) -> impl Iterator<Item = WindowEvent> {
         std::mem::take(&mut *self.pending.borrow_mut()).into_iter()
@@ -158,6 +165,26 @@ impl WindowState {
         self.mascot_animation_delay_ms.set(delay);
         Ok(())
     }
+}
+
+fn coalesce_window_event(previous: &mut WindowEvent, next: WindowEvent) -> bool {
+    if !is_pointer_move(*previous) || !is_pointer_move(next) {
+        return false;
+    }
+
+    *previous = next;
+    true
+}
+
+const fn is_pointer_move(event: WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::Pointer(PointerEvent::Moved { .. })
+            | WindowEvent::Search(SearchEvent::PointerMoved { .. })
+            | WindowEvent::Settings(SettingsEvent::PointerMoved { .. })
+            | WindowEvent::ContextMenu(ContextMenuEvent::PointerMoved { .. })
+            | WindowEvent::Switcher(SwitcherEvent::PointerMoved { .. })
+    )
 }
 
 pub struct WindowClass {

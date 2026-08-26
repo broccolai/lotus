@@ -15,6 +15,7 @@ use crate::taskbar_state::TaskbarStateGuard;
 
 pub(super) const GUARDIAN_ARGUMENT: &str = "--lotus-taskbar-guardian";
 pub(super) const READY_FILE: &str = "ready";
+pub(super) const REFRESH_FILE: &str = "refresh";
 pub(super) const STOP_FILE: &str = "stop";
 pub(super) const START_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL_MILLISECONDS: u32 = 100;
@@ -78,6 +79,11 @@ pub(super) fn run(
                 if control_directory.join(STOP_FILE).exists() {
                     break;
                 }
+                let refresh = control_directory.join(REFRESH_FILE);
+                if refresh.exists() {
+                    let _ = fs::remove_file(refresh);
+                    event_observer.reassert_hidden();
+                }
                 if event_observer.is_finished() {
                     return Err(ExclusiveTaskbarError::EventObserverStopped);
                 }
@@ -101,6 +107,7 @@ pub(super) fn control_directory() -> PathBuf {
 
 pub(super) fn cleanup_control_directory(directory: &Path) {
     let _ = fs::remove_file(directory.join(READY_FILE));
+    let _ = fs::remove_file(directory.join(REFRESH_FILE));
     let _ = fs::remove_file(directory.join(STOP_FILE));
     let _ = fs::remove_dir(directory);
 }

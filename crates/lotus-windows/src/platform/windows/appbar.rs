@@ -351,7 +351,7 @@ impl ActiveShellIntegration {
             }
             TaskbarOwnership::Exclusive {
                 bridge,
-                _guard: ExclusiveTaskbarGuard::start()?,
+                guard: ExclusiveTaskbarGuard::start()?,
             }
         } else {
             TaskbarOwnership::Autohide {
@@ -382,7 +382,12 @@ impl ActiveShellIntegration {
             && let Some(appbar) = self.appbar.as_ref()
         {
             appbar.refresh_position(dock, settings)?;
-            return Ok(self.is_healthy());
+            let healthy = self
+                .taskbar
+                .as_mut()
+                .map_or(Ok(false), |taskbar| taskbar.reassert(dock))?;
+            self.taskbar_needs_refresh = !healthy;
+            return Ok(healthy);
         }
         if let Some(appbar) = self.appbar.as_mut() {
             appbar.release_for_recovery(source)?;
@@ -411,7 +416,7 @@ enum TaskbarOwnership {
     },
     Exclusive {
         bridge: Option<ExplorerBridgeLease>,
-        _guard: ExclusiveTaskbarGuard,
+        guard: ExclusiveTaskbarGuard,
     },
 }
 
@@ -429,14 +434,31 @@ impl TaskbarOwnership {
                 guard.ensure_autohide()?;
                 Ok(true)
             }
-            Self::Exclusive { bridge, .. } => {
+            Self::Exclusive { bridge, guard } => {
                 drop(bridge.take());
                 *bridge = ExplorerBridgeLease::attach(dock.hwnd());
+                guard.reassert_hidden()?;
                 if bridge.is_none() {
                     crate::diagnostics::record_diagnostic(
                         "shell_integration.bridge_attachment_failed",
                         "mode=exclusive",
                     );
+                }
+                Ok(bridge.is_some())
+            }
+        }
+    }
+
+    fn reassert(&mut self, dock: &DockWindow) -> Result<bool, ShellIntegrationError> {
+        match self {
+            Self::Autohide { guard } => {
+                guard.ensure_autohide()?;
+                Ok(true)
+            }
+            Self::Exclusive { bridge, guard } => {
+                guard.reassert_hidden()?;
+                if bridge.is_none() {
+                    *bridge = ExplorerBridgeLease::attach(dock.hwnd());
                 }
                 Ok(bridge.is_some())
             }

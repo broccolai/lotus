@@ -10,7 +10,7 @@ use std::process::Child;
 use std::time::{Duration, Instant};
 use std::{fs, thread};
 
-use guardian::{READY_FILE, START_TIMEOUT, STOP_FILE};
+use guardian::{READY_FILE, REFRESH_FILE, START_TIMEOUT, STOP_FILE};
 use thiserror::Error;
 
 use super::taskbar_state::TaskbarStateError;
@@ -71,6 +71,15 @@ impl ExclusiveTaskbarGuard {
 
             thread::sleep(Duration::from_millis(25));
         }
+    }
+
+    pub fn reassert_hidden(&mut self) -> Result<(), ExclusiveTaskbarError> {
+        if self.child.try_wait()?.is_some() {
+            return Err(ExclusiveTaskbarError::GuardianStopped);
+        }
+
+        fs::write(self.control_directory.join(REFRESH_FILE), [])?;
+        Ok(())
     }
 }
 
