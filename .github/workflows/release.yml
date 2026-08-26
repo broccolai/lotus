@@ -6,15 +6,22 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
   windows:
+    needs: verify
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - name: restore Rust build cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -24,7 +31,7 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-
       - name: verify version
-        shell: powershell
+        shell: pwsh
         run: |
           $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
           $version = ($metadata.packages | Where-Object name -eq "lotus-app").version
@@ -38,7 +45,7 @@ jobs:
         shell: cmd
         run: cargo build --release --locked -p lotus-app -p lotus-shell-bridge -p lotus-explorer-bridge
       - name: package portable build
-        shell: powershell
+        shell: pwsh
         run: |
           $archive = "lotus-v$env:LOTUS_VERSION-windows-x86_64.zip"
           $stage = Join-Path $env:RUNNER_TEMP "lotus"
@@ -49,7 +56,7 @@ jobs:
           "$hash  $archive" | Set-Content "$archive.sha256" -Encoding ascii
           "LOTUS_ARCHIVE=$archive" >> $env:GITHUB_ENV
       - name: package installer
-        shell: powershell
+        shell: pwsh
         run: |
           $candidates = @(
             "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -58,7 +65,13 @@ jobs:
           $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) {
             choco install innosetup --no-progress --yes
-            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Inno Setup installation failed with exit code $LASTEXITCODE"
+            }
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) {
+            throw "Inno Setup is unavailable after installation"
           }
           & $iscc installer\lotus.iss
           if ($LASTEXITCODE -ne 0) {
@@ -70,23 +83,41 @@ jobs:
           }
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $(Split-Path $setup -Leaf)" | Set-Content "$setup.sha256" -Encoding ascii
-          "LOTUS_SETUP=$setup" >> $env:GITHUB_ENV
+          $bundle = Join-Path $env:RUNNER_TEMP "release-bundle"
+          New-Item -ItemType Directory -Path $bundle | Out-Null
+          Copy-Item $env:LOTUS_ARCHIVE, "$env:LOTUS_ARCHIVE.sha256", $setup, "$setup.sha256" -Destination $bundle
+      - name: upload release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-bundle
+          path: ${{ runner.temp }}\release-bundle
+          if-no-files-found: error
+
+  publish:
+    needs: windows
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: download release bundle
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-bundle
+          path: release-bundle
       - name: publish
-        shell: powershell
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          $arguments = @(
-            "release", "create", $env:GITHUB_REF_NAME,
-            $env:LOTUS_ARCHIVE,
-            "$env:LOTUS_ARCHIVE.sha256",
-            $env:LOTUS_SETUP,
-            "$env:LOTUS_SETUP.sha256",
-            "--verify-tag",
-            "--title", "lotus $env:GITHUB_REF_NAME",
-            "--generate-notes"
+          arguments=(
+            release create "$GITHUB_REF_NAME"
+            release-bundle/*
+            --verify-tag
+            --title "lotus $GITHUB_REF_NAME"
+            --generate-notes
           )
-          if ($env:LOTUS_VERSION.Contains("-")) {
-            $arguments += "--prerelease"
-          }
-          & gh @arguments
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            arguments+=(--prerelease)
+          fi
+          gh "${arguments[@]}"
