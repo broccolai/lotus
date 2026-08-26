@@ -263,7 +263,10 @@ fn build_registered_catalog(entries: Vec<ApplicationEntry>) -> CatalogBuild {
 }
 
 fn materialize_registered_application(entry: ApplicationEntry) -> Option<CatalogCandidate> {
-    let arguments = shortcut_arguments(std::path::Path::new(&entry.launch_target));
+    let embedded_arguments = shortcut_arguments(std::path::Path::new(&entry.launch_target));
+    let arguments = embedded_arguments
+        .clone()
+        .or_else(|| entry.arguments.clone());
     let resolved_target = resolve_executable(&entry.launch_target);
     let preference = catalog_preference(arguments.as_deref(), resolved_target.as_deref());
     let launch = LaunchSpec::new(&entry.launch_target, None)?;
@@ -338,7 +341,11 @@ fn materialize_registered_application(entry: ApplicationEntry) -> Option<Catalog
         provider_keys,
         is_host_app,
     };
-    let search_entry = entry.with_embedded_arguments(arguments.as_deref());
+    let search_entry = if embedded_arguments.is_some() {
+        entry.with_embedded_arguments(arguments.as_deref())
+    } else {
+        entry.with_arguments(arguments.as_deref())
+    };
     Some(CatalogCandidate {
         application,
         search_entry,

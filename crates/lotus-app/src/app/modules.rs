@@ -322,6 +322,14 @@ impl ModuleHost {
         self.applications.snapshot()
     }
 
+    pub(super) fn launcher_catalog_refresh_pending(&self) -> bool {
+        self.applications
+            .ready_generation()
+            .is_some_and(|generation| {
+                self.launcher.controller.catalog_generation() != Some(generation)
+            })
+    }
+
     pub(super) fn open_settings(
         &mut self,
         dock_model: &DockRuntime,

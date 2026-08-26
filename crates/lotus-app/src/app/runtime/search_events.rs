@@ -27,13 +27,16 @@ pub(super) fn refresh_catalog(
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
 ) -> Result<bool, AppError> {
-    let catalog_changed = auxiliary.refresh_catalog(dock, dock_model, graphics)?;
-    if !catalog_changed {
+    if !auxiliary.launcher_catalog_refresh_pending() {
         return Ok(false);
     }
     let application_catalog = auxiliary.application_snapshot();
     dock_model.adopt_catalogue_pins(&application_catalog)?;
     dock_model.rebuild(windows, application_catalog.clone());
+    let catalog_changed = auxiliary.refresh_catalog(dock, dock_model, graphics)?;
+    if !catalog_changed {
+        return Ok(false);
+    }
     auxiliary.reconcile_switcher_windows(
         windows,
         application_catalog,
@@ -42,9 +45,7 @@ pub(super) fn refresh_catalog(
     )?;
     present_dock_change(dock, graphics, surface, auxiliary, dock_model)?;
     auxiliary.refresh_open_application_manager(dock_model.items());
-    if catalog_changed {
-        auxiliary.invalidate_launcher_surface();
-    }
+    auxiliary.invalidate_launcher_surface();
     Ok(true)
 }
 

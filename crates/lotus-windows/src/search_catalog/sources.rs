@@ -3,17 +3,28 @@ use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 use lotus_core::search::ApplicationEntry;
+use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::UI::Shell::{
     BHID_EnumItems, FOLDERID_AppsFolder, FOLDERID_CommonPrograms, FOLDERID_Desktop,
-    FOLDERID_Programs, FOLDERID_PublicDesktop, IEnumShellItems, IShellItem,
+    FOLDERID_Programs, FOLDERID_PublicDesktop, IEnumShellItems, IShellItem, IShellItem2,
     KF_FLAG_DEFAULT, SHGetKnownFolderItem, SHGetKnownFolderPath, SIGDN_NORMALDISPLAY,
     SIGDN_PARENTRELATIVEPARSING,
 };
-use windows::core::{GUID, PWSTR};
+use windows::core::{BSTR, GUID, Interface, PWSTR};
 
 use super::super::launch::{ComApartment, resolve_executable};
 use super::shortcuts::{ShortcutIdentity, is_chromium_web_app_shortcut, shortcut_entry};
+
+const LINK_ARGUMENTS: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0x436f2667_14e2_4feb_b30a_146c53b5b674),
+    pid: 100,
+};
+const LINK_TARGET_PARSING_PATH: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0xb9b4b3fc_2b51_4a42_b5d8_324146afcf25),
+    pid: 2,
+};
 
 pub(super) fn discover_start_menu_entries() -> Vec<ApplicationEntry> {
     let roots = [
@@ -115,25 +126,46 @@ fn discover_apps_folder_entries() -> Vec<ApplicationEntry> {
         let Some(identity) = shell_item_text(&item, SIGDN_PARENTRELATIVEPARSING) else {
             continue;
         };
-        if let Some(entry) = apps_folder_entry(name, &identity) {
+        if let Some(entry) = apps_folder_entry(&item, name, &identity) {
             entries.push(entry);
         }
     }
     entries
 }
 
-fn apps_folder_entry(name: String, identity: &str) -> Option<ApplicationEntry> {
+fn apps_folder_entry(
+    item: &IShellItem,
+    name: String,
+    identity: &str,
+) -> Option<ApplicationEntry> {
     if should_exclude(&name)
         || identity.starts_with("http://")
         || identity.starts_with("https://")
     {
         return None;
     }
-    let target = format!(r"shell:AppsFolder\{identity}");
+    let apps_folder_target = format!(r"shell:AppsFolder\{identity}");
+    let item = item.cast::<IShellItem2>().ok();
+    let canonical_target = item
+        .as_ref()
+        .and_then(|item| shell_item_property(item, &LINK_TARGET_PARSING_PATH));
+    let arguments = item
+        .as_ref()
+        .and_then(|item| shell_item_property(item, &LINK_ARGUMENTS));
+    let launch_target = canonical_target.unwrap_or_else(|| apps_folder_target.clone());
+
     Some(
-        ApplicationEntry::new(name, target.clone(), Some(target))
+        ApplicationEntry::new(name, launch_target, Some(apps_folder_target))
+            .with_arguments(arguments.as_deref())
             .with_app_user_model_id(identity),
     )
+}
+
+fn shell_item_property(item: &IShellItem2, key: &PROPERTYKEY) -> Option<String> {
+    let value: PROPVARIANT = unsafe { item.GetProperty(key) }.ok()?;
+    let value = BSTR::try_from(&value).ok()?.to_string();
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 fn shell_item_text(
