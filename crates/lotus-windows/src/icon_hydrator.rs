@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
-use lotus_core::application::ApplicationPresentationIcon;
+use lotus_core::application::{ApplicationPresentationIcon, is_shared_host_executable};
 use lotus_core::window::{TrackedWindowKey, WindowId};
 use lotus_ui::icon::RasterIcon;
 use thiserror::Error;
@@ -31,6 +31,7 @@ pub struct LauncherIconRequest {
 pub struct SwitcherIconRequest {
     pub generation: u64,
     pub window: TrackedWindowKey,
+    pub executable_path: PathBuf,
     pub presentation_icon: Option<ApplicationPresentationIcon>,
     pub custom_image_path: Option<PathBuf>,
     pub pixel_size: u32,
@@ -41,7 +42,8 @@ pub struct SwitcherIconRequest {
 pub struct DockIconRequest {
     pub identity: String,
     pub window: TrackedWindowKey,
-    pub fallback_path: PathBuf,
+    pub executable_path: PathBuf,
+    pub presentation_icon: ApplicationPresentationIcon,
     pub pixel_size: u32,
 }
 
@@ -338,15 +340,13 @@ fn hydrate_dock_icon(
     request: &DockIconRequest,
     native_icons: &mut NativeIconCache,
 ) -> HydratedDockIcon {
-    let icon = crate::native_icon::window_icon(request.window, request.pixel_size)
-        .ok()
-        .flatten()
-        .or_else(|| {
-            native_icons
-                .icon(&request.fallback_path, request.pixel_size)
-                .ok()
-                .flatten()
-        });
+    let icon = hydrate_presentation_icon(
+        request.window,
+        &request.executable_path,
+        Some(&request.presentation_icon),
+        request.pixel_size,
+        native_icons,
+    );
     HydratedDockIcon {
         identity: request.identity.clone(),
         window: request.window,
@@ -388,22 +388,14 @@ fn hydrate_switcher_icon(
         .custom_image_path
         .as_deref()
         .and_then(|path| custom_images.image(path).ok())
-        .or_else(|| match request.presentation_icon.as_ref()? {
-            ApplicationPresentationIcon::Source(path) => native_icons
-                .icon(path.as_ref(), request.pixel_size)
-                .ok()
-                .flatten(),
-            ApplicationPresentationIcon::NativeWindow { key, fallback_path } => {
-                crate::native_icon::window_icon(*key, request.pixel_size)
-                    .ok()
-                    .flatten()
-                    .or_else(|| {
-                        native_icons
-                            .icon(fallback_path.as_ref(), request.pixel_size)
-                            .ok()
-                            .flatten()
-                    })
-            }
+        .or_else(|| {
+            hydrate_presentation_icon(
+                request.window,
+                &request.executable_path,
+                request.presentation_icon.as_ref(),
+                request.pixel_size,
+                native_icons,
+            )
         });
     HydratedSwitcherIcon {
         generation: request.generation,
@@ -412,6 +404,54 @@ fn hydrate_switcher_icon(
         settings_revision: request.settings_revision,
         icon,
     }
+}
+
+fn hydrate_presentation_icon(
+    window: TrackedWindowKey,
+    executable_path: &std::path::Path,
+    presentation_icon: Option<&ApplicationPresentationIcon>,
+    pixel_size: u32,
+    native_icons: &mut NativeIconCache,
+) -> Option<RasterIcon> {
+    let presentation_icon = presentation_icon?;
+    match presentation_icon {
+        ApplicationPresentationIcon::NativeWindow { fallback_path, .. } => {
+            window_icon(window, pixel_size)
+                .or_else(|| source_icon(native_icons, fallback_path.as_ref(), pixel_size))
+        }
+        ApplicationPresentationIcon::Source(source)
+            if crate::native_icon::is_shell_namespace_path(source.as_ref()) =>
+        {
+            if is_shared_host_executable(&executable_path.to_string_lossy()) {
+                window_icon(window, pixel_size)
+                    .or_else(|| source_icon(native_icons, source.as_ref(), pixel_size))
+                    .or_else(|| source_icon(native_icons, executable_path, pixel_size))
+            } else {
+                source_icon(native_icons, executable_path, pixel_size)
+                    .or_else(|| window_icon(window, pixel_size))
+                    .or_else(|| source_icon(native_icons, source.as_ref(), pixel_size))
+            }
+        }
+        ApplicationPresentationIcon::Source(source) => {
+            source_icon(native_icons, source.as_ref(), pixel_size)
+                .or_else(|| window_icon(window, pixel_size))
+                .or_else(|| source_icon(native_icons, executable_path, pixel_size))
+        }
+    }
+}
+
+fn source_icon(
+    native_icons: &mut NativeIconCache,
+    source: &std::path::Path,
+    pixel_size: u32,
+) -> Option<RasterIcon> {
+    native_icons.icon(source, pixel_size).ok().flatten()
+}
+
+fn window_icon(window: TrackedWindowKey, pixel_size: u32) -> Option<RasterIcon> {
+    crate::native_icon::window_icon(window, pixel_size)
+        .ok()
+        .flatten()
 }
 
 fn publish(results: Vec<IconHydrationResult>, shared: &SharedState) {

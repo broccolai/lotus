@@ -19,6 +19,13 @@ pub(super) fn icon_extraction_source(source: &Path) -> Option<(PathBuf, i32)> {
     select_extraction_path(source.to_owned(), resolved).map(|path| (path, 0))
 }
 
+pub(super) fn is_shell_namespace_path(source: &Path) -> bool {
+    source
+        .to_string_lossy()
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("shell:"))
+}
+
 fn select_shortcut_extraction(
     target: Option<PathBuf>,
     shortcut_icon: Option<(PathBuf, i32)>,

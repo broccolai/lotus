@@ -102,7 +102,7 @@ fn load_shell_icon(
     icon_index: i32,
     size: u32,
 ) -> Option<OwnedIcon> {
-    if source.to_string_lossy().starts_with("shell:")
+    if super::is_shell_namespace_path(source)
         && let Some(icon) = load_namespace_icon(path)
     {
         return Some(icon);

@@ -548,7 +548,10 @@ impl DockRuntime {
         for result in results {
             let current = self.model.items().iter().any(|item| {
                 item.id == result.identity
-                    && item.presentation_icon.native_window() == Some(result.window)
+                    && item
+                        .windows
+                        .first()
+                        .is_some_and(|window| window.key() == result.window)
                     && result.pixel_size == icon_size
             });
             if current && result.icon.is_some() {
@@ -573,7 +576,7 @@ impl DockRuntime {
             .items()
             .iter()
             .filter_map(|item| {
-                let window = item.presentation_icon.native_window()?;
+                let window = item.windows.first()?.key();
                 if self
                     .hydrated_window_icons
                     .get(&item.id)
@@ -592,7 +595,8 @@ impl DockRuntime {
                 .then(|| DockIconRequest {
                     identity: item.id.clone(),
                     window,
-                    fallback_path: item.icon_source.clone().into(),
+                    executable_path: item.executable_path.clone().into(),
+                    presentation_icon: item.presentation_icon.clone(),
                     pixel_size,
                 })
             })
@@ -612,9 +616,9 @@ impl DockRuntime {
             .items()
             .iter()
             .filter_map(|item| {
-                item.presentation_icon
-                    .native_window()
-                    .map(|window| (item.id.clone(), window))
+                item.windows
+                    .first()
+                    .map(|window| (item.id.clone(), window.key()))
             })
             .collect::<HashMap<_, _>>();
         self.hydrated_window_icons.retain(|identity, icon| {

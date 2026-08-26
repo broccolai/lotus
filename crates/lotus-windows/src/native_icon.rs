@@ -106,3 +106,7 @@ pub fn window_icon(
     )
     .map(Some)
 }
+
+pub(crate) fn is_shell_namespace_path(path: &Path) -> bool {
+    source::is_shell_namespace_path(path)
+}

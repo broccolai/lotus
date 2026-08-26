@@ -521,6 +521,7 @@ impl SwitcherRuntime {
                 Some(SwitcherIconRequest {
                     generation: self.icon_generation,
                     window: window.key(),
+                    executable_path: window.executable_path.clone(),
                     presentation_icon: self
                         .application_assignments
                         .presentation_by_window
