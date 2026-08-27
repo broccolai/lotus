@@ -416,8 +416,14 @@ fn hydrate_presentation_icon(
     let presentation_icon = presentation_icon?;
     match presentation_icon {
         ApplicationPresentationIcon::NativeWindow { fallback_path, .. } => {
-            window_icon(window, pixel_size)
-                .or_else(|| source_icon(native_icons, fallback_path.as_ref(), pixel_size))
+            if is_shared_host_executable(&executable_path.to_string_lossy()) {
+                window_icon(window, pixel_size).or_else(|| {
+                    source_icon(native_icons, fallback_path.as_ref(), pixel_size)
+                })
+            } else {
+                source_icon(native_icons, fallback_path.as_ref(), pixel_size)
+                    .or_else(|| window_icon(window, pixel_size))
+            }
         }
         ApplicationPresentationIcon::Source(source)
             if crate::native_icon::is_shell_namespace_path(source.as_ref()) =>
