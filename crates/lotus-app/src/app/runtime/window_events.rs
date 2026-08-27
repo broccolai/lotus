@@ -66,11 +66,14 @@ pub(super) fn drain_window_events(
                     auxiliary.activate_media(target, dock_model, activation.owner);
                 }
                 crate::app::status::AuxiliaryZoneAction::Status(kind) => {
-                    dock_events::activate_system_status(
+                    if dock_events::activate_system_status(
                         kind,
                         activation.owner,
                         activation.anchor,
-                    );
+                    ) {
+                        dock_model.advanced_color_changed();
+                        auxiliary.refresh_status(dock_model.settings());
+                    }
                 }
             }
         }

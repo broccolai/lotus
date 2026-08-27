@@ -96,7 +96,8 @@ impl StatusRuntime {
                 zone,
                 settings,
                 media.filter(|_| settings.media_zone == zone).cloned(),
-                (settings.system_status_zone == zone).then(|| status_items(settings)),
+                (settings.system_status_zone == zone)
+                    .then(|| status_items(settings, zone_surface.window.handle())),
             )?;
             let size = zone_surface.scene.desired_size();
             let physical = NonZeroPhysicalSize::new(size.width(), size.height())
@@ -150,7 +151,7 @@ impl StatusRuntime {
                 continue;
             };
             let next = if settings.system_status_zone == active {
-                status_items(settings)
+                status_items(settings, zone.window.handle())
             } else {
                 Vec::new()
             };
@@ -351,9 +352,17 @@ fn occupied_external_zones(
                 && *zone == settings.media_zone)
                 || (settings.show_system_status
                     && *zone == settings.system_status_zone
-                    && !status_items(settings).is_empty())
+                    && has_status_items(settings))
         })
         .collect()
+}
+
+fn has_status_items(settings: &DockSettings) -> bool {
+    settings.show_volume_status
+        || settings.show_hdr_status
+        || settings.show_network_status
+        || settings.show_background_apps_status
+        || settings.show_date_time_status
 }
 
 fn empty_zone_scene(dpi: u32, settings: &DockSettings) -> Result<DockScene, AppError> {

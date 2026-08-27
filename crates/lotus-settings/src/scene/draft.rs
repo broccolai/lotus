@@ -82,6 +82,7 @@ impl SettingsDraft {
             SettingsToggle::ShowDesktopButton => self.draft.show_desktop_button,
             SettingsToggle::ShowSystemStatus => self.draft.show_system_status,
             SettingsToggle::ShowVolumeStatus => self.draft.show_volume_status,
+            SettingsToggle::ShowHdrStatus => self.draft.show_hdr_status,
             SettingsToggle::ShowNetworkStatus => self.draft.show_network_status,
             SettingsToggle::ShowBackgroundAppsStatus => {
                 self.draft.show_background_apps_status
@@ -116,6 +117,7 @@ impl SettingsDraft {
             SettingsToggle::ShowDesktopButton => self.draft.show_desktop_button = value,
             SettingsToggle::ShowSystemStatus => self.draft.show_system_status = value,
             SettingsToggle::ShowVolumeStatus => self.draft.show_volume_status = value,
+            SettingsToggle::ShowHdrStatus => self.draft.show_hdr_status = value,
             SettingsToggle::ShowNetworkStatus => self.draft.show_network_status = value,
             SettingsToggle::ShowBackgroundAppsStatus => {
                 self.draft.show_background_apps_status = value;

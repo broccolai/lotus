@@ -1301,6 +1301,7 @@ fn toggle_label(value: SettingsToggle) -> &'static str {
         SettingsToggle::ShowDesktopButton => "Show a desktop button at the right edge",
         SettingsToggle::ShowSystemStatus => "Show system status",
         SettingsToggle::ShowVolumeStatus => "Show volume",
+        SettingsToggle::ShowHdrStatus => "Show HDR toggle",
         SettingsToggle::ShowNetworkStatus => "Show network",
         SettingsToggle::ShowBackgroundAppsStatus => "Show background applications",
         SettingsToggle::ShowDateTimeStatus => "Show time",

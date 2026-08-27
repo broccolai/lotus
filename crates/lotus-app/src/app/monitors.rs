@@ -273,7 +273,7 @@ impl MonitorDocks {
         );
         let mut docks = Vec::new();
         for window in dock.create_secondary_dock_windows()? {
-            let scene = model.replica_scene(window.dpi())?;
+            let scene = model.replica_scene(window.dpi(), window.handle())?;
             let size = scene.desired_size();
             let physical = NonZeroPhysicalSize::new(size.width(), size.height())
                 .ok_or(AppError::ZeroSizedSurface)?;
@@ -305,7 +305,8 @@ impl MonitorDocks {
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         for replica in &mut self.docks {
-            replica.scene = model.replica_scene(replica.window.dpi())?;
+            replica.scene =
+                model.replica_scene(replica.window.dpi(), replica.window.handle())?;
             let size = replica.scene.desired_size();
             let physical = NonZeroPhysicalSize::new(size.width(), size.height())
                 .ok_or(AppError::ZeroSizedSurface)?;

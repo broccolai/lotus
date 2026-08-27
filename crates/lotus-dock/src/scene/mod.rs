@@ -37,6 +37,7 @@ pub struct DockItem<Asset> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SystemStatusKind {
     Volume,
+    AdvancedColor,
     Network,
     BackgroundApps,
     DateTime,
@@ -93,6 +94,15 @@ impl<Asset> SystemStatusItem<Asset> {
             kind,
             icon: None,
             primary_text: symbol.into(),
+            secondary_text: String::new(),
+        }
+    }
+
+    pub fn text(kind: SystemStatusKind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            icon: None,
+            primary_text: text.into(),
             secondary_text: String::new(),
         }
     }

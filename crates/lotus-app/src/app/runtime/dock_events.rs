@@ -152,7 +152,10 @@ fn handle_dock_pointer(
         }
         DockHitTarget::SystemStatus(kind) => {
             auxiliary.dismiss_popups_for_activation();
-            activate_system_status(kind, dock.handle(), activation_anchor);
+            if activate_system_status(kind, dock.handle(), activation_anchor) {
+                dock_model.advanced_color_changed();
+                auxiliary.refresh_status(dock_model.settings());
+            }
         }
         DockHitTarget::ShowDesktop => {
             auxiliary.dismiss_popups_for_activation();
@@ -197,7 +200,7 @@ pub(super) fn activate_system_status(
     kind: SystemStatusKind,
     owner: WindowHandle,
     anchor: Option<SignedPoint>,
-) {
+) -> bool {
     let result = match kind {
         SystemStatusKind::Volume => native_panel_or_fallback(
             anchor.map_or_else(
@@ -206,6 +209,9 @@ pub(super) fn activate_system_status(
             ),
             "sndvol.exe",
         ),
+        SystemStatusKind::AdvancedColor => lotus_windows::advanced_color::toggle(owner)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
         SystemStatusKind::Network => native_panel_or_fallback(
             anchor.map_or_else(
                 || lotus_windows::tray::open_quick_settings(owner),
@@ -234,7 +240,10 @@ pub(super) fn activate_system_status(
             "Lotus",
             &format!("Lotus could not open that system control.\n\n{error}"),
         );
+        return false;
     }
+
+    kind == SystemStatusKind::AdvancedColor
 }
 
 fn native_panel_or_fallback(
@@ -334,7 +343,10 @@ pub(super) fn handle_monitor_dock_action(
             }
             DockHitTarget::SystemStatus(kind) => {
                 auxiliary.dismiss_popups_for_activation();
-                activate_system_status(kind, owner, anchor);
+                if activate_system_status(kind, owner, anchor) {
+                    dock_model.advanced_color_changed();
+                    auxiliary.refresh_status(dock_model.settings());
+                }
             }
             DockHitTarget::ShowDesktop => {
                 auxiliary.dismiss_popups_for_activation();

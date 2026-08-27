@@ -315,6 +315,13 @@ fn present_status<Asset: Clone>(
             });
         } else if item.kind == SystemStatusKind::DateTime {
             present_clock(output, item, scene, opacity);
+        } else if item.kind == SystemStatusKind::AdvancedColor {
+            output.push(PresentationPrimitive::Text {
+                value: item.primary_text.clone(),
+                bounds: rect(item.hit_bounds),
+                style: text_style(scaled(10.5, scene.dpi()), FontWeight::Semibold),
+                color: scene.theme().text.with_alpha(opacity),
+            });
         } else {
             output.push(PresentationPrimitive::Text {
                 value: item.primary_text.clone(),

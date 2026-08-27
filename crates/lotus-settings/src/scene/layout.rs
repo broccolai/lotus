@@ -238,6 +238,7 @@ impl SettingsScene {
                         SettingsControl::MediaZone,
                         SettingsControl::Toggle(SettingsToggle::ShowMediaMetadata),
                         SettingsControl::Toggle(SettingsToggle::ShowVolumeStatus),
+                        SettingsControl::Toggle(SettingsToggle::ShowHdrStatus),
                         SettingsControl::Toggle(SettingsToggle::ShowNetworkStatus),
                         SettingsControl::Toggle(SettingsToggle::ShowBackgroundAppsStatus),
                         SettingsControl::Toggle(SettingsToggle::ShowDateTimeStatus),

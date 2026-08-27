@@ -20,6 +20,7 @@
   "showRunningIndicators": true,
   "showOnAllMonitors": false,
   "showDesktopButton": false,
+  "showHdrStatus": false,
   "showMediaControls": true,
   "showMediaMetadata": true,
   "use24HourTime": true,

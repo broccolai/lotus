@@ -5,6 +5,7 @@ mod resource_cache;
 pub mod responsiveness;
 
 pub mod activation;
+pub mod advanced_color;
 pub mod application_identity;
 pub mod clipboard;
 pub mod clock;

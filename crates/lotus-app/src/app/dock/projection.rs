@@ -7,6 +7,7 @@ use lotus_core::notification::count_for_item;
 use lotus_core::settings::{DockSettings, DockZone, NotificationBadgeStyle};
 use lotus_core::window::WindowInfo;
 use lotus_dock::model::project_snapshot;
+use lotus_windows::WindowHandle;
 use lotus_windows::clock::{local_date, local_time};
 use lotus_windows::graphics::assets::SvgAsset;
 
@@ -174,16 +175,28 @@ pub(in crate::app) fn departure_transition(
     departing.then_some(transition)
 }
 
-pub(in crate::app) fn status_items(settings: &DockSettings) -> Vec<SystemStatusItem> {
+pub(in crate::app) fn status_items(
+    settings: &DockSettings,
+    owner: WindowHandle,
+) -> Vec<SystemStatusItem> {
     if !settings.show_system_status {
         return Vec::new();
     }
 
-    let mut items = Vec::with_capacity(4);
+    let mut items = Vec::with_capacity(5);
     if settings.show_volume_status {
         items.push(SystemStatusItem::icon(
             SystemStatusKind::Volume,
             SvgAsset::FluentVolume,
+        ));
+    }
+    if settings.show_hdr_status {
+        let label = lotus_windows::advanced_color::state(owner)
+            .unwrap_or(lotus_windows::advanced_color::AdvancedColorState::Sdr)
+            .label();
+        items.push(SystemStatusItem::text(
+            SystemStatusKind::AdvancedColor,
+            label,
         ));
     }
     if settings.show_network_status {
@@ -220,9 +233,10 @@ pub(in crate::app) fn status_items(settings: &DockSettings) -> Vec<SystemStatusI
 
 pub(in crate::app) fn docked_status_items(
     settings: &DockSettings,
+    owner: WindowHandle,
 ) -> Vec<SystemStatusItem> {
     if settings.system_status_zone == settings.dock_zone {
-        status_items(settings)
+        status_items(settings, owner)
     } else {
         Vec::new()
     }

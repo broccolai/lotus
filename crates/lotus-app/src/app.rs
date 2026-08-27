@@ -219,6 +219,7 @@ pub fn run() -> Result<(), AppError> {
     let mut window_tracker = WindowTracker::start()?;
     startup_phases.initial_window_tracking = startup_phases.complete();
     let mut dock_model = DockRuntime::new(
+        dock.handle(),
         settings,
         settings_store,
         window_tracker.current_windows(),

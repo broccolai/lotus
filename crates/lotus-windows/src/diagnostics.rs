@@ -96,7 +96,7 @@ fn support_report(settings: &DockSettings, integration: &str) -> String {
 
 fn settings_summary(settings: &DockSettings) -> String {
     format!(
-        "notification_badge_style={:?}\nupdate_channel={:?}\ndock_zone={:?}\nsystem_status_zone={:?}\nmedia_zone={:?}\nwindow_picker_style={:?}\nuse_acrylic={}\nshow_app_dock={}\nshow_unpinned_running_apps={}\nshow_running_indicators={}\nshow_on_all_monitors={}\nshow_desktop_button={}\nshow_system_status={}\nshow_volume_status={}\nshow_network_status={}\nshow_background_apps_status={}\nshow_date_time_status={}\nshow_date_in_status={}\nuse_24_hour_time={}\nshow_media_controls={}\nshow_media_metadata={}\nstart_with_windows={}\nhide_when_fullscreen={}\nreplace_windows_taskbar={}\nexclusive_taskbar_replacement={}\nsearch_enabled={}\nsearch_open_with_windows_key={}\nalt_tab_enabled={}\nnotification_disabled_apps_count={}\napplication_name_overrides_count={}\napplication_icon_overrides_count={}\nhidden_executables_count={}\nitem_order_count={}\npinned_apps_count={}\nextra_fields_count={}",
+        "notification_badge_style={:?}\nupdate_channel={:?}\ndock_zone={:?}\nsystem_status_zone={:?}\nmedia_zone={:?}\nwindow_picker_style={:?}\nuse_acrylic={}\nshow_app_dock={}\nshow_unpinned_running_apps={}\nshow_running_indicators={}\nshow_on_all_monitors={}\nshow_desktop_button={}\nshow_system_status={}\nshow_volume_status={}\nshow_hdr_status={}\nshow_network_status={}\nshow_background_apps_status={}\nshow_date_time_status={}\nshow_date_in_status={}\nuse_24_hour_time={}\nshow_media_controls={}\nshow_media_metadata={}\nstart_with_windows={}\nhide_when_fullscreen={}\nreplace_windows_taskbar={}\nexclusive_taskbar_replacement={}\nsearch_enabled={}\nsearch_open_with_windows_key={}\nalt_tab_enabled={}\nnotification_disabled_apps_count={}\napplication_name_overrides_count={}\napplication_icon_overrides_count={}\nhidden_executables_count={}\nitem_order_count={}\npinned_apps_count={}\nextra_fields_count={}",
         settings.notification_badge_style,
         settings.update_channel,
         settings.dock_zone,
@@ -111,6 +111,7 @@ fn settings_summary(settings: &DockSettings) -> String {
         settings.show_desktop_button,
         settings.show_system_status,
         settings.show_volume_status,
+        settings.show_hdr_status,
         settings.show_network_status,
         settings.show_background_apps_status,
         settings.show_date_time_status,

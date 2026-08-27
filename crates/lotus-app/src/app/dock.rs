@@ -19,6 +19,7 @@ use lotus_dock::model::{DockModel, SettingsImpact};
 use lotus_dock::scene::DockPresenter;
 use lotus_media::MediaSnapshot;
 use lotus_settings::appearance::theme_for;
+use lotus_windows::WindowHandle;
 use lotus_windows::custom_image::{
     CustomImageCache, MascotAnimation, MascotLoopCount, load_mascot_image,
 };
@@ -45,6 +46,7 @@ const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
 const EXIT_DURATION: Duration = Duration::from_millis(80);
 
 pub(super) struct DockRuntime {
+    status_owner: WindowHandle,
     model: DockModel,
     scene: DockScene,
     native_icons: NativeIconCache,
@@ -75,6 +77,7 @@ struct MascotPlayback {
 
 impl DockRuntime {
     pub(super) fn new(
+        status_owner: WindowHandle,
         settings: DockSettings,
         settings_store: SettingsStore,
         windows: &[WindowInfo],
@@ -103,8 +106,9 @@ impl DockRuntime {
         );
         let mut scene = Self::configured_scene(dpi, &settings, metrics)
             .ok_or(AppError::InvalidScene)?;
-        scene.replace_status_items(docked_status_items(&settings));
+        scene.replace_status_items(docked_status_items(&settings, status_owner));
         let mut runtime = Self {
+            status_owner,
             model: DockModel::new(settings, settings_store, items),
             scene,
             native_icons: NativeIconCache::default(),
@@ -314,11 +318,15 @@ impl DockRuntime {
         true
     }
 
-    pub(super) fn replica_scene(&mut self, dpi: u32) -> Result<DockScene, AppError> {
+    pub(super) fn replica_scene(
+        &mut self,
+        dpi: u32,
+        owner: WindowHandle,
+    ) -> Result<DockScene, AppError> {
         let settings = self.model.settings().clone();
         let mut scene = Self::configured_scene(dpi, &settings, metrics(&settings)?)
             .ok_or(AppError::InvalidScene)?;
-        scene.replace_status_items(docked_status_items(&settings));
+        scene.replace_status_items(docked_status_items(&settings, owner));
         if settings.show_media_controls && settings.media_zone == settings.dock_zone {
             scene.replace_media(self.media.clone());
         }
@@ -407,7 +415,10 @@ impl DockRuntime {
             {
                 scene.replace_media(self.media.clone());
             }
-            scene.replace_status_items(docked_status_items(self.model.settings()));
+            scene.replace_status_items(docked_status_items(
+                self.model.settings(),
+                self.status_owner,
+            ));
             self.scene = scene;
             self.reset_mascot_animation();
             self.refresh_scene_items();
@@ -416,13 +427,18 @@ impl DockRuntime {
     }
 
     pub(super) fn refresh_status(&mut self) -> bool {
-        let next = docked_status_items(self.model.settings());
+        let next = docked_status_items(self.model.settings(), self.status_owner);
         if self.scene.status_items() == next {
             return false;
         }
         self.scene.replace_status_items(next);
         self.mark_changed();
         true
+    }
+
+    pub(super) fn advanced_color_changed(&mut self) {
+        let _ = self.refresh_status();
+        self.mark_changed();
     }
 
     pub(super) fn replace_media(&mut self, snapshot: Option<&MediaSnapshot>) -> bool {

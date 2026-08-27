@@ -105,6 +105,7 @@ pub enum SettingsToggle {
     ShowDesktopButton,
     ShowSystemStatus,
     ShowVolumeStatus,
+    ShowHdrStatus,
     ShowNetworkStatus,
     ShowBackgroundAppsStatus,
     ShowDateTimeStatus,
@@ -165,7 +166,7 @@ impl OnboardingModule {
         match self {
             Self::AppDock => "Applications, windows and the lotus menu",
             Self::Search => "Applications, commands and calculations",
-            Self::SystemStatus => "Volume, network, background apps and time",
+            Self::SystemStatus => "Volume, HDR, network, background apps and time",
             Self::Media => "Artwork, track information and playback",
             Self::AltTab => "Replace the Windows window switcher",
         }

@@ -386,6 +386,7 @@ const PROPERTY_NAMES: &[&str] = &[
     "dockZone",
     "systemStatusZone",
     "showVolumeStatus",
+    "showHdrStatus",
     "showNetworkStatus",
     "showBackgroundAppsStatus",
     "showDateTimeStatus",

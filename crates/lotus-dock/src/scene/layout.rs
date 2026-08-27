@@ -43,6 +43,7 @@ impl<Asset: Clone> DockScene<Asset> {
             width.saturating_add(match item.kind {
                 SystemStatusKind::DateTime => metrics.status_clock_width,
                 SystemStatusKind::Volume
+                | SystemStatusKind::AdvancedColor
                 | SystemStatusKind::Network
                 | SystemStatusKind::BackgroundApps => metrics.status_icon_slot_width,
             })
@@ -324,6 +325,7 @@ fn layout_status_item<Asset: Clone>(
     let width = match item.kind {
         SystemStatusKind::DateTime => metrics.status_clock_width,
         SystemStatusKind::Volume
+        | SystemStatusKind::AdvancedColor
         | SystemStatusKind::Network
         | SystemStatusKind::BackgroundApps => metrics.status_icon_slot_width,
     };
