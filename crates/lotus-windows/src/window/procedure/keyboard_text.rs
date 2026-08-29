@@ -10,8 +10,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::{
     ContextMenuEvent, CursorMove, SEARCH_OUTSIDE_CLICK_MESSAGE, SearchEdit, SearchEvent,
     SelectionDirection, SettingsEvent, SettingsKey, is_context_menu_window,
-    is_search_window, is_settings_window, low_word, push_context_menu_event,
-    push_search_event, push_settings_event, with_window_state,
+    is_search_window, is_settings_window, low_word, push_event, with_window_state,
 };
 use crate::platform::windows::interaction::{claim_keyboard_focus, key_is_pressed};
 
@@ -29,7 +28,7 @@ pub(super) fn dispatch(
             Some(dispatch_search_activation(hwnd, wparam, lparam))
         }
         SEARCH_OUTSIDE_CLICK_MESSAGE if is_search_window(hwnd) => {
-            push_search_event(hwnd, SearchEvent::DismissRequested);
+            push_event(hwnd, SearchEvent::DismissRequested);
             Some(LRESULT(0))
         }
         WM_ACTIVATE if is_context_menu_window(hwnd) => {
@@ -52,7 +51,7 @@ pub(super) fn dispatch(
             if let Some(character) =
                 char::from_u32(u32::try_from(wparam.0).unwrap_or_default())
             {
-                push_settings_event(hwnd, SettingsEvent::TextInput(character));
+                push_event(hwnd, SettingsEvent::TextInput(character));
             }
             Some(LRESULT(0))
         }
@@ -64,13 +63,13 @@ fn dispatch_wheel(hwnd: HWND, wparam: WPARAM) -> Option<LRESULT> {
     let direction = wheel_selection_direction(wparam);
     if is_search_window(hwnd) {
         if let Some(direction) = direction {
-            push_search_event(hwnd, SearchEvent::MoveSelection(direction));
+            push_event(hwnd, SearchEvent::MoveSelection(direction));
         }
         return Some(LRESULT(0));
     }
     if is_context_menu_window(hwnd) {
         if let Some(direction) = direction {
-            push_context_menu_event(hwnd, ContextMenuEvent::Scroll(direction));
+            push_event(hwnd, ContextMenuEvent::Scroll(direction));
         }
         return Some(LRESULT(0));
     }
@@ -80,7 +79,7 @@ fn dispatch_wheel(hwnd: HWND, wparam: WPARAM) -> Option<LRESULT> {
                 SelectionDirection::Previous => -1,
                 SelectionDirection::Next => 1,
             };
-            push_settings_event(hwnd, SettingsEvent::Scroll { direction });
+            push_event(hwnd, SettingsEvent::Scroll { direction });
         }
         return Some(LRESULT(0));
     }
@@ -90,7 +89,7 @@ fn dispatch_wheel(hwnd: HWND, wparam: WPARAM) -> Option<LRESULT> {
 fn dispatch_search_activation(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let inactive = low_word(wparam.0) == WA_INACTIVE;
     if inactive {
-        push_search_event(hwnd, SearchEvent::DismissRequested);
+        push_event(hwnd, SearchEvent::DismissRequested);
     }
     let result = unsafe { DefWindowProcW(hwnd, WM_ACTIVATE, wparam, lparam) };
     if !inactive {
@@ -101,7 +100,7 @@ fn dispatch_search_activation(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRE
 
 fn dispatch_context_menu_activation(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if low_word(wparam.0) == WA_INACTIVE {
-        push_context_menu_event(hwnd, ContextMenuEvent::DismissRequested);
+        push_event(hwnd, ContextMenuEvent::DismissRequested);
     }
     unsafe { DefWindowProcW(hwnd, WM_ACTIVATE, wparam, lparam) }
 }
@@ -113,7 +112,7 @@ fn dispatch_search_key(
     lparam: LPARAM,
 ) -> LRESULT {
     if let Some(event) = search_key_event(wparam) {
-        push_search_event(hwnd, event);
+        push_event(hwnd, event);
         LRESULT(0)
     } else {
         unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
@@ -127,7 +126,7 @@ fn dispatch_settings_key(
     lparam: LPARAM,
 ) -> LRESULT {
     if let Some(key) = settings_key(wparam) {
-        push_settings_event(hwnd, SettingsEvent::KeyPressed(key));
+        push_event(hwnd, SettingsEvent::KeyPressed(key));
         LRESULT(0)
     } else {
         unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
@@ -144,10 +143,7 @@ fn dispatch_context_menu_key(
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     };
     if key == VK_SHIFT.0 {
-        push_context_menu_event(
-            hwnd,
-            ContextMenuEvent::ShiftChanged(message == WM_KEYDOWN),
-        );
+        push_event(hwnd, ContextMenuEvent::ShiftChanged(message == WM_KEYDOWN));
         return LRESULT(0);
     }
     if message == WM_KEYUP {
@@ -166,7 +162,7 @@ fn dispatch_context_menu_key(
         }
         _ => return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     };
-    push_context_menu_event(hwnd, event);
+    push_event(hwnd, event);
     LRESULT(0)
 }
 
@@ -252,7 +248,7 @@ fn push_search_text_unit(hwnd: HWND, wparam: WPARAM) {
     with_window_state(hwnd, |state| {
         let character = decode_text_unit(&state.pending_high_surrogate, unit);
         if let Some(character) = character {
-            state.push_search(SearchEvent::TextInput(character));
+            state.push_event(SearchEvent::TextInput(character));
         }
     });
 }

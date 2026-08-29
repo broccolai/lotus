@@ -251,7 +251,7 @@ impl StatusWindow {
     }
 
     pub fn drain_events(&mut self) -> impl Iterator<Item = StatusEvent> + '_ {
-        self.window.state_mut().drain_status().into_iter()
+        self.window.state_mut().drain_events().into_iter()
     }
 
     pub fn has_pending_events(&self) -> bool {
@@ -303,7 +303,7 @@ impl DockReplicaWindow {
         self.0.is_visible()
     }
     pub fn drain_events(&mut self) -> impl Iterator<Item = DockEvent> + '_ {
-        self.0.window.state_mut().drain_dock().into_iter()
+        self.0.window.state_mut().drain_events().into_iter()
     }
     pub fn has_pending_events(&self) -> bool {
         self.0.has_pending_events()

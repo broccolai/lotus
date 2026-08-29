@@ -16,8 +16,7 @@ use super::{
     ContextMenuEvent, DockContextRequest, SearchEvent, SettingsEvent, SignedPoint,
     SwitcherEvent, WindowKind, clear_window_state, initialize_window_state,
     is_dock_context_window, is_dock_window, is_search_window, is_settings_window, low_word,
-    push_context_menu_event, push_context_request, push_dpi_event, push_resize_event,
-    push_search_event, push_settings_event, push_switcher_event, window_kind,
+    push_context_request, push_dpi_event, push_event, push_resize_event, window_kind,
     with_window_state,
 };
 use crate::platform::windows::display::{nearest_display, nearest_display_to_point};
@@ -105,15 +104,15 @@ fn apply_pointer_cursor(hwnd: HWND) -> bool {
 
 fn dispatch_close_message(hwnd: HWND) -> LRESULT {
     match window_kind(hwnd) {
-        Some(WindowKind::Search) => push_search_event(hwnd, SearchEvent::DismissRequested),
+        Some(WindowKind::Search) => push_event(hwnd, SearchEvent::DismissRequested),
         Some(WindowKind::Settings) => {
-            push_settings_event(hwnd, SettingsEvent::CloseRequested);
+            push_event(hwnd, SettingsEvent::CloseRequested);
         }
         Some(WindowKind::ContextMenu) => {
-            push_context_menu_event(hwnd, ContextMenuEvent::DismissRequested);
+            push_event(hwnd, ContextMenuEvent::DismissRequested);
         }
         Some(WindowKind::Switcher) => {
-            push_switcher_event(hwnd, SwitcherEvent::CloseRequested);
+            push_event(hwnd, SwitcherEvent::CloseRequested);
         }
         Some(WindowKind::Dock | WindowKind::DockReplica | WindowKind::Status) | None => {
             let _ = unsafe { DestroyWindow(hwnd) };

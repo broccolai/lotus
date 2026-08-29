@@ -112,7 +112,7 @@ impl ContextMenuWindow {
     }
 
     pub fn drain_events(&mut self) -> impl Iterator<Item = ContextMenuEvent> + '_ {
-        self.window.state_mut().drain_context_menu().into_iter()
+        self.window.state_mut().drain_events().into_iter()
     }
 
     pub fn has_pending_events(&self) -> bool {

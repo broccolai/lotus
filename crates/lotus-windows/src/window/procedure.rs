@@ -1,13 +1,14 @@
+mod event_queue;
 mod keyboard_text;
 mod lifecycle;
 mod pointer_capture;
 mod timer_paint;
 
-use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::cell::Cell;
 use std::mem::size_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use event_queue::{EventQueue, QueuedEvent};
 pub use lifecycle::apply_rounded_region;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -48,18 +49,8 @@ pub(super) enum WindowKind {
     Switcher,
 }
 
-enum PendingEvents {
-    Dock(VecDeque<DockEvent>),
-    DockReplica(VecDeque<DockEvent>),
-    Status(VecDeque<StatusEvent>),
-    Search(VecDeque<SearchEvent>),
-    Settings(VecDeque<SettingsEvent>),
-    ContextMenu(VecDeque<ContextMenuEvent>),
-    Switcher(VecDeque<SwitcherEvent>),
-}
-
 pub struct WindowState {
-    pending: RefCell<PendingEvents>,
+    pending: EventQueue,
     corner_radius: Cell<u32>,
     pub(super) tracking_mouse_leave: Cell<bool>,
     pub(super) left_button_pressed: Cell<bool>,
@@ -71,9 +62,9 @@ pub struct WindowState {
 }
 
 impl WindowState {
-    fn with_pending(pending: PendingEvents) -> Self {
+    fn with_pending(pending: EventQueue) -> Self {
         Self {
-            pending: RefCell::new(pending),
+            pending,
             corner_radius: Cell::new(0),
             tracking_mouse_leave: Cell::new(false),
             left_button_pressed: Cell::new(false),
@@ -85,167 +76,82 @@ impl WindowState {
         }
     }
     pub fn search() -> Self {
-        Self::with_pending(PendingEvents::Search(VecDeque::new()))
+        Self::with_pending(EventQueue::search())
     }
     pub fn status() -> Self {
-        Self::with_pending(PendingEvents::Status(VecDeque::new()))
+        Self::with_pending(EventQueue::status())
     }
     pub fn dock_replica() -> Self {
-        Self::with_pending(PendingEvents::DockReplica(VecDeque::new()))
+        Self::with_pending(EventQueue::dock_replica())
     }
     pub fn settings() -> Self {
-        Self::with_pending(PendingEvents::Settings(VecDeque::new()))
+        Self::with_pending(EventQueue::settings())
     }
     pub fn context_menu() -> Self {
-        Self::with_pending(PendingEvents::ContextMenu(VecDeque::new()))
+        Self::with_pending(EventQueue::context_menu())
     }
     pub fn switcher() -> Self {
-        Self::with_pending(PendingEvents::Switcher(VecDeque::new()))
+        Self::with_pending(EventQueue::switcher())
     }
 
-    pub(super) fn push_dock(&self, event: DockEvent) {
-        let mut pending = self.pending.borrow_mut();
-        let (PendingEvents::Dock(pending) | PendingEvents::DockReplica(pending)) =
-            &mut *pending
-        else {
-            unreachable!("dock events require a dock window queue");
-        };
-        push_coalescing(pending, event, |event| {
-            matches!(event, DockEvent::Pointer(PointerEvent::Moved { .. }))
-        });
+    pub(super) fn push_event<E: QueuedEvent>(&self, event: E) {
+        self.pending.push(event);
     }
-    pub(super) fn push_status(&self, event: StatusEvent) {
-        let mut pending = self.pending.borrow_mut();
-        let PendingEvents::Status(pending) = &mut *pending else {
-            unreachable!("status events require a status window queue");
-        };
-        push_coalescing(pending, event, |event| {
-            matches!(event, StatusEvent::Pointer(PointerEvent::Moved { .. }))
-        });
-    }
-    pub(super) fn push_search(&self, event: SearchEvent) {
-        let mut pending = self.pending.borrow_mut();
-        let PendingEvents::Search(pending) = &mut *pending else {
-            unreachable!("search events require a search window queue");
-        };
-        push_coalescing(pending, event, |event| {
-            matches!(event, SearchEvent::PointerMoved { .. })
-        });
-    }
-    pub(super) fn push_settings(&self, event: SettingsEvent) {
-        let mut pending = self.pending.borrow_mut();
-        let PendingEvents::Settings(pending) = &mut *pending else {
-            unreachable!("settings events require a settings window queue");
-        };
-        push_coalescing(pending, event, |event| {
-            matches!(event, SettingsEvent::PointerMoved { .. })
-        });
-    }
-    pub(super) fn push_context_menu(&self, event: ContextMenuEvent) {
-        let mut pending = self.pending.borrow_mut();
-        let PendingEvents::ContextMenu(pending) = &mut *pending else {
-            unreachable!("context-menu events require a context-menu window queue");
-        };
-        push_coalescing(pending, event, |event| {
-            matches!(event, ContextMenuEvent::PointerMoved { .. })
-        });
-    }
-    pub(super) fn push_switcher(&self, event: SwitcherEvent) {
-        let mut pending = self.pending.borrow_mut();
-        let PendingEvents::Switcher(pending) = &mut *pending else {
-            unreachable!("switcher events require a switcher window queue");
-        };
-        push_coalescing(pending, event, |event| {
-            matches!(event, SwitcherEvent::PointerMoved { .. })
-        });
-    }
-    pub(super) fn drain_dock(&self) -> VecDeque<DockEvent> {
-        take_pending(&self.pending, |pending| match pending {
-            PendingEvents::Dock(events) | PendingEvents::DockReplica(events) => events,
-            _ => unreachable!("dock window state must have a dock queue"),
-        })
-    }
-    pub(super) fn drain_status(&self) -> VecDeque<StatusEvent> {
-        take_pending(&self.pending, |pending| match pending {
-            PendingEvents::Status(events) => events,
-            _ => unreachable!("status window state must have a status queue"),
-        })
-    }
-    pub(super) fn drain_search(&self) -> VecDeque<SearchEvent> {
-        take_pending(&self.pending, |pending| match pending {
-            PendingEvents::Search(events) => events,
-            _ => unreachable!("search window state must have a search queue"),
-        })
-    }
-    pub(super) fn drain_settings(&self) -> VecDeque<SettingsEvent> {
-        take_pending(&self.pending, |pending| match pending {
-            PendingEvents::Settings(events) => events,
-            _ => unreachable!("settings window state must have a settings queue"),
-        })
-    }
-    pub(super) fn drain_context_menu(&self) -> VecDeque<ContextMenuEvent> {
-        take_pending(&self.pending, |pending| match pending {
-            PendingEvents::ContextMenu(events) => events,
-            _ => unreachable!("context menu window state must have a context menu queue"),
-        })
-    }
-    pub(super) fn drain_switcher(&self) -> VecDeque<SwitcherEvent> {
-        take_pending(&self.pending, |pending| match pending {
-            PendingEvents::Switcher(events) => events,
-            _ => unreachable!("switcher window state must have a switcher queue"),
-        })
+
+    pub(super) fn drain_events<E: QueuedEvent>(&self) -> std::collections::VecDeque<E> {
+        self.pending.drain()
     }
     pub(super) fn push_pointer(&self, event: PointerEvent) {
         match self.kind() {
             WindowKind::Dock | WindowKind::DockReplica => {
-                self.push_dock(DockEvent::Pointer(event));
+                self.push_event(DockEvent::Pointer(event));
             }
-            WindowKind::Status => self.push_status(StatusEvent::Pointer(event)),
+            WindowKind::Status => self.push_event(StatusEvent::Pointer(event)),
             WindowKind::Search => match event {
                 PointerEvent::Moved { x, y } => {
-                    self.push_search(SearchEvent::PointerMoved { x, y });
+                    self.push_event(SearchEvent::PointerMoved { x, y });
                 }
-                PointerEvent::Left => self.push_search(SearchEvent::PointerLeft),
+                PointerEvent::Left => self.push_event(SearchEvent::PointerLeft),
                 PointerEvent::LeftButtonReleased { x, y } => {
-                    self.push_search(SearchEvent::PointerReleased { x, y });
+                    self.push_event(SearchEvent::PointerReleased { x, y });
                 }
                 PointerEvent::LeftButtonPressed { .. } | PointerEvent::Cancelled => {}
             },
             WindowKind::Settings => match event {
                 PointerEvent::Moved { x, y } => {
-                    self.push_settings(SettingsEvent::PointerMoved { x, y });
+                    self.push_event(SettingsEvent::PointerMoved { x, y });
                 }
-                PointerEvent::Left => self.push_settings(SettingsEvent::PointerLeft),
+                PointerEvent::Left => self.push_event(SettingsEvent::PointerLeft),
                 PointerEvent::LeftButtonPressed { x, y } => {
-                    self.push_settings(SettingsEvent::PointerPressed { x, y });
+                    self.push_event(SettingsEvent::PointerPressed { x, y });
                 }
                 PointerEvent::LeftButtonReleased { x, y } => {
-                    self.push_settings(SettingsEvent::PointerReleased { x, y });
+                    self.push_event(SettingsEvent::PointerReleased { x, y });
                 }
                 PointerEvent::Cancelled => {
-                    self.push_settings(SettingsEvent::PointerCancelled);
+                    self.push_event(SettingsEvent::PointerCancelled);
                 }
             },
             WindowKind::ContextMenu => match event {
                 PointerEvent::Moved { x, y } => {
-                    self.push_context_menu(ContextMenuEvent::PointerMoved { x, y });
+                    self.push_event(ContextMenuEvent::PointerMoved { x, y });
                 }
-                PointerEvent::Left => self.push_context_menu(ContextMenuEvent::PointerLeft),
+                PointerEvent::Left => self.push_event(ContextMenuEvent::PointerLeft),
                 PointerEvent::LeftButtonReleased { x, y } => {
-                    self.push_context_menu(ContextMenuEvent::PointerReleased { x, y });
+                    self.push_event(ContextMenuEvent::PointerReleased { x, y });
                 }
                 PointerEvent::Cancelled => {
-                    self.push_context_menu(ContextMenuEvent::DismissRequested);
+                    self.push_event(ContextMenuEvent::DismissRequested);
                 }
                 PointerEvent::LeftButtonPressed { .. } => {}
             },
             WindowKind::Switcher => match event {
                 PointerEvent::Moved { x, y } => {
-                    self.push_switcher(SwitcherEvent::PointerMoved { x, y });
+                    self.push_event(SwitcherEvent::PointerMoved { x, y });
                 }
-                PointerEvent::Left => self.push_switcher(SwitcherEvent::PointerLeft),
+                PointerEvent::Left => self.push_event(SwitcherEvent::PointerLeft),
                 PointerEvent::LeftButtonReleased { x, y } => {
-                    self.push_switcher(SwitcherEvent::PointerReleased { x, y });
+                    self.push_event(SwitcherEvent::PointerReleased { x, y });
                 }
                 PointerEvent::LeftButtonPressed { .. } | PointerEvent::Cancelled => {}
             },
@@ -253,44 +159,18 @@ impl WindowState {
     }
 
     pub fn has_pending_events(&self) -> bool {
-        match &*self.pending.borrow() {
-            PendingEvents::Dock(events) | PendingEvents::DockReplica(events) => {
-                !events.is_empty()
-            }
-            PendingEvents::Status(events) => !events.is_empty(),
-            PendingEvents::Search(events) => !events.is_empty(),
-            PendingEvents::Settings(events) => !events.is_empty(),
-            PendingEvents::ContextMenu(events) => !events.is_empty(),
-            PendingEvents::Switcher(events) => !events.is_empty(),
-        }
+        !self.pending.is_empty()
     }
     pub fn set_corner_radius(&self, corner_radius: u32) {
         self.corner_radius.set(corner_radius);
     }
     pub fn clear_events(&self) {
-        match &mut *self.pending.borrow_mut() {
-            PendingEvents::Dock(events) | PendingEvents::DockReplica(events) => {
-                events.clear();
-            }
-            PendingEvents::Status(events) => events.clear(),
-            PendingEvents::Search(events) => events.clear(),
-            PendingEvents::Settings(events) => events.clear(),
-            PendingEvents::ContextMenu(events) => events.clear(),
-            PendingEvents::Switcher(events) => events.clear(),
-        }
+        self.pending.clear();
         self.pending_high_surrogate.set(None);
     }
 
     fn kind(&self) -> WindowKind {
-        match &*self.pending.borrow() {
-            PendingEvents::Dock(_) => WindowKind::Dock,
-            PendingEvents::DockReplica(_) => WindowKind::DockReplica,
-            PendingEvents::Status(_) => WindowKind::Status,
-            PendingEvents::Search(_) => WindowKind::Search,
-            PendingEvents::Settings(_) => WindowKind::Settings,
-            PendingEvents::ContextMenu(_) => WindowKind::ContextMenu,
-            PendingEvents::Switcher(_) => WindowKind::Switcher,
-        }
+        self.pending.kind()
     }
     pub fn set_pointer_cursor(&self, cursor: PointerCursor) {
         self.pointer_cursor.set(cursor);
@@ -336,29 +216,8 @@ impl WindowState {
 }
 impl Default for WindowState {
     fn default() -> Self {
-        Self::with_pending(PendingEvents::Dock(VecDeque::new()))
+        Self::with_pending(EventQueue::dock())
     }
-}
-fn push_coalescing<T: Copy>(
-    pending: &mut VecDeque<T>,
-    event: T,
-    is_pointer_move: impl Fn(T) -> bool,
-) {
-    if pending
-        .back()
-        .is_some_and(|previous| is_pointer_move(*previous))
-        && is_pointer_move(event)
-    {
-        *pending.back_mut().expect("nonempty pending queue") = event;
-    } else {
-        pending.push_back(event);
-    }
-}
-fn take_pending<T>(
-    pending: &RefCell<PendingEvents>,
-    events: impl FnOnce(&mut PendingEvents) -> &mut VecDeque<T>,
-) -> VecDeque<T> {
-    std::mem::take(events(&mut pending.borrow_mut()))
 }
 
 pub struct WindowClass {
@@ -430,75 +289,63 @@ pub(super) fn push_pointer_event(hwnd: HWND, event: PointerEvent) {
 pub(super) fn push_resize_event(hwnd: HWND, width: u32, height: u32) {
     with_window_state(hwnd, |state| match state.kind() {
         WindowKind::Dock | WindowKind::DockReplica => {
-            state.push_dock(DockEvent::Resized { width, height });
+            state.push_event(DockEvent::Resized { width, height });
         }
-        WindowKind::Status => state.push_status(StatusEvent::Resized { width, height }),
-        WindowKind::Search => state.push_search(SearchEvent::Resized { width, height }),
+        WindowKind::Status => state.push_event(StatusEvent::Resized { width, height }),
+        WindowKind::Search => state.push_event(SearchEvent::Resized { width, height }),
         WindowKind::Settings => {
-            state.push_settings(SettingsEvent::Resized { width, height });
+            state.push_event(SettingsEvent::Resized { width, height });
         }
         WindowKind::ContextMenu => {
-            state.push_context_menu(ContextMenuEvent::Resized { width, height });
+            state.push_event(ContextMenuEvent::Resized { width, height });
         }
         WindowKind::Switcher => {
-            state.push_switcher(SwitcherEvent::Resized { width, height });
+            state.push_event(SwitcherEvent::Resized { width, height });
         }
     });
 }
 pub(super) fn push_dpi_event(hwnd: HWND, dpi: u32) {
     with_window_state(hwnd, |state| match state.kind() {
         WindowKind::Dock | WindowKind::DockReplica => {
-            state.push_dock(DockEvent::DpiChanged { dpi });
+            state.push_event(DockEvent::DpiChanged { dpi });
         }
-        WindowKind::Status => state.push_status(StatusEvent::DpiChanged { dpi }),
-        WindowKind::Search => state.push_search(SearchEvent::DpiChanged { dpi }),
-        WindowKind::Settings => state.push_settings(SettingsEvent::DpiChanged { dpi }),
+        WindowKind::Status => state.push_event(StatusEvent::DpiChanged { dpi }),
+        WindowKind::Search => state.push_event(SearchEvent::DpiChanged { dpi }),
+        WindowKind::Settings => state.push_event(SettingsEvent::DpiChanged { dpi }),
         WindowKind::ContextMenu => {
-            state.push_context_menu(ContextMenuEvent::DpiChanged { dpi });
+            state.push_event(ContextMenuEvent::DpiChanged { dpi });
         }
-        WindowKind::Switcher => state.push_switcher(SwitcherEvent::DpiChanged { dpi }),
+        WindowKind::Switcher => state.push_event(SwitcherEvent::DpiChanged { dpi }),
     });
 }
 pub(super) fn push_render_event(hwnd: HWND) {
     with_window_state(hwnd, |state| match state.kind() {
         WindowKind::Dock | WindowKind::DockReplica => {
-            state.push_dock(DockEvent::RenderRequested);
+            state.push_event(DockEvent::RenderRequested);
         }
-        WindowKind::Status => state.push_status(StatusEvent::RenderRequested),
-        WindowKind::Search => state.push_search(SearchEvent::RenderRequested),
-        WindowKind::Settings => state.push_settings(SettingsEvent::RenderRequested),
+        WindowKind::Status => state.push_event(StatusEvent::RenderRequested),
+        WindowKind::Search => state.push_event(SearchEvent::RenderRequested),
+        WindowKind::Settings => state.push_event(SettingsEvent::RenderRequested),
         WindowKind::ContextMenu => {
-            state.push_context_menu(ContextMenuEvent::RenderRequested);
+            state.push_event(ContextMenuEvent::RenderRequested);
         }
-        WindowKind::Switcher => state.push_switcher(SwitcherEvent::RenderRequested),
+        WindowKind::Switcher => state.push_event(SwitcherEvent::RenderRequested),
     });
 }
 pub(super) fn push_context_request(hwnd: HWND, request: DockContextRequest) {
     with_window_state(hwnd, |state| match state.kind() {
         WindowKind::Dock | WindowKind::DockReplica => {
-            state.push_dock(DockEvent::ContextMenuRequested(request));
+            state.push_event(DockEvent::ContextMenuRequested(request));
         }
-        WindowKind::Search => state.push_search(SearchEvent::ContextMenuRequested(request)),
+        WindowKind::Search => state.push_event(SearchEvent::ContextMenuRequested(request)),
         WindowKind::Status
         | WindowKind::Settings
         | WindowKind::ContextMenu
         | WindowKind::Switcher => {}
     });
 }
-pub(super) fn push_dock_event(hwnd: HWND, event: DockEvent) {
-    with_window_state(hwnd, |state| state.push_dock(event));
-}
-pub(super) fn push_search_event(hwnd: HWND, event: SearchEvent) {
-    with_window_state(hwnd, |state| state.push_search(event));
-}
-pub(super) fn push_settings_event(hwnd: HWND, event: SettingsEvent) {
-    with_window_state(hwnd, |state| state.push_settings(event));
-}
-pub(super) fn push_context_menu_event(hwnd: HWND, event: ContextMenuEvent) {
-    with_window_state(hwnd, |state| state.push_context_menu(event));
-}
-pub(super) fn push_switcher_event(hwnd: HWND, event: SwitcherEvent) {
-    with_window_state(hwnd, |state| state.push_switcher(event));
+pub(super) fn push_event<E: QueuedEvent>(hwnd: HWND, event: E) {
+    with_window_state(hwnd, |state| state.push_event(event));
 }
 pub(super) fn window_kind(hwnd: HWND) -> Option<WindowKind> {
     let mut kind = None;
