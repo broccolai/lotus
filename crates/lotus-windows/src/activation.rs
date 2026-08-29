@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::path::Path;
 use std::ptr;
 
 use lotus_core::activation::ActivationDecision;
@@ -49,6 +50,8 @@ pub enum ActivationError {
     EmptyLaunchTarget,
     #[error("the launch target's environment variables could not be expanded")]
     EnvironmentExpansion,
+    #[error("the application location no longer exists: {0}")]
+    MissingApplicationLocation(String),
     #[error("Windows could not shell-launch {target}: {source}")]
     Launch {
         target: String,
@@ -244,6 +247,16 @@ pub fn launch_target(target: &str, arguments: Option<&str>) -> Result<(), Activa
         target: request.target,
         source: source.into(),
     })
+}
+
+pub fn reveal_in_file_explorer(path: &Path) -> Result<(), ActivationError> {
+    if !path.is_file() {
+        return Err(ActivationError::MissingApplicationLocation(
+            path.to_string_lossy().into_owned(),
+        ));
+    }
+    let arguments = format!(r#"/select,"{}""#, path.to_string_lossy());
+    launch_target("explorer.exe", Some(&arguments))
 }
 
 #[derive(Debug, Eq, PartialEq)]

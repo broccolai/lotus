@@ -721,6 +721,15 @@ impl ModuleHost {
         )
     }
 
+    pub(super) fn open_search_file_location_menu(
+        &mut self,
+        anchor: SignedPoint,
+        path: String,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        self.context_menu.open_file_location(anchor, path, graphics)
+    }
+
     pub(super) fn open_window_picker(
         &mut self,
         anchor: SignedPoint,

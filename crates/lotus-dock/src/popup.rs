@@ -79,6 +79,7 @@ pub enum PopupAction {
     },
     Activate(TrackedWindowKey),
     CloseWindow(TrackedWindowKey),
+    OpenFileLocation(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,6 +137,7 @@ pub struct DockPopup<Asset> {
 enum PopupKind<Asset> {
     System(Box<ActionMenu>),
     Power,
+    FileLocation(String),
     App {
         source_index: usize,
         identity: String,
@@ -246,6 +248,17 @@ impl<Asset: Clone> DockPopup<Asset> {
         })
     }
 
+    pub fn file_location(dpi: u32, path: String) -> Option<Self> {
+        Some(Self {
+            scale: DpiScale::new(dpi)?,
+            kind: PopupKind::FileLocation(path),
+            hovered: None,
+            selected: None,
+            offset: 0,
+            theme: Theme::default(),
+        })
+    }
+
     pub fn picker(
         dpi: u32,
         source_index: usize,
@@ -342,7 +355,7 @@ impl<Asset: Clone> DockPopup<Asset> {
 
     pub const fn source_index(&self) -> Option<usize> {
         match &self.kind {
-            PopupKind::System(_) | PopupKind::Power => None,
+            PopupKind::System(_) | PopupKind::Power | PopupKind::FileLocation(_) => None,
             PopupKind::App { source_index, .. }
             | PopupKind::Picker { source_index, .. } => Some(*source_index),
         }
@@ -351,7 +364,10 @@ impl<Asset: Clone> DockPopup<Asset> {
     pub const fn picker_style(&self) -> Option<WindowPickerStyle> {
         match self.kind {
             PopupKind::Picker { style, .. } => Some(style),
-            PopupKind::System(_) | PopupKind::Power | PopupKind::App { .. } => None,
+            PopupKind::System(_)
+            | PopupKind::Power
+            | PopupKind::FileLocation(_)
+            | PopupKind::App { .. } => None,
         }
     }
 
@@ -359,6 +375,7 @@ impl<Asset: Clone> DockPopup<Asset> {
         match &self.kind {
             PopupKind::System(menu) => menu.desired_size(),
             PopupKind::Power => self.vertical_size(POWER_WIDTH_DIP, POWER_ROW_DIP, 4),
+            PopupKind::FileLocation(_) => self.vertical_size(APP_WIDTH_DIP, APP_ROW_DIP, 1),
             PopupKind::App { entries, .. } => NonZeroPhysicalSize::new(
                 self.scale.physical(APP_WIDTH_DIP),
                 self.scale.physical(
@@ -409,6 +426,17 @@ impl<Asset: Clone> DockPopup<Asset> {
                     close_highlighted: false,
                 })
                 .collect(),
+            PopupKind::FileLocation(path) => vec![PopupEntry {
+                action: PopupAction::OpenFileLocation(path.clone()),
+                label: "Open file location".to_owned(),
+                icon: PopupIcon::Symbol(PopupSymbol::Open),
+                bounds: self.vertical_row(0, APP_WIDTH_DIP, APP_ROW_DIP),
+                preview: None,
+                close: None,
+                active: false,
+                highlighted: self.highlighted(0),
+                close_highlighted: false,
+            }],
             PopupKind::App {
                 identity, entries, ..
             } => entries

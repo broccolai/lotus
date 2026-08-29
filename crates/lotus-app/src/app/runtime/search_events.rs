@@ -58,6 +58,15 @@ pub(super) fn drain_search_events(
     let events = auxiliary.drain_launcher_events();
     let had_events = !events.is_empty();
     for event in events {
+        if let SearchEvent::ContextMenuRequested(request) = event {
+            if let Some((anchor, path)) = auxiliary
+                .launcher_runtime()
+                .file_location_context(request)?
+            {
+                auxiliary.open_search_file_location_menu(anchor, path, graphics)?;
+            }
+            continue;
+        }
         let submission = match handle_search_event(
             event,
             dock,
@@ -148,6 +157,7 @@ pub(crate) fn handle_search_event(
                 command = launcher.submit(dock.handle());
             }
         }
+        SearchEvent::ContextMenuRequested(_) => {}
     }
 
     if scene_changed && launcher.is_visible() {

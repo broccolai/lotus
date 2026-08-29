@@ -1,8 +1,10 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use lotus_core::application::{
-    ApplicationIdentity, ApplicationKey, ApplicationResolution,
-    WindowApplicationAssignments,
+    ApplicationIdentity, ApplicationKey, ApplicationPresentationIcon,
+    ApplicationResolution, WindowApplicationAssignments,
 };
 use lotus_core::settings::DockSettings;
 use lotus_core::window::{TrackedWindowKey, WindowInfo};
@@ -10,6 +12,7 @@ use lotus_settings::appearance::theme_for;
 use lotus_switcher::model::{RecentOrder, ReconcileOutcome, SwitcherSession};
 use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
+use lotus_ui::icon::RasterIcon;
 use lotus_ui::theme::Theme;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::assets::SvgAsset;
@@ -26,6 +29,16 @@ use crate::app::{AppError, activation};
 
 const SWITCHER_ICON_DIP: u32 = 38;
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
+const MAX_RETAINED_SWITCHER_ICONS: usize = 128;
+
+#[derive(Clone)]
+struct RetainedSwitcherIcon {
+    pixel_size: u32,
+    settings_revision: u64,
+    presentation_icon: Option<ApplicationPresentationIcon>,
+    custom_image_path: Option<PathBuf>,
+    icon: RasterIcon,
+}
 
 pub(super) struct SwitcherRuntime {
     pub(super) window: SwitcherWindow,
@@ -36,7 +49,8 @@ pub(super) struct SwitcherRuntime {
     icon_settings: DockSettings,
     icon_generation: u64,
     icon_settings_revision: u64,
-    pub(super) name_overrides: std::collections::BTreeMap<String, String>,
+    retained_icons: BTreeMap<TrackedWindowKey, RetainedSwitcherIcon>,
+    pub(super) name_overrides: BTreeMap<String, String>,
     application_catalog: Arc<ApplicationCatalogSnapshot>,
     application_assignments: WindowApplicationAssignments,
     recent_windows: RecentOrder<TrackedWindowKey>,
@@ -73,7 +87,8 @@ impl SwitcherRuntime {
             icon_settings: settings.clone(),
             icon_generation: 0,
             icon_settings_revision: 0,
-            name_overrides: std::collections::BTreeMap::new(),
+            retained_icons: BTreeMap::new(),
+            name_overrides: BTreeMap::new(),
             application_catalog: Arc::new(ApplicationCatalogSnapshot::new(0, Vec::new())),
             application_assignments: WindowApplicationAssignments::default(),
             recent_windows: RecentOrder::default(),
@@ -160,6 +175,9 @@ impl SwitcherRuntime {
         self.application_catalog = application_catalog;
         self.application_assignments
             .clone_from(application_assignments);
+        let live_windows = windows.iter().map(WindowInfo::key).collect::<BTreeSet<_>>();
+        self.retained_icons
+            .retain(|window, _| live_windows.contains(window));
         self.recent_windows
             .retain(windows.iter().map(WindowInfo::key));
         let Some(session) = &mut self.session else {
@@ -279,13 +297,13 @@ impl SwitcherRuntime {
 
     pub(super) fn hide(&mut self) {
         self.window.hide();
-        self.icon_hydrator.request_switcher(Vec::new());
         self.scene = None;
         self.session = None;
     }
 
     pub(super) fn abandon(&mut self) {
         self.window.hide();
+        self.icon_hydrator.request_switcher(Vec::new());
         self.surface = None;
         self.scene = None;
         self.session = None;
@@ -377,18 +395,38 @@ impl SwitcherRuntime {
         let Some(session) = &self.session else {
             return Ok(());
         };
+        let pixel_size = sampled_icon_size(dpi);
         let items = session
             .items()
             .iter()
-            .map(|window| SwitcherItem {
-                key: window.key(),
-                title: switcher_title(
+            .map(|window| {
+                let (presentation_icon, custom_image_path) = switcher_icon_sources(
                     window,
-                    &self.name_overrides,
+                    &self.icon_settings,
                     &self.application_catalog,
                     &self.application_assignments,
-                ),
-                icon: None,
+                );
+                SwitcherItem {
+                    key: window.key(),
+                    title: switcher_title(
+                        window,
+                        &self.name_overrides,
+                        &self.application_catalog,
+                        &self.application_assignments,
+                    ),
+                    icon: self
+                        .retained_icons
+                        .get(&window.key())
+                        .filter(|icon| {
+                            icon.matches(
+                                pixel_size,
+                                self.icon_settings_revision,
+                                presentation_icon.as_ref(),
+                                custom_image_path.as_ref(),
+                            )
+                        })
+                        .map(|icon| DockIcon::Raster(icon.icon.clone())),
+                }
             })
             .collect();
         self.scene = SwitcherScene::new(dpi, items, session.selected_index());
@@ -405,6 +443,7 @@ impl SwitcherRuntime {
         self.theme = theme_for(settings);
         self.icon_settings = settings.clone();
         self.icon_settings_revision = self.icon_settings_revision.wrapping_add(1);
+        self.retained_icons.clear();
         lotus_windows::backdrop::apply_popup_settings(self.window.handle(), settings);
         if let Some(scene) = &mut self.scene {
             let _ = scene.set_theme(self.theme);
@@ -416,21 +455,34 @@ impl SwitcherRuntime {
         &mut self,
         results: impl IntoIterator<Item = lotus_windows::icon_hydrator::HydratedSwitcherIcon>,
     ) -> bool {
-        let Some(scene) = &mut self.scene else {
-            return false;
-        };
-        let dpi = scene.dpi();
-        let icon_size = sampled_icon_size(dpi);
         let mut changed = false;
 
         for result in results {
-            if result.generation != self.icon_generation
-                || result.settings_revision != self.icon_settings_revision
-                || result.pixel_size != icon_size
-            {
+            if result.settings_revision != self.icon_settings_revision {
                 continue;
             }
-            changed |= scene.set_icon(result.window, result.icon.map(DockIcon::Raster));
+            let Some(icon) = result.icon else {
+                continue;
+            };
+            self.retained_icons.insert(
+                result.window,
+                RetainedSwitcherIcon {
+                    pixel_size: result.pixel_size,
+                    settings_revision: result.settings_revision,
+                    presentation_icon: result.presentation_icon,
+                    custom_image_path: result.custom_image_path,
+                    icon: icon.clone(),
+                },
+            );
+            if self.retained_icons.len() > MAX_RETAINED_SWITCHER_ICONS {
+                let _discarded = self.retained_icons.pop_first();
+            }
+            if result.generation == self.icon_generation
+                && let Some(scene) = &mut self.scene
+                && sampled_icon_size(scene.dpi()) == result.pixel_size
+            {
+                changed |= scene.set_icon(result.window, Some(DockIcon::Raster(icon)));
+            }
         }
         if changed {
             self.invalidate();
@@ -503,7 +555,7 @@ impl SwitcherRuntime {
 }
 
 impl SwitcherRuntime {
-    fn request_visible_icons(&self) {
+    fn request_visible_icons(&mut self) {
         let (Some(session), Some(scene)) = (&self.session, &self.scene) else {
             self.icon_hydrator.request_switcher(Vec::new());
             return;
@@ -513,25 +565,28 @@ impl SwitcherRuntime {
             .visible_range_with_margin(2)
             .filter_map(|index| {
                 let window = session.items().get(index)?;
-                let identity = window_override_identity(
+                let (presentation_icon, custom_image_path) = switcher_icon_sources(
                     window,
+                    &self.icon_settings,
                     &self.application_catalog,
                     &self.application_assignments,
                 );
+                if self.retained_icons.get(&window.key()).is_some_and(|icon| {
+                    icon.matches(
+                        pixel_size,
+                        self.icon_settings_revision,
+                        presentation_icon.as_ref(),
+                        custom_image_path.as_ref(),
+                    )
+                }) {
+                    return None;
+                }
                 Some(SwitcherIconRequest {
                     generation: self.icon_generation,
                     window: window.key(),
                     executable_path: window.executable_path.clone(),
-                    presentation_icon: self
-                        .application_assignments
-                        .presentation_by_window
-                        .get(&window.key())
-                        .map(|presentation| presentation.icon.clone()),
-                    custom_image_path:
-                        crate::app::icon_override::application_icon_path_for_identity(
-                            &self.icon_settings,
-                            &identity,
-                        ),
+                    presentation_icon,
+                    custom_image_path,
                     pixel_size,
                     settings_revision: self.icon_settings_revision,
                 })
@@ -539,6 +594,37 @@ impl SwitcherRuntime {
             .collect();
         self.icon_hydrator.request_switcher(requests);
     }
+}
+
+impl RetainedSwitcherIcon {
+    fn matches(
+        &self,
+        pixel_size: u32,
+        settings_revision: u64,
+        presentation_icon: Option<&ApplicationPresentationIcon>,
+        custom_image_path: Option<&PathBuf>,
+    ) -> bool {
+        self.pixel_size == pixel_size
+            && self.settings_revision == settings_revision
+            && self.presentation_icon.as_ref() == presentation_icon
+            && self.custom_image_path.as_ref() == custom_image_path
+    }
+}
+
+fn switcher_icon_sources(
+    window: &WindowInfo,
+    settings: &DockSettings,
+    catalog: &ApplicationCatalogSnapshot,
+    assignments: &WindowApplicationAssignments,
+) -> (Option<ApplicationPresentationIcon>, Option<PathBuf>) {
+    let presentation_icon = assignments
+        .presentation_by_window
+        .get(&window.key())
+        .map(|presentation| presentation.icon.clone());
+    let identity = window_override_identity(window, catalog, assignments);
+    let custom_image_path =
+        crate::app::icon_override::application_icon_path_for_identity(settings, &identity);
+    (presentation_icon, custom_image_path)
 }
 
 fn sampled_icon_size(dpi: u32) -> u32 {
@@ -549,7 +635,7 @@ fn sampled_icon_size(dpi: u32) -> u32 {
 
 fn switcher_title(
     window: &WindowInfo,
-    overrides: &std::collections::BTreeMap<String, String>,
+    overrides: &BTreeMap<String, String>,
     catalog: &ApplicationCatalogSnapshot,
     assignments: &WindowApplicationAssignments,
 ) -> String {

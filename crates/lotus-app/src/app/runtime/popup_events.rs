@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use lotus_core::window::WindowInfo;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
@@ -171,6 +173,24 @@ fn execute_popup_action(
                     context.dock.handle(),
                     "Lotus",
                     &format!("Lotus could not close that window.\n\n{error}"),
+                );
+            }
+        }
+        PopupAction::OpenFileLocation(path) => {
+            context.auxiliary.hide_launcher();
+            if let Err(error) =
+                lotus_windows::activation::reveal_in_file_explorer(Path::new(&path))
+            {
+                lotus_windows::diagnostics::record_error(
+                    "activation.open_file_location",
+                    &error,
+                );
+                show_error(
+                    context.dock.handle(),
+                    "Lotus Search",
+                    &format!(
+                        "Lotus could not open that application's location.\n\n{error}"
+                    ),
                 );
             }
         }

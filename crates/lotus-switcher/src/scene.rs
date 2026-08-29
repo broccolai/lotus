@@ -1,4 +1,4 @@
-use lotus_core::window::{TrackedWindowKey, WindowId};
+use lotus_core::window::TrackedWindowKey;
 use lotus_ui::geometry::{
     DpiScale, NonZeroPhysicalSize, PhysicalRect, PhysicalUnsignedPoint, physical_rect,
 };
@@ -82,8 +82,8 @@ impl<Asset> SwitcherScene<Asset> {
         true
     }
 
-    pub fn set_icon(&mut self, window: WindowId, icon: Option<Asset>) -> bool {
-        let Some(item) = self.items.iter_mut().find(|item| item.key.id == window) else {
+    pub fn set_icon(&mut self, window: TrackedWindowKey, icon: Option<Asset>) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.key == window) else {
             return false;
         };
         if item.icon.is_none() && icon.is_none() {

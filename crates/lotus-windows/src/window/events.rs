@@ -90,6 +90,7 @@ pub enum SearchEvent {
     PointerMoved { x: i32, y: i32 },
     PointerLeft,
     PointerReleased { x: i32, y: i32 },
+    ContextMenuRequested(DockContextRequest),
     DismissRequested,
     SubmitRequested,
     Resized { width: u32, height: u32 },

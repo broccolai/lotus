@@ -109,6 +109,21 @@ impl ContextMenuRuntime {
         self.open_current(anchor, graphics)
     }
 
+    pub(super) fn open_file_location(
+        &mut self,
+        anchor: SignedPoint,
+        path: String,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        let mut scene = ContextMenuScene::file_location(self.window.dpi(), path)
+            .ok_or(AppError::InvalidContextMenuScene)?;
+        let _ = scene.set_theme(self.theme);
+        self.scene = scene;
+        self.picker_identity = None;
+        self.alignment = PopupAlignment::Start;
+        self.open_current(anchor, graphics)
+    }
+
     pub(super) fn open_power(
         &mut self,
         graphics: &mut DeviceState,

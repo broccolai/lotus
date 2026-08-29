@@ -22,7 +22,10 @@ use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError, Surface
 use lotus_windows::icon_hydrator::{LauncherIconClient, LauncherIconRequest};
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::search_catalog::SearchCatalogCache;
-use lotus_windows::window::{DockWindow, SearchEvent, SearchWindow, SelectionDirection};
+use lotus_windows::window::{
+    DockContextRequest, DockWindow, SearchEvent, SearchWindow, SelectionDirection,
+    SignedPoint,
+};
 
 use crate::app::AppError;
 use crate::app::dock::DockRuntime;
@@ -427,6 +430,35 @@ impl LauncherRuntime {
             self.rebuild_scene(self.window.dpi())?;
         }
         Ok(changed)
+    }
+
+    pub(super) fn file_location_context(
+        &mut self,
+        request: DockContextRequest,
+    ) -> Result<Option<(SignedPoint, String)>, AppError> {
+        let DockContextRequest::Pointer { screen, client, .. } = request else {
+            return Ok(None);
+        };
+        if self.controller.is_command_mode() || self.controller.is_calculator_mode() {
+            return Ok(None);
+        }
+        let Some(index) = self.result_at(client.x, client.y) else {
+            return Ok(None);
+        };
+        let Some(entry) = self.controller.results().get(index) else {
+            return Ok(None);
+        };
+        let Some(path) = lotus_windows::launch::application_file_location(
+            &entry.launch_target,
+            &entry.icon_source,
+        ) else {
+            return Ok(None);
+        };
+        let path = path.to_string_lossy().into_owned();
+
+        let _ = self.select_result(index)?;
+        self.invalidate();
+        Ok(Some((screen, path)))
     }
 
     pub(super) fn submit(&mut self, owner: WindowHandle) -> Option<LauncherSubmission> {

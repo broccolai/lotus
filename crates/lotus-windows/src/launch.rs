@@ -34,6 +34,26 @@ pub fn resolve_executable(target: &str) -> Option<PathBuf> {
     search_path(&expanded)
 }
 
+pub fn application_file_location(
+    launch_target: &str,
+    icon_source: &str,
+) -> Option<PathBuf> {
+    existing_file(launch_target)
+        .or_else(|| existing_file(icon_source).filter(|path| has_extension(path, "exe")))
+        .or_else(|| resolve_executable(launch_target))
+}
+
+fn existing_file(value: &str) -> Option<PathBuf> {
+    let value = prepare_target(value)?;
+    let expanded = expand_environment_variables(value)?;
+    let path = Path::new(&expanded);
+    if path.is_file() {
+        std::path::absolute(path).ok()
+    } else {
+        None
+    }
+}
+
 pub(crate) fn resolve_shortcut_icon(shortcut_path: &Path) -> Option<(PathBuf, i32)> {
     if !has_extension(shortcut_path, "lnk") {
         return None;

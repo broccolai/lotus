@@ -4,7 +4,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
 use lotus_core::application::{ApplicationPresentationIcon, is_shared_host_executable};
-use lotus_core::window::{TrackedWindowKey, WindowId};
+use lotus_core::window::TrackedWindowKey;
 use lotus_ui::icon::RasterIcon;
 use thiserror::Error;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -59,9 +59,11 @@ pub struct HydratedLauncherIcon {
 #[derive(Clone, Debug)]
 pub struct HydratedSwitcherIcon {
     pub generation: u64,
-    pub window: WindowId,
+    pub window: TrackedWindowKey,
     pub pixel_size: u32,
     pub settings_revision: u64,
+    pub presentation_icon: Option<ApplicationPresentationIcon>,
+    pub custom_image_path: Option<PathBuf>,
     pub icon: Option<RasterIcon>,
 }
 
@@ -399,9 +401,11 @@ fn hydrate_switcher_icon(
         });
     HydratedSwitcherIcon {
         generation: request.generation,
-        window: request.window.id,
+        window: request.window,
         pixel_size: request.pixel_size,
         settings_revision: request.settings_revision,
+        presentation_icon: request.presentation_icon.clone(),
+        custom_image_path: request.custom_image_path.clone(),
         icon,
     }
 }

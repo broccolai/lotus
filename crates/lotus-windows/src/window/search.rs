@@ -134,10 +134,12 @@ fn search_event_from_window_event(event: WindowEvent) -> Option<SearchEvent> {
         WindowEvent::Pointer(PointerEvent::LeftButtonReleased { x, y }) => {
             Some(SearchEvent::PointerReleased { x, y })
         }
+        WindowEvent::ContextMenuRequested(request) => {
+            Some(SearchEvent::ContextMenuRequested(request))
+        }
         WindowEvent::Pointer(
             PointerEvent::LeftButtonPressed { .. } | PointerEvent::Cancelled,
         )
-        | WindowEvent::ContextMenuRequested(_)
         | WindowEvent::ContextMenu(_)
         | WindowEvent::Settings(_)
         | WindowEvent::Switcher(_)

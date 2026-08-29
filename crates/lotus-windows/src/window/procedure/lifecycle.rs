@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::{
     ContextMenuEvent, DockContextRequest, SearchEvent, SettingsEvent, SignedPoint,
     SwitcherEvent, WindowEvent, WindowKind, clear_window_state, initialize_window_state,
-    is_dock_context_window, is_dock_window, is_settings_window, low_word,
+    is_dock_context_window, is_dock_window, is_search_window, is_settings_window, low_word,
     push_window_event, window_kind, with_window_state,
 };
 use crate::platform::windows::display::{nearest_display, nearest_display_to_point};
@@ -55,7 +55,7 @@ pub(super) fn dispatch(
         WM_NCHITTEST if is_settings_window(hwnd) => {
             Some(settings_header_hit_test(hwnd, lparam))
         }
-        WM_CONTEXTMENU if is_dock_context_window(hwnd) => {
+        WM_CONTEXTMENU if is_dock_context_window(hwnd) || is_search_window(hwnd) => {
             push_window_event(
                 hwnd,
                 WindowEvent::ContextMenuRequested(context_request(hwnd, lparam)),
