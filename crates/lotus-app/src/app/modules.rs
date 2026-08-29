@@ -1,10 +1,12 @@
+mod input;
+
 use lotus_core::dock::DockItem;
 use lotus_core::module::{ModuleId, ModuleSet};
 use lotus_core::search::SearchUsage;
 use lotus_core::settings::DockSettings;
 use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
-use lotus_settings::scene::{SettingsApplicationRecord, SettingsScene};
+use lotus_settings::scene::{SettingsAction, SettingsApplicationRecord};
 use lotus_ui::frame::FramePass;
 use lotus_windows::WindowHandle;
 use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth};
@@ -14,17 +16,17 @@ use lotus_windows::search_catalog::{ApplicationCatalogSnapshot, SearchCatalogCac
 use lotus_windows::update::is_installed;
 use lotus_windows::window::{
     ContextMenuEvent, DockWindow, PointerEvent, PopupAlignment, SettingsEvent, SignedPoint,
-    WindowEvent,
+    StatusEvent,
 };
 use lotus_windows::window_tracker::WindowTracker;
 
 use crate::app::AppError;
 use crate::app::context_menu::{AppMenuOptions, ContextMenuRuntime};
 use crate::app::dock::DockRuntime;
-use crate::app::launcher::LauncherRuntime;
+use crate::app::launcher::{LauncherEventOutcome, LauncherRuntime};
 use crate::app::media::MediaRuntime;
 use crate::app::monitors::MonitorDocks;
-use crate::app::settings::{SettingsRuntime, application_records};
+use crate::app::settings::{SettingsEventOutcome, SettingsRuntime, application_records};
 use crate::app::status::{AuxiliaryZoneAction, StatusRuntime};
 use crate::app::switcher::SwitcherRuntime;
 
@@ -39,6 +41,12 @@ pub(super) struct ModuleHost {
     status: StatusRuntime,
     monitors: MonitorDocks,
     switcher: SwitcherRuntime,
+}
+
+pub(super) enum SettingsIntent {
+    None,
+    PasteQuery,
+    Action(SettingsAction),
 }
 
 impl ModuleHost {
@@ -108,28 +116,6 @@ impl ModuleHost {
         };
         host.reconcile(dock, dock_model.settings(), modules_active)?;
         Ok(host)
-    }
-
-    pub(super) fn input(&self) -> Option<&InputController> {
-        self.modules.input()
-    }
-
-    pub(super) fn with_input_modules<R>(
-        &mut self,
-        handle: impl FnOnce(
-            &InputController,
-            &mut LauncherRuntime,
-            &mut SwitcherRuntime,
-            &SearchCatalogCache,
-        ) -> R,
-    ) -> Option<R> {
-        let controller = self.modules.input()?;
-        Some(handle(
-            controller,
-            &mut self.launcher,
-            &mut self.switcher,
-            &self.applications,
-        ))
     }
 
     pub(super) fn reconcile(
@@ -287,19 +273,24 @@ impl ModuleHost {
     }
 
     pub(super) fn invalidate_launcher_surface(&mut self) {
-        if let Some(surface) = &mut self.launcher.surface {
-            surface.invalidate();
-        }
-    }
-
-    pub(super) fn launcher_runtime(&mut self) -> &mut LauncherRuntime {
-        &mut self.launcher
+        self.launcher.invalidate();
     }
 
     pub(super) fn drain_launcher_events(
         &mut self,
     ) -> Vec<lotus_windows::window::SearchEvent> {
         self.launcher.drain_events()
+    }
+
+    pub(super) fn handle_launcher_event(
+        &mut self,
+        event: lotus_windows::window::SearchEvent,
+        dock: &DockWindow,
+        graphics: &mut DeviceState,
+        dock_model: &DockRuntime,
+    ) -> Result<LauncherEventOutcome, AppError> {
+        self.launcher
+            .handle_event(event, dock, graphics, dock_model)
     }
 
     pub(super) fn refresh_catalog(
@@ -326,7 +317,7 @@ impl ModuleHost {
         self.applications
             .ready_generation()
             .is_some_and(|generation| {
-                self.launcher.controller.catalog_generation() != Some(generation)
+                self.launcher.catalog_generation() != Some(generation)
             })
     }
 
@@ -406,28 +397,12 @@ impl ModuleHost {
         self.monitors.owns_window(window)
     }
 
-    pub(super) fn settings_scene(&mut self) -> &mut SettingsScene {
-        self.settings.scene_mut()
-    }
-
     pub(super) fn settings_on_apps_page(&self) -> bool {
         self.settings.page_is_apps()
     }
 
     pub(super) fn application_catalog_is_empty(&self) -> bool {
         self.settings.applications_are_empty()
-    }
-
-    pub(super) fn settings_applications_snapshot(&self) -> Vec<SettingsApplicationRecord> {
-        self.settings.applications_snapshot()
-    }
-
-    pub(super) fn application_query(&self) -> &str {
-        self.settings.application_query()
-    }
-
-    pub(super) fn set_application_query(&mut self, query: &str) -> bool {
-        self.settings.set_application_query(query)
     }
 
     pub(super) fn reset_application_icon_override(&mut self, id: &str) {
@@ -457,29 +432,57 @@ impl ModuleHost {
         self.settings.end_onboarding();
     }
 
-    pub(super) fn settings_runtime(&mut self) -> &mut SettingsRuntime {
-        &mut self.settings
-    }
-
     pub(super) fn clear_icon_caches(&mut self) {
         self.settings.clear_icon_caches();
     }
 
-    pub(super) fn invalidate_settings(&mut self) {
+    pub(super) fn choose_settings_color(
+        &mut self,
+        target: crate::app::settings::ColorTarget,
+    ) -> crate::app::settings::ColorOutcome {
+        self.settings.choose_color(target)
+    }
+
+    pub(super) fn choose_settings_mascot_image(
+        &mut self,
+        settings_directory: &std::path::Path,
+    ) {
+        let _ = self.settings.choose_mascot_image(settings_directory);
+    }
+
+    pub(super) fn choose_settings_application_icon(
+        &mut self,
+        id: &str,
+        settings_directory: &std::path::Path,
+    ) -> crate::app::settings::ApplicationIconOutcome {
+        self.settings
+            .choose_application_icon(id, settings_directory)
+    }
+
+    pub(super) fn start_update_check(
+        &mut self,
+    ) -> Result<bool, lotus_windows::update::UpdateStartError> {
+        self.settings.start_update_check()
+    }
+
+    pub(super) fn drain_update_results(&self) -> Vec<lotus_windows::update::UpdateResult> {
+        self.settings.drain_update_results()
+    }
+
+    pub(super) fn start_update_download(
+        &mut self,
+        release: lotus_windows::update::Release,
+    ) -> Result<bool, lotus_windows::update::UpdateStartError> {
+        self.settings.start_update_download(release)
+    }
+
+    pub(super) fn reset_update_activity(&mut self) {
+        self.settings
+            .set_update_activity(lotus_settings::scene::SettingsUpdateActivity::Idle);
         self.settings.invalidate();
     }
 
-    pub(super) fn resize_settings(
-        &mut self,
-        graphics: &mut DeviceState,
-        width: u32,
-        height: u32,
-    ) -> Result<(), AppError> {
-        self.settings.resize(graphics, width, height)
-    }
-
-    pub(super) fn apply_settings_dpi(&mut self, dpi: u32) {
-        self.settings.set_dpi(dpi);
+    pub(super) fn invalidate_settings(&mut self) {
         self.settings.invalidate();
     }
 
@@ -487,51 +490,44 @@ impl ModuleHost {
         self.settings.drain_events()
     }
 
+    pub(super) fn handle_settings_event(
+        &mut self,
+        event: SettingsEvent,
+        graphics: &mut DeviceState,
+        dock_items: &[DockItem],
+    ) -> Result<SettingsIntent, AppError> {
+        let outcome = self.settings.handle_event(event, graphics)?;
+        match outcome {
+            SettingsEventOutcome::None => Ok(SettingsIntent::None),
+            SettingsEventOutcome::RefreshApplications => {
+                self.refresh_application_records(dock_items);
+                self.settings.invalidate();
+                Ok(SettingsIntent::None)
+            }
+            SettingsEventOutcome::HydrateApplicationPreviews => {
+                self.settings
+                    .hydrate_application_previews(&self.applications, dock_items);
+                self.settings.invalidate();
+                Ok(SettingsIntent::None)
+            }
+            SettingsEventOutcome::PasteQuery => Ok(SettingsIntent::PasteQuery),
+            SettingsEventOutcome::Action(action) => Ok(SettingsIntent::Action(action)),
+        }
+    }
+
+    pub(super) fn paste_settings_query(
+        &mut self,
+        clipboard: &str,
+        dock_items: &[DockItem],
+    ) {
+        if self.settings.paste_query(clipboard) {
+            self.settings
+                .hydrate_application_previews(&self.applications, dock_items);
+        }
+    }
+
     pub(super) fn has_pending_settings_events(&self) -> bool {
         self.settings.has_pending_events()
-    }
-
-    pub(super) fn move_settings_pointer(
-        &mut self,
-        x: u32,
-        y: u32,
-    ) -> Option<lotus_settings::scene::SettingsAction> {
-        self.settings.pointer_moved(x, y)
-    }
-
-    pub(super) fn settings_pointer_left(&mut self) {
-        self.settings.pointer_left();
-    }
-
-    pub(super) fn press_settings_pointer(
-        &mut self,
-        x: u32,
-        y: u32,
-    ) -> Option<lotus_settings::scene::SettingsAction> {
-        self.settings.pointer_pressed(x, y)
-    }
-
-    pub(super) fn release_settings_pointer(
-        &mut self,
-        x: i32,
-        y: i32,
-    ) -> Option<lotus_settings::scene::SettingsAction> {
-        self.settings.pointer_released(x, y)
-    }
-
-    pub(super) fn cancel_settings_pointer(&mut self) {
-        self.settings.pointer_cancelled();
-    }
-
-    pub(super) fn scroll_settings(&mut self, direction: i32) -> bool {
-        self.settings.scrolled(direction)
-    }
-
-    pub(super) fn translate_settings_key(
-        &mut self,
-        key: lotus_windows::window::SettingsKey,
-    ) -> lotus_settings::scene::SettingsAction {
-        self.settings.translated_key(key)
     }
 
     pub(super) fn refresh_application_manager(&mut self, dock_items: &[DockItem]) {
@@ -676,12 +672,15 @@ impl ModuleHost {
         self.switcher.window.has_pending_events()
     }
 
-    pub(super) fn context_menu_runtime(&mut self) -> &mut ContextMenuRuntime {
-        &mut self.context_menu
-    }
-
     pub(super) fn drain_context_menu_events(&mut self) -> Vec<ContextMenuEvent> {
         self.context_menu.drain_events()
+    }
+
+    pub(super) fn handle_context_menu_event(
+        &mut self,
+        event: ContextMenuEvent,
+    ) -> Result<Option<crate::app::context_menu::PopupInvocation>, AppError> {
+        self.context_menu.handle_event(event)
     }
 
     pub(super) fn hide_context_menu(&mut self) {
@@ -820,7 +819,7 @@ impl ModuleHost {
         self.status.refresh(settings);
     }
 
-    pub(super) fn drain_status_events(&mut self) -> Vec<(usize, WindowEvent)> {
+    pub(super) fn drain_status_events(&mut self) -> Vec<(usize, StatusEvent)> {
         self.status.drain_events()
     }
 
@@ -833,7 +832,7 @@ impl ModuleHost {
     pub(super) fn handle_status_event(
         &mut self,
         zone_index: usize,
-        event: WindowEvent,
+        event: StatusEvent,
         graphics: &mut DeviceState,
     ) -> Result<Option<StatusZoneActivation>, AppError> {
         self.status
@@ -847,10 +846,10 @@ impl ModuleHost {
             })
     }
 
-    pub(super) fn hide_launcher_on_status_press(&mut self, event: &WindowEvent) {
+    pub(super) fn hide_launcher_on_status_press(&mut self, event: &StatusEvent) {
         if matches!(
             event,
-            WindowEvent::Pointer(PointerEvent::LeftButtonPressed { .. })
+            StatusEvent::Pointer(PointerEvent::LeftButtonPressed { .. })
         ) {
             self.launcher.hide();
         }
@@ -946,8 +945,18 @@ impl ModuleRuntime {
         self.enabled.contains(module)
     }
 
-    pub(super) const fn input(&self) -> Option<&InputController> {
-        self.input.as_ref()
+    pub(super) const fn input_enabled(&self) -> bool {
+        self.input.is_some()
+    }
+
+    pub(super) fn input_healthy(&self) -> bool {
+        self.input.as_ref().is_none_or(InputController::is_healthy)
+    }
+
+    pub(super) fn heartbeat_input(&self) {
+        if let Some(input) = &self.input {
+            input.heartbeat();
+        }
     }
 
     fn was_disabled(&self, module: ModuleId, next: ModuleSet) -> bool {

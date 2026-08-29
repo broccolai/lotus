@@ -7,7 +7,7 @@ use lotus_windows::activation::launch_target;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
 use lotus_windows::interaction::request_exit;
-use lotus_windows::window::{ContextMenuEvent, DockWindow, SelectionDirection};
+use lotus_windows::window::{ContextMenuEvent, DockWindow};
 
 use super::presentation::present_dock_change;
 use crate::app::modules::ModuleHost;
@@ -23,85 +23,16 @@ pub(super) fn handle_context_menu_event(
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
-    match event {
-        ContextMenuEvent::PointerMoved { x, y } => {
-            if auxiliary.context_menu_runtime().scene.pointer_move(x, y) {
-                auxiliary.context_menu_runtime().invalidate();
-            }
-        }
-        ContextMenuEvent::PointerLeft => {
-            if auxiliary.context_menu_runtime().scene.pointer_left() {
-                auxiliary.context_menu_runtime().invalidate();
-            }
-        }
-        ContextMenuEvent::PointerReleased { x, y } => {
-            let action = auxiliary.context_menu_runtime().scene.pointer_action(x, y);
-            let source_index = auxiliary.context_menu_runtime().scene.source_index();
-            if !action.as_ref().is_some_and(opens_power_menu) {
-                auxiliary.context_menu_runtime().hide();
-            }
-            if let Some(action) = action {
-                let mut context = PopupActionContext {
-                    dock,
-                    graphics,
-                    surface,
-                    windows,
-                    dock_model,
-                    auxiliary,
-                };
-                execute_popup_action(action, source_index, &mut context)?;
-            }
-        }
-        ContextMenuEvent::SelectionRequested => {
-            let action = auxiliary.context_menu_runtime().scene.selected_action();
-            let source_index = auxiliary.context_menu_runtime().scene.source_index();
-            if !action.as_ref().is_some_and(opens_power_menu) {
-                auxiliary.context_menu_runtime().hide();
-            }
-            if let Some(action) = action {
-                let mut context = PopupActionContext {
-                    dock,
-                    graphics,
-                    surface,
-                    windows,
-                    dock_model,
-                    auxiliary,
-                };
-                execute_popup_action(action, source_index, &mut context)?;
-            }
-        }
-        ContextMenuEvent::MoveSelection(direction) => {
-            let next = direction == SelectionDirection::Next;
-            if auxiliary.context_menu_runtime().scene.move_selection(next) {
-                auxiliary.context_menu_runtime().invalidate();
-            }
-        }
-        ContextMenuEvent::Scroll(direction) => {
-            let next = direction == SelectionDirection::Next;
-            if auxiliary.context_menu_runtime().scene.scroll(next) {
-                auxiliary.context_menu_runtime().invalidate();
-            }
-        }
-        ContextMenuEvent::ShiftChanged(held) => {
-            if auxiliary.context_menu_runtime().scene.set_shift_held(held) {
-                auxiliary.context_menu_runtime().invalidate();
-            }
-        }
-        ContextMenuEvent::DismissRequested => auxiliary.context_menu_runtime().hide(),
-        ContextMenuEvent::Resized { width, height } => {
-            auxiliary.context_menu_runtime().resize(width, height)?;
-            auxiliary.context_menu_runtime().invalidate();
-        }
-        ContextMenuEvent::DpiChanged { dpi } => {
-            if auxiliary.context_menu_runtime().scene.set_dpi(dpi) {
-                let desired = auxiliary.context_menu_runtime().scene.desired_size();
-                if let Some(surface) = &mut auxiliary.context_menu_runtime().surface {
-                    surface.value_mut().resize(desired)?;
-                }
-            }
-            auxiliary.context_menu_runtime().invalidate();
-        }
-        ContextMenuEvent::RenderRequested => auxiliary.context_menu_runtime().invalidate(),
+    if let Some(invocation) = auxiliary.handle_context_menu_event(event)? {
+        let mut context = PopupActionContext {
+            dock,
+            graphics,
+            surface,
+            windows,
+            dock_model,
+            auxiliary,
+        };
+        execute_popup_action(invocation.action, &mut context)?;
     }
     Ok(())
 }
@@ -117,7 +48,6 @@ struct PopupActionContext<'a> {
 
 fn execute_popup_action(
     action: PopupAction,
-    _source_index: Option<usize>,
     context: &mut PopupActionContext<'_>,
 ) -> Result<(), AppError> {
     match action {
@@ -196,13 +126,6 @@ fn execute_popup_action(
         }
     }
     Ok(())
-}
-
-const fn opens_power_menu(action: &PopupAction) -> bool {
-    matches!(
-        action,
-        PopupAction::System(ContextMenuAction::RequestShutdown)
-    )
 }
 
 fn execute_power_action(action: PowerAction, owner: WindowHandle) {

@@ -7,9 +7,9 @@ use lotus_core::notification::count_for_item;
 use lotus_core::settings::{DockSettings, DockZone, NotificationBadgeStyle};
 use lotus_core::window::WindowInfo;
 use lotus_dock::model::project_snapshot;
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_windows::WindowHandle;
 use lotus_windows::clock::{local_date, local_time};
-use lotus_windows::graphics::assets::SvgAsset;
 
 use super::{DockRuntime, NATIVE_ICON_SAMPLE_SCALE, SceneDockItem};
 use crate::app::AppError;
@@ -187,7 +187,7 @@ pub(in crate::app) fn status_items(
     if settings.show_volume_status {
         items.push(SystemStatusItem::icon(
             SystemStatusKind::Volume,
-            SvgAsset::FluentVolume,
+            EmbeddedIcon::FluentVolume,
         ));
     }
     if settings.show_hdr_status {
@@ -206,7 +206,10 @@ pub(in crate::app) fn status_items(
             }
             lotus_windows::network::NetworkConnectionKind::Wifi
             | lotus_windows::network::NetworkConnectionKind::Other => {
-                SystemStatusItem::icon(SystemStatusKind::Network, SvgAsset::FluentNetwork)
+                SystemStatusItem::icon(
+                    SystemStatusKind::Network,
+                    EmbeddedIcon::FluentNetwork,
+                )
             }
         };
         items.push(item);
@@ -214,7 +217,7 @@ pub(in crate::app) fn status_items(
     if settings.show_background_apps_status {
         items.push(SystemStatusItem::icon(
             SystemStatusKind::BackgroundApps,
-            SvgAsset::FluentTray,
+            EmbeddedIcon::FluentTray,
         ));
     }
     if settings.show_date_time_status {

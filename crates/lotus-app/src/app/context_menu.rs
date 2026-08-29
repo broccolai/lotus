@@ -1,16 +1,16 @@
 use lotus_core::settings::{DockSettings, WindowPickerStyle};
 use lotus_dock::popup::PopupSymbol;
 use lotus_settings::appearance::theme_for;
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::theme::Theme;
 use lotus_windows::dwm_thumbnail::DwmThumbnailHost;
-use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError};
 use lotus_windows::window::{
-    ContextMenuEvent, ContextMenuWindow, PopupAlignment, SignedPoint,
+    ContextMenuEvent, ContextMenuWindow, PopupAlignment, SelectionDirection, SignedPoint,
 };
 
 use crate::app::AppError;
@@ -33,6 +33,10 @@ pub(super) struct AppMenuOptions {
     pub(super) running_windows: usize,
     pub(super) pinned: bool,
     pub(super) shift_held: bool,
+}
+
+pub(super) struct PopupInvocation {
+    pub(super) action: crate::app::visuals::PopupAction,
 }
 
 impl ContextMenuRuntime {
@@ -302,19 +306,106 @@ impl ContextMenuRuntime {
     pub(super) fn drain_events(&mut self) -> Vec<ContextMenuEvent> {
         self.window.drain_events().collect()
     }
+
+    pub(super) fn handle_event(
+        &mut self,
+        event: ContextMenuEvent,
+    ) -> Result<Option<PopupInvocation>, AppError> {
+        let invocation = match event {
+            ContextMenuEvent::PointerMoved { x, y } => {
+                if self.scene.pointer_move(x, y) {
+                    self.invalidate();
+                }
+                None
+            }
+            ContextMenuEvent::PointerLeft => {
+                if self.scene.pointer_left() {
+                    self.invalidate();
+                }
+                None
+            }
+            ContextMenuEvent::PointerReleased { x, y } => {
+                self.take_action(self.scene.pointer_action(x, y))
+            }
+            ContextMenuEvent::SelectionRequested => {
+                self.take_action(self.scene.selected_action())
+            }
+            ContextMenuEvent::MoveSelection(direction) => {
+                if self
+                    .scene
+                    .move_selection(direction == SelectionDirection::Next)
+                {
+                    self.invalidate();
+                }
+                None
+            }
+            ContextMenuEvent::Scroll(direction) => {
+                if self.scene.scroll(direction == SelectionDirection::Next) {
+                    self.invalidate();
+                }
+                None
+            }
+            ContextMenuEvent::ShiftChanged(held) => {
+                if self.scene.set_shift_held(held) {
+                    self.invalidate();
+                }
+                None
+            }
+            ContextMenuEvent::DismissRequested => {
+                self.hide();
+                None
+            }
+            ContextMenuEvent::Resized { width, height } => {
+                self.resize(width, height)?;
+                self.invalidate();
+                None
+            }
+            ContextMenuEvent::DpiChanged { dpi } => {
+                if self.scene.set_dpi(dpi) {
+                    let desired = self.scene.desired_size();
+                    if let Some(surface) = &mut self.surface {
+                        surface.value_mut().resize(desired)?;
+                    }
+                }
+                self.invalidate();
+                None
+            }
+            ContextMenuEvent::RenderRequested => {
+                self.invalidate();
+                None
+            }
+        };
+        Ok(invocation)
+    }
+
+    fn take_action(
+        &mut self,
+        action: Option<crate::app::visuals::PopupAction>,
+    ) -> Option<PopupInvocation> {
+        let action = action?;
+        if !matches!(
+            action,
+            crate::app::visuals::PopupAction::System(
+                crate::app::visuals::ContextMenuAction::RequestShutdown
+            )
+        ) {
+            self.hide();
+        }
+        Some(PopupInvocation { action })
+    }
 }
 
-const fn popup_asset(symbol: PopupSymbol) -> SvgAsset {
+const fn popup_asset(symbol: PopupSymbol) -> EmbeddedIcon {
     match symbol {
-        PopupSymbol::Power => SvgAsset::FluentPower,
-        PopupSymbol::Lock => SvgAsset::FluentLock,
-        PopupSymbol::Restart => SvgAsset::FluentRestart,
-        PopupSymbol::Settings => SvgAsset::FluentSettings,
-        PopupSymbol::Quit | PopupSymbol::Close => SvgAsset::FluentDismiss,
-        PopupSymbol::Open | PopupSymbol::Image => SvgAsset::FluentOpen,
-        PopupSymbol::Pin => SvgAsset::FluentPin,
-        PopupSymbol::Unpin => SvgAsset::FluentPinOff,
-        PopupSymbol::Previous => SvgAsset::FluentPrevious,
-        PopupSymbol::Next => SvgAsset::FluentNext,
+        PopupSymbol::Power => EmbeddedIcon::FluentPower,
+        PopupSymbol::Lock => EmbeddedIcon::FluentLock,
+        PopupSymbol::Restart => EmbeddedIcon::FluentRestart,
+        PopupSymbol::Settings => EmbeddedIcon::FluentSettings,
+        PopupSymbol::Quit | PopupSymbol::Close => EmbeddedIcon::FluentDismiss,
+        PopupSymbol::Open | PopupSymbol::Image => EmbeddedIcon::FluentOpen,
+        PopupSymbol::Pin => EmbeddedIcon::FluentPin,
+        PopupSymbol::Unpin => EmbeddedIcon::FluentPinOff,
+        PopupSymbol::Previous => EmbeddedIcon::FluentPrevious,
+        PopupSymbol::Next => EmbeddedIcon::FluentNext,
     }
 }

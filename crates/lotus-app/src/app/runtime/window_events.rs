@@ -5,7 +5,7 @@ use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, GraphicsDeviceHealth};
 use lotus_windows::interaction::NativeMessage;
 use lotus_windows::responsiveness::{METRICS, TrackerUiPhase};
-use lotus_windows::window::{DockWindow, WindowEvent};
+use lotus_windows::window::{DockEvent, DockWindow};
 use lotus_windows::window_tracker::{WindowTracker, WindowTrackerEvent};
 
 use super::presentation::present_dock_change;
@@ -30,7 +30,7 @@ pub(super) fn drain_window_events(
     let mut had_events = !events.is_empty();
     let animation_tick = events
         .iter()
-        .any(|event| matches!(event, WindowEvent::AnimationFrame));
+        .any(|event| matches!(event, DockEvent::AnimationFrame));
     for event in events {
         complete_after_graphics_loss(
             dock_events::handle_window_event(

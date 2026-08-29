@@ -2,16 +2,16 @@ use lotus_core::settings::{DockSettings, DockZone};
 use lotus_dock::scene::DockPresenter;
 use lotus_media::MediaHitTarget;
 use lotus_settings::appearance::theme_for;
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
-use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{
     CompositionSurfaceState, DeviceState, GraphicsDevice, SurfaceSize,
 };
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::window::{
-    DockWindow, PointerEvent, SignedPoint, StatusWindow, WindowEvent,
+    DockWindow, PointerEvent, SignedPoint, StatusEvent, StatusWindow,
 };
 
 use crate::app::AppError;
@@ -162,7 +162,7 @@ impl StatusRuntime {
         }
     }
 
-    pub(super) fn drain_events(&mut self) -> Vec<(usize, WindowEvent)> {
+    pub(super) fn drain_events(&mut self) -> Vec<(usize, StatusEvent)> {
         self.zones
             .iter_mut()
             .enumerate()
@@ -181,7 +181,7 @@ impl StatusRuntime {
     pub(super) fn handle_event(
         &mut self,
         zone_index: usize,
-        event: WindowEvent,
+        event: StatusEvent,
         graphics: &mut DeviceState,
     ) -> Result<
         Option<(
@@ -195,7 +195,7 @@ impl StatusRuntime {
             return Ok(None);
         };
         let (action, scene_changed) = match event {
-            WindowEvent::Pointer(pointer) => match pointer {
+            StatusEvent::Pointer(pointer) => match pointer {
                 PointerEvent::Moved { x, y } => {
                     let target = zone.hit_test(x, y);
                     (None, zone.scene.set_hovered(target))
@@ -213,7 +213,7 @@ impl StatusRuntime {
                 }
                 PointerEvent::Cancelled => (None, zone.scene.set_pressed(None)),
             },
-            WindowEvent::Resized { width, height } => {
+            StatusEvent::Resized { width, height } => {
                 if let (Some(surface), Some(size)) =
                     (&mut zone.surface, SurfaceSize::new(width, height))
                 {
@@ -221,17 +221,8 @@ impl StatusRuntime {
                 }
                 (None, true)
             }
-            WindowEvent::DpiChanged { dpi } => (None, zone.scene.set_dpi(dpi)),
-            WindowEvent::RenderRequested => (None, true),
-            WindowEvent::AnimationFrame
-            | WindowEvent::MascotAnimationDeadline
-            | WindowEvent::PlacementRefreshRequested
-            | WindowEvent::ContextMenuRequested(_)
-            | WindowEvent::Search(_)
-            | WindowEvent::Settings(_)
-            | WindowEvent::ContextMenu(_)
-            | WindowEvent::Switcher(_)
-            | WindowEvent::StatusRefreshRequested => (None, false),
+            StatusEvent::DpiChanged { dpi } => (None, zone.scene.set_dpi(dpi)),
+            StatusEvent::RenderRequested => (None, true),
         };
         let anchor = action.and_then(|target| zone.target_anchor(target));
         if scene_changed {
@@ -379,7 +370,7 @@ fn build_zone_scene(
     let mut scene = DockScene::new(
         dpi,
         metrics(settings)?,
-        DockIcon::Embedded(SvgAsset::LotusPixel),
+        DockIcon::Embedded(EmbeddedIcon::LotusPixel),
         Vec::new(),
     )
     .ok_or(AppError::InvalidScene)?;

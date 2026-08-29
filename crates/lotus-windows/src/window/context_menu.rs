@@ -17,9 +17,7 @@ use crate::platform::windows::interaction::claim_keyboard_focus;
 use crate::platform::windows::native_window::{
     Activation, NativeWindow, WindowCreation, WindowHandle,
 };
-use crate::window::procedure::{
-    ContextMenuEvent, PointerEvent, SignedPoint, WindowClass, WindowEvent, WindowState,
-};
+use crate::window::procedure::{ContextMenuEvent, SignedPoint, WindowClass, WindowState};
 
 pub struct ContextMenuWindow {
     window: NativeWindow<WindowState>,
@@ -114,43 +112,10 @@ impl ContextMenuWindow {
     }
 
     pub fn drain_events(&mut self) -> impl Iterator<Item = ContextMenuEvent> + '_ {
-        self.window
-            .state_mut()
-            .drain()
-            .filter_map(context_event_from_window_event)
+        self.window.state_mut().drain_context_menu().into_iter()
     }
 
     pub fn has_pending_events(&self) -> bool {
         self.window.state().has_pending_events()
-    }
-}
-
-fn context_event_from_window_event(event: WindowEvent) -> Option<ContextMenuEvent> {
-    match event {
-        WindowEvent::ContextMenu(event) => Some(event),
-        WindowEvent::Resized { width, height } => {
-            Some(ContextMenuEvent::Resized { width, height })
-        }
-        WindowEvent::DpiChanged { dpi } => Some(ContextMenuEvent::DpiChanged { dpi }),
-        WindowEvent::RenderRequested => Some(ContextMenuEvent::RenderRequested),
-        WindowEvent::Pointer(PointerEvent::Moved { x, y }) => {
-            Some(ContextMenuEvent::PointerMoved { x, y })
-        }
-        WindowEvent::Pointer(PointerEvent::Left) => Some(ContextMenuEvent::PointerLeft),
-        WindowEvent::Pointer(PointerEvent::LeftButtonReleased { x, y }) => {
-            Some(ContextMenuEvent::PointerReleased { x, y })
-        }
-        WindowEvent::Pointer(PointerEvent::Cancelled) => {
-            Some(ContextMenuEvent::DismissRequested)
-        }
-        WindowEvent::Pointer(PointerEvent::LeftButtonPressed { .. })
-        | WindowEvent::ContextMenuRequested(_)
-        | WindowEvent::Search(_)
-        | WindowEvent::Settings(_)
-        | WindowEvent::Switcher(_)
-        | WindowEvent::PlacementRefreshRequested
-        | WindowEvent::AnimationFrame
-        | WindowEvent::MascotAnimationDeadline
-        | WindowEvent::StatusRefreshRequested => None,
     }
 }

@@ -1,5 +1,6 @@
 use std::mem::ManuallyDrop;
 
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_ui::icon::{Icon, RasterIcon};
 use lotus_ui::presentation::{
     FontFamily, FontWeight, HorizontalAlignment, ImageSampling, Presentation,
@@ -30,7 +31,7 @@ use windows::Win32::Graphics::DirectWrite::{
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::core::{Error as WindowsError, Interface, w};
 
-use super::assets::{AssetError, IconTint, RasterSize, SvgAsset, SvgAssetCache};
+use super::assets::{AssetError, EmbeddedIconCache, IconTint, RasterSize};
 use super::device::GraphicsDevice;
 use super::resources::{raster_key, target_bitmap_properties, upload_bgra_pixels};
 use super::surface::SurfaceError;
@@ -61,7 +62,7 @@ pub(super) struct PresentationRenderer {
     modern_symbol_font: bool,
     brushes: BoundedResourceCache<ColorKey, ID2D1SolidColorBrush>,
     text_formats: BoundedResourceCache<TextFormatKey, IDWriteTextFormat>,
-    assets: SvgAssetCache,
+    assets: EmbeddedIconCache,
     embedded: BoundedResourceCache<EmbeddedKey, ID2D1Bitmap1>,
     rasters: BoundedResourceCache<(lotus_ui::icon::RasterIconId, u32, u32), ID2D1Bitmap1>,
 }
@@ -96,7 +97,7 @@ impl PresentationRenderer {
             modern_symbol_font,
             brushes: BoundedResourceCache::new(CacheClass::D2dBrushes, 64),
             text_formats: BoundedResourceCache::new(CacheClass::DwriteTextFormats, 32),
-            assets: SvgAssetCache::create()?,
+            assets: EmbeddedIconCache::create()?,
             embedded: BoundedResourceCache::new(
                 CacheClass::EmbeddedBitmaps,
                 BITMAP_CACHE_BYTES,
@@ -137,7 +138,7 @@ impl PresentationRenderer {
 
     pub(super) fn draw(
         &mut self,
-        presentation: &Presentation<SvgAsset>,
+        presentation: &Presentation<EmbeddedIcon>,
     ) -> Result<PresentationDrawResult, PresentationRendererError> {
         debug_assert!(self.target.is_some());
         let clear = d2d(presentation.clear);
@@ -160,7 +161,7 @@ impl PresentationRenderer {
 
     fn draw_primitive(
         &mut self,
-        primitive: &PresentationPrimitive<SvgAsset>,
+        primitive: &PresentationPrimitive<EmbeddedIcon>,
     ) -> Result<(), PresentationRendererError> {
         match primitive {
             PresentationPrimitive::PushClip { bounds } => {
@@ -292,7 +293,7 @@ impl PresentationRenderer {
 
     fn draw_icon(
         &mut self,
-        icon: &Icon<SvgAsset>,
+        icon: &Icon<EmbeddedIcon>,
         bounds: PresentationRect,
         tint: Color,
         opacity: f32,
@@ -567,7 +568,7 @@ impl From<TextStyle> for TextFormatKey {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct EmbeddedKey {
-    asset: SvgAsset,
+    asset: EmbeddedIcon,
     size: RasterSize,
     tint: IconTint,
 }

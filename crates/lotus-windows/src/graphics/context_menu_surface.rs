@@ -1,9 +1,9 @@
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::presentation::Presentation;
 use windows::Win32::Foundation::HWND;
 use windows::core::Error as WindowsError;
 
-use super::assets::SvgAsset;
 use super::composition_surface::{CompositionSurfaceCore, RecoverableSurface};
 use super::device::{DeviceLost, GraphicsDevice};
 use super::presentation_renderer::{
@@ -39,7 +39,7 @@ impl ContextMenuCompositionSurface {
 
     fn render(
         &mut self,
-        presentation: &Presentation<SvgAsset>,
+        presentation: &Presentation<EmbeddedIcon>,
     ) -> Result<FrameResult, PresentationRendererError> {
         match self.renderer.draw(presentation)? {
             PresentationDrawResult::Complete => {
@@ -91,7 +91,7 @@ impl ContextMenuCompositionSurfaceState {
 
     pub fn render_scene(
         &mut self,
-        presentation: &Presentation<SvgAsset>,
+        presentation: &Presentation<EmbeddedIcon>,
     ) -> Result<FrameResult, SurfaceError> {
         let Some(surface) = self.0.get_mut() else {
             return Err(SurfaceError::DeviceLost(

@@ -1,4 +1,3 @@
-mod controllers;
 mod dock_events;
 mod message_loop;
 mod popup_events;

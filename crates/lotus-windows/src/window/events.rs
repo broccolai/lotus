@@ -1,17 +1,21 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WindowEvent {
+pub enum DockEvent {
     Resized { width: u32, height: u32 },
     DpiChanged { dpi: u32 },
     PlacementRefreshRequested,
     Pointer(PointerEvent),
     ContextMenuRequested(DockContextRequest),
-    Search(SearchEvent),
-    Settings(SettingsEvent),
-    ContextMenu(ContextMenuEvent),
-    Switcher(SwitcherEvent),
     AnimationFrame,
     MascotAnimationDeadline,
     StatusRefreshRequested,
+    RenderRequested,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatusEvent {
+    Resized { width: u32, height: u32 },
+    DpiChanged { dpi: u32 },
+    Pointer(PointerEvent),
     RenderRequested,
 }
 

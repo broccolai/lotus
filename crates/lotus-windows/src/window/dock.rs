@@ -25,10 +25,10 @@ use crate::platform::windows::native_window::{
     current_instance,
 };
 use crate::window::events::SignedPoint;
-use crate::window::procedure::{WindowClass, WindowEvent, WindowState};
+use crate::window::procedure::{DockEvent, WindowClass, WindowState};
 use crate::window::search::SearchWindow;
 use crate::window::settings::SettingsWindow;
-use crate::window::status::StatusWindow;
+use crate::window::status::{DockReplicaWindow, StatusWindow};
 
 const PREVIEW_WIDTH: u32 = 118;
 
@@ -241,8 +241,8 @@ impl DockWindow {
         drag_threshold(self.hwnd())
     }
 
-    pub fn drain_events(&mut self) -> impl Iterator<Item = WindowEvent> + '_ {
-        self.window.state_mut().drain()
+    pub fn drain_events(&mut self) -> impl Iterator<Item = DockEvent> + '_ {
+        self.window.state_mut().drain_dock().into_iter()
     }
 
     pub fn has_pending_events(&self) -> bool {
@@ -286,7 +286,7 @@ impl DockWindow {
         StatusWindow::create(Rc::clone(&self.class), self.hwnd())
     }
 
-    pub fn create_secondary_dock_windows(&self) -> Result<Vec<StatusWindow>> {
+    pub fn create_secondary_dock_windows(&self) -> Result<Vec<DockReplicaWindow>> {
         StatusWindow::create_secondary_displays(&self.class, self.hwnd())
     }
 
@@ -300,7 +300,7 @@ impl DockWindow {
 
     pub fn place_secondary_dock_window(
         &self,
-        window: &StatusWindow,
+        window: &DockReplicaWindow,
         size: NonZeroPhysicalSize,
         settings: &DockSettings,
     ) -> Result<()> {

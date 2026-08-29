@@ -14,9 +14,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::{
     ContextMenuEvent, DockContextRequest, SearchEvent, SettingsEvent, SignedPoint,
-    SwitcherEvent, WindowEvent, WindowKind, clear_window_state, initialize_window_state,
+    SwitcherEvent, WindowKind, clear_window_state, initialize_window_state,
     is_dock_context_window, is_dock_window, is_search_window, is_settings_window, low_word,
-    push_window_event, window_kind, with_window_state,
+    push_context_menu_event, push_context_request, push_dpi_event, push_resize_event,
+    push_search_event, push_settings_event, push_switcher_event, window_kind,
+    with_window_state,
 };
 use crate::platform::windows::display::{nearest_display, nearest_display_to_point};
 use crate::platform::windows::interaction::{key_is_pressed, request_exit};
@@ -56,10 +58,7 @@ pub(super) fn dispatch(
             Some(settings_header_hit_test(hwnd, lparam))
         }
         WM_CONTEXTMENU if is_dock_context_window(hwnd) || is_search_window(hwnd) => {
-            push_window_event(
-                hwnd,
-                WindowEvent::ContextMenuRequested(context_request(hwnd, lparam)),
-            );
+            push_context_request(hwnd, context_request(hwnd, lparam));
             Some(LRESULT(0))
         }
         WM_GETMINMAXINFO if is_settings_window(hwnd) => {
@@ -68,7 +67,7 @@ pub(super) fn dispatch(
         WM_SIZE => {
             apply_configured_region(hwnd);
             let (width, height) = size_from_lparam(lparam);
-            push_window_event(hwnd, WindowEvent::Resized { width, height });
+            push_resize_event(hwnd, width, height);
             Some(LRESULT(0))
         }
         WM_DPICHANGED => Some(apply_dpi_change(hwnd, wparam, lparam)),
@@ -105,27 +104,20 @@ fn apply_pointer_cursor(hwnd: HWND) -> bool {
 }
 
 fn dispatch_close_message(hwnd: HWND) -> LRESULT {
-    let event = match window_kind(hwnd) {
-        Some(WindowKind::Search) => {
-            Some(WindowEvent::Search(SearchEvent::DismissRequested))
-        }
+    match window_kind(hwnd) {
+        Some(WindowKind::Search) => push_search_event(hwnd, SearchEvent::DismissRequested),
         Some(WindowKind::Settings) => {
-            Some(WindowEvent::Settings(SettingsEvent::CloseRequested))
+            push_settings_event(hwnd, SettingsEvent::CloseRequested);
         }
         Some(WindowKind::ContextMenu) => {
-            Some(WindowEvent::ContextMenu(ContextMenuEvent::DismissRequested))
+            push_context_menu_event(hwnd, ContextMenuEvent::DismissRequested);
         }
         Some(WindowKind::Switcher) => {
-            Some(WindowEvent::Switcher(SwitcherEvent::CloseRequested))
+            push_switcher_event(hwnd, SwitcherEvent::CloseRequested);
         }
         Some(WindowKind::Dock | WindowKind::DockReplica | WindowKind::Status) | None => {
-            None
+            let _ = unsafe { DestroyWindow(hwnd) };
         }
-    };
-    if let Some(event) = event {
-        push_window_event(hwnd, event);
-    } else {
-        let _ = unsafe { DestroyWindow(hwnd) };
     }
     LRESULT(0)
 }
@@ -211,12 +203,7 @@ fn apply_dpi_change(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         )
     };
     apply_configured_region(hwnd);
-    push_window_event(
-        hwnd,
-        WindowEvent::DpiChanged {
-            dpi: u32::try_from(wparam.0 & 0xFFFF).unwrap_or_default(),
-        },
-    );
+    push_dpi_event(hwnd, u32::try_from(wparam.0 & 0xFFFF).unwrap_or_default());
     LRESULT(0)
 }
 

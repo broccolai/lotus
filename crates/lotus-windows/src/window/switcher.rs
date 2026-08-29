@@ -7,7 +7,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::w;
 
-use super::procedure::{PointerEvent, SwitcherEvent, WindowClass, WindowEvent};
+use super::procedure::{SwitcherEvent, WindowClass};
 use crate::NativeError;
 use crate::platform::windows::backdrop;
 use crate::platform::windows::display::primary_display;
@@ -99,39 +99,10 @@ impl SwitcherWindow {
     }
 
     pub fn drain_events(&mut self) -> impl Iterator<Item = SwitcherEvent> + '_ {
-        self.window.state_mut().drain().filter_map(switcher_event)
+        self.window.state_mut().drain_switcher().into_iter()
     }
 
     pub fn has_pending_events(&self) -> bool {
         self.window.state().has_pending_events()
-    }
-}
-
-fn switcher_event(event: WindowEvent) -> Option<SwitcherEvent> {
-    match event {
-        WindowEvent::Switcher(event) => Some(event),
-        WindowEvent::Resized { width, height } => {
-            Some(SwitcherEvent::Resized { width, height })
-        }
-        WindowEvent::DpiChanged { dpi } => Some(SwitcherEvent::DpiChanged { dpi }),
-        WindowEvent::RenderRequested => Some(SwitcherEvent::RenderRequested),
-        WindowEvent::Pointer(PointerEvent::Moved { x, y }) => {
-            Some(SwitcherEvent::PointerMoved { x, y })
-        }
-        WindowEvent::Pointer(PointerEvent::Left) => Some(SwitcherEvent::PointerLeft),
-        WindowEvent::Pointer(PointerEvent::LeftButtonReleased { x, y }) => {
-            Some(SwitcherEvent::PointerReleased { x, y })
-        }
-        WindowEvent::PlacementRefreshRequested
-        | WindowEvent::Pointer(
-            PointerEvent::LeftButtonPressed { .. } | PointerEvent::Cancelled,
-        )
-        | WindowEvent::ContextMenuRequested(_)
-        | WindowEvent::Search(_)
-        | WindowEvent::Settings(_)
-        | WindowEvent::ContextMenu(_)
-        | WindowEvent::AnimationFrame
-        | WindowEvent::MascotAnimationDeadline
-        | WindowEvent::StatusRefreshRequested => None,
     }
 }

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_ui::theme::Color;
 use resvg::usvg;
 use thiserror::Error;
@@ -43,114 +44,87 @@ const FLUENT_PIN_OFF_SVG: &[u8] =
     include_bytes!("../../assets/fluent/pin-off-24-regular.svg");
 const MAX_RASTER_DIMENSION: u32 = 4_096;
 const SVG_RASTER_CACHE_BYTES: usize = 2 * 1024 * 1024;
+const EMBEDDED_ICONS: [EmbeddedIcon; 20] = [
+    EmbeddedIcon::LotusPixel,
+    EmbeddedIcon::FluentCalculator,
+    EmbeddedIcon::FluentPower,
+    EmbeddedIcon::FluentVolume,
+    EmbeddedIcon::FluentNetwork,
+    EmbeddedIcon::FluentSettings,
+    EmbeddedIcon::FluentTray,
+    EmbeddedIcon::FluentDismiss,
+    EmbeddedIcon::FluentDesktop,
+    EmbeddedIcon::FluentLock,
+    EmbeddedIcon::FluentRestart,
+    EmbeddedIcon::FluentSearch,
+    EmbeddedIcon::FluentMusic,
+    EmbeddedIcon::FluentPrevious,
+    EmbeddedIcon::FluentPlay,
+    EmbeddedIcon::FluentPause,
+    EmbeddedIcon::FluentNext,
+    EmbeddedIcon::FluentOpen,
+    EmbeddedIcon::FluentPin,
+    EmbeddedIcon::FluentPinOff,
+];
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum SvgAsset {
-    LotusPixel,
-    FluentCalculator,
-    FluentPower,
-    FluentVolume,
-    FluentNetwork,
-    FluentSettings,
-    FluentTray,
-    FluentDismiss,
-    FluentDesktop,
-    FluentLock,
-    FluentRestart,
-    FluentSearch,
-    FluentMusic,
-    FluentPrevious,
-    FluentPlay,
-    FluentPause,
-    FluentNext,
-    FluentOpen,
-    FluentPin,
-    FluentPinOff,
-}
-
-impl SvgAsset {
-    pub const ALL: [Self; 20] = [
-        Self::LotusPixel,
-        Self::FluentCalculator,
-        Self::FluentPower,
-        Self::FluentVolume,
-        Self::FluentNetwork,
-        Self::FluentSettings,
-        Self::FluentTray,
-        Self::FluentDismiss,
-        Self::FluentDesktop,
-        Self::FluentLock,
-        Self::FluentRestart,
-        Self::FluentSearch,
-        Self::FluentMusic,
-        Self::FluentPrevious,
-        Self::FluentPlay,
-        Self::FluentPause,
-        Self::FluentNext,
-        Self::FluentOpen,
-        Self::FluentPin,
-        Self::FluentPinOff,
-    ];
-
-    const fn source(self) -> &'static [u8] {
-        match self {
-            Self::LotusPixel => LOTUS_PIXEL_SVG,
-            Self::FluentCalculator => FLUENT_CALCULATOR_SVG,
-            Self::FluentPower => FLUENT_POWER_SVG,
-            Self::FluentVolume => FLUENT_VOLUME_SVG,
-            Self::FluentNetwork => FLUENT_NETWORK_SVG,
-            Self::FluentSettings => FLUENT_SETTINGS_SVG,
-            Self::FluentTray => FLUENT_TRAY_SVG,
-            Self::FluentDismiss => FLUENT_DISMISS_SVG,
-            Self::FluentDesktop => FLUENT_DESKTOP_SVG,
-            Self::FluentLock => FLUENT_LOCK_SVG,
-            Self::FluentRestart => FLUENT_RESTART_SVG,
-            Self::FluentSearch => FLUENT_SEARCH_SVG,
-            Self::FluentMusic => FLUENT_MUSIC_SVG,
-            Self::FluentPrevious => FLUENT_PREVIOUS_SVG,
-            Self::FluentPlay => FLUENT_PLAY_SVG,
-            Self::FluentPause => FLUENT_PAUSE_SVG,
-            Self::FluentNext => FLUENT_NEXT_SVG,
-            Self::FluentOpen => FLUENT_OPEN_SVG,
-            Self::FluentPin => FLUENT_PIN_SVG,
-            Self::FluentPinOff => FLUENT_PIN_OFF_SVG,
-        }
-    }
-
-    const fn is_interface_symbol(self) -> bool {
-        matches!(
-            self,
-            Self::FluentCalculator
-                | Self::FluentPower
-                | Self::FluentVolume
-                | Self::FluentNetwork
-                | Self::FluentSettings
-                | Self::FluentTray
-                | Self::FluentDismiss
-                | Self::FluentDesktop
-                | Self::FluentLock
-                | Self::FluentRestart
-                | Self::FluentSearch
-                | Self::FluentMusic
-                | Self::FluentPrevious
-                | Self::FluentPlay
-                | Self::FluentPause
-                | Self::FluentNext
-                | Self::FluentOpen
-                | Self::FluentPin
-                | Self::FluentPinOff
-        )
+const fn source(icon: EmbeddedIcon) -> &'static [u8] {
+    match icon {
+        EmbeddedIcon::LotusPixel => LOTUS_PIXEL_SVG,
+        EmbeddedIcon::FluentCalculator => FLUENT_CALCULATOR_SVG,
+        EmbeddedIcon::FluentPower => FLUENT_POWER_SVG,
+        EmbeddedIcon::FluentVolume => FLUENT_VOLUME_SVG,
+        EmbeddedIcon::FluentNetwork => FLUENT_NETWORK_SVG,
+        EmbeddedIcon::FluentSettings => FLUENT_SETTINGS_SVG,
+        EmbeddedIcon::FluentTray => FLUENT_TRAY_SVG,
+        EmbeddedIcon::FluentDismiss => FLUENT_DISMISS_SVG,
+        EmbeddedIcon::FluentDesktop => FLUENT_DESKTOP_SVG,
+        EmbeddedIcon::FluentLock => FLUENT_LOCK_SVG,
+        EmbeddedIcon::FluentRestart => FLUENT_RESTART_SVG,
+        EmbeddedIcon::FluentSearch => FLUENT_SEARCH_SVG,
+        EmbeddedIcon::FluentMusic => FLUENT_MUSIC_SVG,
+        EmbeddedIcon::FluentPrevious => FLUENT_PREVIOUS_SVG,
+        EmbeddedIcon::FluentPlay => FLUENT_PLAY_SVG,
+        EmbeddedIcon::FluentPause => FLUENT_PAUSE_SVG,
+        EmbeddedIcon::FluentNext => FLUENT_NEXT_SVG,
+        EmbeddedIcon::FluentOpen => FLUENT_OPEN_SVG,
+        EmbeddedIcon::FluentPin => FLUENT_PIN_SVG,
+        EmbeddedIcon::FluentPinOff => FLUENT_PIN_OFF_SVG,
     }
 }
 
+const fn is_interface_symbol(icon: EmbeddedIcon) -> bool {
+    matches!(
+        icon,
+        EmbeddedIcon::FluentCalculator
+            | EmbeddedIcon::FluentPower
+            | EmbeddedIcon::FluentVolume
+            | EmbeddedIcon::FluentNetwork
+            | EmbeddedIcon::FluentSettings
+            | EmbeddedIcon::FluentTray
+            | EmbeddedIcon::FluentDismiss
+            | EmbeddedIcon::FluentDesktop
+            | EmbeddedIcon::FluentLock
+            | EmbeddedIcon::FluentRestart
+            | EmbeddedIcon::FluentSearch
+            | EmbeddedIcon::FluentMusic
+            | EmbeddedIcon::FluentPrevious
+            | EmbeddedIcon::FluentPlay
+            | EmbeddedIcon::FluentPause
+            | EmbeddedIcon::FluentNext
+            | EmbeddedIcon::FluentOpen
+            | EmbeddedIcon::FluentPin
+            | EmbeddedIcon::FluentPinOff
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct RasterSize {
+pub(super) struct RasterSize {
     width: NonZeroU32,
     height: NonZeroU32,
 }
 
 impl RasterSize {
-    pub const fn new(width: u32, height: u32) -> Option<Self> {
+    pub(super) const fn new(width: u32, height: u32) -> Option<Self> {
         let Some(width) = NonZeroU32::new(width) else {
             return None;
         };
@@ -160,36 +134,29 @@ impl RasterSize {
         Some(Self { width, height })
     }
 
-    pub const fn square(side: NonZeroU32) -> Self {
-        Self {
-            width: side,
-            height: side,
-        }
-    }
-
-    pub const fn width(self) -> u32 {
+    pub(super) const fn width(self) -> u32 {
         self.width.get()
     }
 
-    pub const fn height(self) -> u32 {
+    pub(super) const fn height(self) -> u32 {
         self.height.get()
     }
 }
 
-pub struct RasterImage {
+pub(super) struct RasterImage {
     size: RasterSize,
     pixels: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct IconTint {
+pub(super) struct IconTint {
     red: u8,
     green: u8,
     blue: u8,
 }
 
 impl IconTint {
-    pub fn from_color(color: Color) -> Self {
+    pub(super) fn from_color(color: Color) -> Self {
         Self {
             red: color_component(color.red),
             green: color_component(color.green),
@@ -199,15 +166,15 @@ impl IconTint {
 }
 
 impl RasterImage {
-    pub const fn size(&self) -> RasterSize {
+    pub(super) const fn size(&self) -> RasterSize {
         self.size
     }
 
-    pub fn pixels(&self) -> &[u8] {
+    pub(super) fn pixels(&self) -> &[u8] {
         &self.pixels
     }
 
-    pub fn stride(&self) -> Result<u32, AssetError> {
+    pub(super) fn stride(&self) -> Result<u32, AssetError> {
         self.size
             .width()
             .checked_mul(4)
@@ -215,19 +182,20 @@ impl RasterImage {
     }
 }
 
-pub struct SvgAssetCache {
-    trees: HashMap<SvgAsset, usvg::Tree>,
-    rasters: BoundedResourceCache<(SvgAsset, RasterSize, Option<IconTint>), RasterImage>,
+pub(super) struct EmbeddedIconCache {
+    trees: HashMap<EmbeddedIcon, usvg::Tree>,
+    rasters:
+        BoundedResourceCache<(EmbeddedIcon, RasterSize, Option<IconTint>), RasterImage>,
     transient_raster: Option<RasterImage>,
 }
 
-impl SvgAssetCache {
-    pub fn create() -> Result<Self, AssetError> {
+impl EmbeddedIconCache {
+    pub(super) fn create() -> Result<Self, AssetError> {
         let mut trees = HashMap::new();
-        for asset in SvgAsset::ALL {
+        for asset in EMBEDDED_ICONS {
             trees.insert(
                 asset,
-                usvg::Tree::from_data(asset.source(), &usvg::Options::default())?,
+                usvg::Tree::from_data(source(asset), &usvg::Options::default())?,
             );
         }
         Ok(Self {
@@ -240,13 +208,13 @@ impl SvgAssetCache {
         })
     }
 
-    pub fn rasterize(
+    pub(super) fn rasterize(
         &mut self,
-        asset: SvgAsset,
+        asset: EmbeddedIcon,
         size: RasterSize,
         tint: IconTint,
     ) -> Result<&RasterImage, AssetError> {
-        let tint = asset.is_interface_symbol().then_some(tint);
+        let tint = is_interface_symbol(asset).then_some(tint);
         let key = (asset, size, tint);
         if let Some(raster) = self.rasters.get(&key) {
             self.transient_raster = None;

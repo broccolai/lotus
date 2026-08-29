@@ -19,11 +19,11 @@ use lotus_dock::model::{DockModel, SettingsImpact};
 use lotus_dock::scene::DockPresenter;
 use lotus_media::MediaSnapshot;
 use lotus_settings::appearance::theme_for;
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_windows::WindowHandle;
 use lotus_windows::custom_image::{
     CustomImageCache, MascotAnimation, MascotLoopCount, load_mascot_image,
 };
-use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::icon_hydrator::{DockIconClient, DockIconRequest, HydratedDockIcon};
 use lotus_windows::media::decode_artwork;
 use lotus_windows::native_icon::NativeIconCache;
@@ -44,6 +44,11 @@ use crate::app::visuals::{
 
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
 const EXIT_DURATION: Duration = Duration::from_millis(80);
+
+pub(super) struct DockInteractionOutcome {
+    pub(super) changed: bool,
+    pub(super) effect: Option<crate::app::visuals::DockHitTarget>,
+}
 
 pub(super) struct DockRuntime {
     status_owner: WindowHandle,
@@ -143,7 +148,7 @@ impl DockRuntime {
         let mut scene = DockScene::new(
             dpi,
             metrics,
-            DockIcon::Embedded(SvgAsset::LotusPixel),
+            DockIcon::Embedded(EmbeddedIcon::LotusPixel),
             Vec::new(),
         )?;
         scene.set_anchor(dock_anchor(settings.dock_zone));
@@ -381,7 +386,7 @@ impl DockRuntime {
 
     pub(super) fn presentation(
         &mut self,
-    ) -> (lotus_ui::presentation::Presentation<SvgAsset>, bool) {
+    ) -> (lotus_ui::presentation::Presentation<EmbeddedIcon>, bool) {
         let size = self.scene.desired_size();
         let departure_pending = self.exit_deadline.is_some();
         let (presentation, needs_animation) =
@@ -496,7 +501,7 @@ impl DockRuntime {
             });
         } else {
             self.scene
-                .set_mascot(DockIcon::Embedded(SvgAsset::LotusPixel));
+                .set_mascot(DockIcon::Embedded(EmbeddedIcon::LotusPixel));
             self.mascot_animation = None;
         }
     }
@@ -508,7 +513,7 @@ impl DockRuntime {
             .and_then(|artwork| decode_artwork(&snapshot.source_id, artwork).ok())
             .map(DockIcon::Raster)
             .or_else(|| self.media_source_icon(&snapshot.source_id))
-            .unwrap_or(DockIcon::Embedded(SvgAsset::FluentMusic));
+            .unwrap_or(DockIcon::Embedded(EmbeddedIcon::FluentMusic));
         MediaItem {
             source_id: snapshot.source_id.clone(),
             title: snapshot.title.clone(),
@@ -518,10 +523,10 @@ impl DockRuntime {
             controls: snapshot.controls,
             playback: snapshot.playback,
             symbols: MediaSymbols {
-                previous: SvgAsset::FluentPrevious,
-                play: SvgAsset::FluentPlay,
-                pause: SvgAsset::FluentPause,
-                next: SvgAsset::FluentNext,
+                previous: EmbeddedIcon::FluentPrevious,
+                play: EmbeddedIcon::FluentPlay,
+                pause: EmbeddedIcon::FluentPause,
+                next: EmbeddedIcon::FluentNext,
             },
         }
     }

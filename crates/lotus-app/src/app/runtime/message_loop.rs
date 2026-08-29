@@ -19,8 +19,8 @@ use lotus_windows::window_tracker::WindowTracker;
 
 use super::work::RuntimeWork;
 use super::{
-    controllers, dock_events, present_dock_change, presentation, search_events,
-    settings_events, update_events, window_events,
+    dock_events, present_dock_change, presentation, search_events, settings_events,
+    update_events, window_events,
 };
 use crate::app::integration::IntegrationRecoveryContext;
 use crate::app::modules::ModuleHost;
@@ -35,7 +35,7 @@ pub(crate) fn run_message_loop(
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
-    let heartbeat = UiHeartbeatTimer::start(auxiliary.input().is_some())?;
+    let heartbeat = UiHeartbeatTimer::start(auxiliary.input_enabled())?;
     MessageLoop {
         heartbeat,
         runtime,
@@ -161,9 +161,7 @@ impl MessageLoop<'_, '_> {
         if message.is_thread_message()
             && self.heartbeat.matches(message.id(), message.parameter())
         {
-            if let Some(input) = self.auxiliary.input() {
-                input.heartbeat();
-            }
+            self.auxiliary.heartbeat_input();
             let started = std::time::Instant::now();
             let frame = self.handle_input_wake();
             timing.record(UiMessagePhase::Wake, started.elapsed());
@@ -175,7 +173,7 @@ impl MessageLoop<'_, '_> {
             METRICS.record_ui_work(false, false, frame);
             return Ok(());
         }
-        if self.auxiliary.input().is_some() && is_input_wake(message.id()) {
+        if self.auxiliary.input_enabled() && is_input_wake(message.id()) {
             let started = std::time::Instant::now();
             message.dispatch();
             timing.record(UiMessagePhase::Dispatch, started.elapsed());
@@ -366,7 +364,7 @@ impl MessageLoop<'_, '_> {
             let outcome = self.auxiliary.drain_monitor_dock_events(self.graphics)?;
             changed |= outcome.had_events;
             for action in outcome.actions {
-                dock_events::handle_monitor_dock_action(
+                dock_events::execute_dock_action(
                     action,
                     self.dock,
                     self.graphics,
@@ -415,7 +413,7 @@ impl MessageLoop<'_, '_> {
         let mut changed = false;
         let mut presented_size = self.dock_model.scene().desired_size();
         if wakes.update {
-            update_events::handle_update_results(self.auxiliary.settings_runtime());
+            update_events::handle_update_results(self.auxiliary);
             changed = true;
         }
         if wakes.badges
@@ -472,20 +470,12 @@ impl MessageLoop<'_, '_> {
     }
 
     fn handle_input_wake(&mut self) -> bool {
-        self.auxiliary
-            .with_input_modules(|controller, launcher, switcher, catalog| {
-                controllers::handle_input_actions(&mut controllers::InputEventContext {
-                    controller,
-                    dock: self.dock,
-                    tracker: self.window_tracker,
-                    dock_model: self.dock_model,
-                    graphics: self.graphics,
-                    catalog,
-                    launcher,
-                    switcher,
-                })
-            })
-            .unwrap_or(false)
+        self.auxiliary.handle_input_actions(
+            self.dock,
+            self.window_tracker,
+            self.dock_model,
+            self.graphics,
+        )
     }
 
     fn render_dock(&mut self) {
@@ -493,31 +483,18 @@ impl MessageLoop<'_, '_> {
     }
 
     fn drain_settings_events(&mut self) -> Result<bool, AppError> {
-        let events = self.auxiliary.drain_settings_events();
-        let had_events = !events.is_empty();
-        for event in events {
-            let result = settings_events::handle_settings_event(
-                event,
-                &mut settings_events::SettingsEventContext {
-                    dock: self.dock,
-                    graphics: self.graphics,
-                    dock_surface: self.surface,
-                    window_tracker: self.window_tracker,
-                    dock_model: self.dock_model,
-                    auxiliary: self.auxiliary,
-                    integration: self.runtime.integration,
-                },
-            );
-            match result {
-                Ok(()) => {}
-                Err(error)
-                    if error.mark_graphics_lost(self.graphics)
-                        || self.graphics.health() == GraphicsDeviceHealth::Lost => {}
-                Err(error) => return Err(error),
-            }
-        }
-        self.heartbeat
-            .set_enabled(self.auxiliary.input().is_some())?;
+        let had_events = settings_events::drain_settings_events(
+            &mut settings_events::SettingsEventContext {
+                dock: self.dock,
+                graphics: self.graphics,
+                dock_surface: self.surface,
+                window_tracker: self.window_tracker,
+                dock_model: self.dock_model,
+                auxiliary: self.auxiliary,
+                integration: self.runtime.integration,
+            },
+        )?;
+        self.heartbeat.set_enabled(self.auxiliary.input_enabled())?;
         Ok(had_events)
     }
 
@@ -659,10 +636,7 @@ impl MessageLoop<'_, '_> {
             graphics_generation: self.graphics.generation(),
             graphics_recovered: graphics_generation != self.graphics.generation(),
             visible_feature_mask: visible_features | u32::from(self.dock.is_visible()),
-            input_fail_open: self
-                .auxiliary
-                .input()
-                .is_some_and(|input| !input.is_healthy()),
+            input_fail_open: !self.auxiliary.input_healthy(),
         });
     }
 }

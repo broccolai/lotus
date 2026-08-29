@@ -3,9 +3,9 @@ use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows::Win32::UI::WindowsAndMessaging::{WM_PAINT, WM_TIMER};
 
 use super::{
-    ANIMATION_TIMER, DOCK_STATUS_TIMER, MASCOT_ANIMATION_TIMER, SEARCH_CLOCK_TIMER,
-    SEARCH_FOCUS_TIMER, WindowEvent, is_dock_window, is_search_window, push_window_event,
-    with_window_state,
+    ANIMATION_TIMER, DOCK_STATUS_TIMER, DockEvent, MASCOT_ANIMATION_TIMER,
+    SEARCH_CLOCK_TIMER, SEARCH_FOCUS_TIMER, is_dock_window, is_search_window,
+    push_dock_event, push_render_event, push_search_event, with_window_state,
 };
 
 pub(super) fn dispatch_timer(hwnd: HWND, message: u32, wparam: WPARAM) -> Option<LRESULT> {
@@ -16,32 +16,26 @@ pub(super) fn dispatch_timer(hwnd: HWND, message: u32, wparam: WPARAM) -> Option
         let mut active = false;
         with_window_state(hwnd, |state| active = state.animation_active.get());
         if active {
-            push_window_event(hwnd, WindowEvent::AnimationFrame);
+            push_dock_event(hwnd, DockEvent::AnimationFrame);
         }
         return Some(LRESULT(0));
     }
     if MASCOT_ANIMATION_TIMER.matches(wparam.0) && is_dock_window(hwnd) {
         with_window_state(hwnd, |state| state.mascot_animation_delay_ms.set(None));
         MASCOT_ANIMATION_TIMER.stop(hwnd);
-        push_window_event(hwnd, WindowEvent::MascotAnimationDeadline);
+        push_dock_event(hwnd, DockEvent::MascotAnimationDeadline);
         return Some(LRESULT(0));
     }
     if DOCK_STATUS_TIMER.matches(wparam.0) && is_dock_window(hwnd) {
-        push_window_event(hwnd, WindowEvent::StatusRefreshRequested);
+        push_dock_event(hwnd, DockEvent::StatusRefreshRequested);
         return Some(LRESULT(0));
     }
     if SEARCH_CLOCK_TIMER.matches(wparam.0) && is_search_window(hwnd) {
-        push_window_event(
-            hwnd,
-            WindowEvent::Search(super::SearchEvent::ClockRefreshRequested),
-        );
+        push_search_event(hwnd, super::SearchEvent::ClockRefreshRequested);
         return Some(LRESULT(0));
     }
     if SEARCH_FOCUS_TIMER.matches(wparam.0) && is_search_window(hwnd) {
-        push_window_event(
-            hwnd,
-            WindowEvent::Search(super::SearchEvent::FocusRefreshRequested),
-        );
+        push_search_event(hwnd, super::SearchEvent::FocusRefreshRequested);
         return Some(LRESULT(0));
     }
     None
@@ -58,6 +52,6 @@ pub(super) fn dispatch_paint(hwnd: HWND, message: u32) -> Option<LRESULT> {
         let _ = BeginPaint(hwnd, &raw mut paint);
         let _ = EndPaint(hwnd, &raw const paint);
     }
-    push_window_event(hwnd, WindowEvent::RenderRequested);
+    push_render_event(hwnd);
     Some(LRESULT(0))
 }

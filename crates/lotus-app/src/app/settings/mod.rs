@@ -1,10 +1,12 @@
 mod applications;
 mod assets;
+mod events;
 mod pickers;
 
 use std::time::Instant;
 
 pub(in crate::app) use applications::application_records;
+pub(in crate::app) use events::SettingsEventOutcome;
 use lotus_core::settings::{ApplicationIconOverride, DockSettings};
 use lotus_settings::scene::{
     SettingsAction, SettingsControl, SettingsScene, SettingsSize, SettingsUpdateActivity,
@@ -22,10 +24,7 @@ use lotus_windows::update::{Release, UpdateChecker, UpdateResult, UpdateStartErr
 use lotus_windows::window::{
     SettingsEvent, SettingsKey as WindowSettingsKey, SettingsWindow,
 };
-pub(in crate::app) use pickers::{
-    ApplicationIconOutcome, ColorOutcome, ColorTarget, choose_application_icon,
-    choose_color, choose_mascot_image,
-};
+pub(in crate::app) use pickers::{ApplicationIconOutcome, ColorOutcome, ColorTarget};
 
 use crate::app::AppError;
 
@@ -147,10 +146,6 @@ impl SettingsRuntime {
         self.window.handle()
     }
 
-    pub(in crate::app) fn scene_mut(&mut self) -> &mut SettingsScene {
-        &mut self.scene
-    }
-
     pub(in crate::app) fn draft(&self) -> &DockSettings {
         self.scene.draft()
     }
@@ -189,11 +184,11 @@ impl SettingsRuntime {
         self.scene.page() == lotus_settings::scene::SettingsPage::Apps
     }
 
-    pub(in crate::app) fn application_query(&self) -> &str {
+    fn application_query(&self) -> &str {
         self.scene.application_query()
     }
 
-    pub(in crate::app) fn set_application_query(&mut self, query: &str) -> bool {
+    fn set_application_query(&mut self, query: &str) -> bool {
         self.scene.set_application_query(query)
     }
 
@@ -254,7 +249,7 @@ impl SettingsRuntime {
         self.window.has_pending_events()
     }
 
-    pub(in crate::app) fn resize(
+    fn resize(
         &mut self,
         graphics: &mut DeviceState,
         width: u32,
@@ -285,11 +280,7 @@ impl SettingsRuntime {
         }
     }
 
-    pub(in crate::app) fn pointer_moved(
-        &mut self,
-        x: u32,
-        y: u32,
-    ) -> Option<SettingsAction> {
+    fn pointer_moved(&mut self, x: u32, y: u32) -> Option<SettingsAction> {
         let style_started = Instant::now();
         let style = self.scene.pointer_style(x, y);
         METRICS.record_layout(LayoutOperation::SettingsPointer, style_started.elapsed());
@@ -315,18 +306,14 @@ impl SettingsRuntime {
         None
     }
 
-    pub(in crate::app) fn pointer_left(&mut self) {
+    fn pointer_left(&mut self) {
         self.window.set_pointer_cursor(PointerCursor::Arrow);
         if self.scene.set_hovered(None) {
             self.invalidate();
         }
     }
 
-    pub(in crate::app) fn pointer_pressed(
-        &mut self,
-        x: u32,
-        y: u32,
-    ) -> Option<SettingsAction> {
+    fn pointer_pressed(&mut self, x: u32, y: u32) -> Option<SettingsAction> {
         let started = Instant::now();
         self.scene.pointer_move(x, y);
         self.dragging_slider = self.scene.slider_at(x, y);
@@ -342,11 +329,7 @@ impl SettingsRuntime {
         action
     }
 
-    pub(in crate::app) fn pointer_released(
-        &mut self,
-        x: i32,
-        y: i32,
-    ) -> Option<SettingsAction> {
+    fn pointer_released(&mut self, x: i32, y: i32) -> Option<SettingsAction> {
         if self.dragging_slider.take().is_some() {
             self.pressed_control = None;
             let cursor = u32::try_from(x).ok().zip(u32::try_from(y).ok()).map_or(
@@ -373,13 +356,13 @@ impl SettingsRuntime {
         Some(self.activation_at(x, y))
     }
 
-    pub(in crate::app) fn pointer_cancelled(&mut self) {
+    fn pointer_cancelled(&mut self) {
         self.dragging_slider = None;
         self.pressed_control = None;
         self.window.set_pointer_cursor(PointerCursor::Arrow);
     }
 
-    pub(in crate::app) fn activation_at(&mut self, x: i32, y: i32) -> SettingsAction {
+    fn activation_at(&mut self, x: i32, y: i32) -> SettingsAction {
         u32::try_from(x).ok().zip(u32::try_from(y).ok()).map_or(
             SettingsAction::None,
             |(x, y)| {
@@ -391,7 +374,7 @@ impl SettingsRuntime {
         )
     }
 
-    pub(in crate::app) fn scrolled(&mut self, direction: i32) -> bool {
+    fn scrolled(&mut self, direction: i32) -> bool {
         if !self.scene.scroll(direction) {
             return false;
         }
@@ -400,10 +383,7 @@ impl SettingsRuntime {
         entered_apps
     }
 
-    pub(in crate::app) fn translated_key(
-        &mut self,
-        key: WindowSettingsKey,
-    ) -> SettingsAction {
+    fn translated_key(&mut self, key: WindowSettingsKey) -> SettingsAction {
         let key = match key {
             WindowSettingsKey::Escape => lotus_settings::scene::SettingsKey::Escape,
             WindowSettingsKey::Enter | WindowSettingsKey::Space => {
@@ -435,6 +415,33 @@ impl SettingsRuntime {
 
     pub(in crate::app) fn clear_icon_caches(&mut self) {
         self.custom_images.clear();
+    }
+
+    pub(in crate::app) fn choose_color(&mut self, target: ColorTarget) -> ColorOutcome {
+        let owner = self.owner();
+        pickers::choose_color(&mut self.scene, owner, target)
+    }
+
+    pub(in crate::app) fn choose_mascot_image(
+        &mut self,
+        settings_directory: &std::path::Path,
+    ) -> pickers::MascotImageOutcome {
+        pickers::choose_mascot_image(self.owner(), settings_directory, &mut self.scene)
+    }
+
+    pub(in crate::app) fn choose_application_icon(
+        &mut self,
+        id: &str,
+        settings_directory: &std::path::Path,
+    ) -> ApplicationIconOutcome {
+        let applications = self.applications_snapshot();
+        pickers::choose_application_icon(
+            id,
+            self.owner(),
+            settings_directory,
+            &mut self.scene,
+            &applications,
+        )
     }
 
     pub(in crate::app) fn start_update_check(&mut self) -> Result<bool, UpdateStartError> {

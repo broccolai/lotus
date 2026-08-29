@@ -1,5 +1,6 @@
 use std::num::NonZeroU32;
 
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_ui::presentation::Presentation;
 use thiserror::Error;
 use windows::Win32::Foundation::HWND;
@@ -13,7 +14,7 @@ use windows::Win32::Graphics::Dxgi::{
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::core::Error as WindowsError;
 
-use super::assets::{AssetError, SvgAsset};
+use super::assets::AssetError;
 use super::composition_surface::{CompositionSurfaceCore, RecoverableSurface};
 use super::device::{DeviceLost, GraphicsDevice};
 use super::presentation_renderer::{
@@ -89,7 +90,7 @@ impl CompositionSurface {
 
     fn render(
         &mut self,
-        presentation: &Presentation<SvgAsset>,
+        presentation: &Presentation<EmbeddedIcon>,
         needs_animation: bool,
     ) -> Result<FrameResult, PresentationRendererError> {
         if !self.renderer.is_target_attached() {
@@ -180,7 +181,7 @@ impl CompositionSurfaceState {
 
     pub fn render_scene(
         &mut self,
-        presentation: &Presentation<SvgAsset>,
+        presentation: &Presentation<EmbeddedIcon>,
         needs_animation: bool,
     ) -> Result<FrameResult, SurfaceError> {
         let Some(surface) = self.0.get_mut() else {

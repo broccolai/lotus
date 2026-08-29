@@ -10,12 +10,12 @@ use lotus_core::settings::DockSettings;
 use lotus_core::window::{TrackedWindowKey, WindowInfo};
 use lotus_settings::appearance::theme_for;
 use lotus_switcher::model::{RecentOrder, ReconcileOutcome, SwitcherSession};
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::icon::RasterIcon;
 use lotus_ui::theme::Theme;
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::switcher_surface::SwitcherCompositionSurfaceState;
 use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError};
@@ -537,7 +537,7 @@ impl SwitcherRuntime {
         let (Some(scene), Some(surface)) = (&self.scene, &mut self.surface) else {
             return Ok(());
         };
-        let presentation = scene.presentation(SvgAsset::FluentDismiss);
+        let presentation = scene.presentation(EmbeddedIcon::FluentDismiss);
         pass.render(surface, |surface| {
             match surface.render_scene(&presentation) {
                 Ok(FrameResult::Presented { needs_animation }) => {

@@ -6,30 +6,17 @@ use lotus_windows::activation::launch_target;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
 use lotus_windows::window::{
-    DockContextRequest, DockWindow, PointerEvent, PopupAlignment, SignedPoint, WindowEvent,
+    DockContextRequest, DockEvent, DockWindow, PointerEvent, PopupAlignment, SignedPoint,
 };
 
 use super::presentation::{present_dock_change, resize_dock, resize_surface};
 use crate::app::modules::ModuleHost;
-use crate::app::monitors::MonitorDockAction;
+use crate::app::monitors::DockAction;
 use crate::app::visuals::{DockHitTarget, SystemStatusKind};
 use crate::app::{AppError, DockRuntime};
 
-pub(crate) fn handle_pointer_event(
-    event: PointerEvent,
-    model: &mut DockRuntime,
-) -> Result<(bool, Option<DockHitTarget>), AppError> {
-    Ok(match event {
-        PointerEvent::Moved { x, y } => (model.pointer_moved(x, y), None),
-        PointerEvent::Left => (model.pointer_left(), None),
-        PointerEvent::LeftButtonPressed { x, y } => (model.pointer_pressed(x, y), None),
-        PointerEvent::LeftButtonReleased { x, y } => return model.pointer_released(x, y),
-        PointerEvent::Cancelled => (model.pointer_cancelled(), None),
-    })
-}
-
 pub(super) fn handle_window_event(
-    event: WindowEvent,
+    event: DockEvent,
     dock: &DockWindow,
     graphics: &mut DeviceState,
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
@@ -37,37 +24,33 @@ pub(super) fn handle_window_event(
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     match event {
-        WindowEvent::Resized { width, height } => {
+        DockEvent::Resized { width, height } => {
             if let Some(size) = SurfaceSize::new(width, height) {
                 resize_surface(graphics, surface.value_mut(), size)?;
             }
         }
-        WindowEvent::DpiChanged { dpi } => {
+        DockEvent::DpiChanged { dpi } => {
             dock_model.set_dpi(dpi)?;
             dock_model.set_drag_threshold(dock.drag_threshold());
             present_dock_change(dock, graphics, surface, auxiliary, dock_model)?;
         }
-        WindowEvent::PlacementRefreshRequested => {
+        DockEvent::PlacementRefreshRequested => {
             dock.refresh_placement(dock_model.settings())?;
             auxiliary.refresh_placement(dock, dock_model, graphics)?;
         }
-        WindowEvent::Pointer(event) => {
+        DockEvent::Pointer(event) => {
             handle_dock_pointer(event, dock, graphics, surface, dock_model, auxiliary)?;
         }
-        WindowEvent::ContextMenuRequested(request) => {
+        DockEvent::ContextMenuRequested(request) => {
             handle_context_menu(request, dock, graphics, surface, dock_model, auxiliary)?;
         }
-        WindowEvent::Search(_)
-        | WindowEvent::Settings(_)
-        | WindowEvent::ContextMenu(_)
-        | WindowEvent::Switcher(_) => {}
-        WindowEvent::AnimationFrame => {
+        DockEvent::AnimationFrame => {
             auxiliary.advance_launcher_animation();
             if dock_model.advance_departure(Instant::now()) {
                 resize_dock(dock, graphics, surface, dock_model)?;
             }
         }
-        WindowEvent::MascotAnimationDeadline => {
+        DockEvent::MascotAnimationDeadline => {
             if dock_model.advance_mascot_animation()
                 && dock.is_visible()
                 && !dock.is_fullscreen_occluded()
@@ -75,13 +58,13 @@ pub(super) fn handle_window_event(
                 surface.invalidate();
             }
         }
-        WindowEvent::StatusRefreshRequested => {
+        DockEvent::StatusRefreshRequested => {
             if dock_model.refresh_status() {
                 surface.invalidate();
             }
             auxiliary.refresh_status(dock_model.settings());
         }
-        WindowEvent::RenderRequested => {
+        DockEvent::RenderRequested => {
             surface.invalidate();
         }
     }
@@ -115,60 +98,30 @@ fn handle_dock_pointer(
         | PointerEvent::LeftButtonPressed { .. }
         | PointerEvent::Cancelled => None,
     };
-    let (changed, activation) = handle_pointer_event(event, dock_model)?;
-    if changed {
+    let interaction = dock_model.handle_pointer_event(event)?;
+    if interaction.changed {
         surface.invalidate();
     }
-    let Some(target) = activation else {
+    let Some(target) = interaction.effect else {
         if matches!(event, PointerEvent::LeftButtonReleased { .. }) {
             auxiliary.hide_launcher();
         }
         return Ok(());
     };
-    let activation_anchor = release_request
+    let anchor = release_request
         .and_then(|request| dock_model.popup_target_anchor(request))
         .map(|(_, anchor, _)| anchor);
-    match target {
-        DockHitTarget::Item(source_index) => {
-            let anchor = release_request
-                .and_then(|request| dock_model.popup_target_anchor(request))
-                .map(|(_, anchor, _)| anchor);
-            activate_dock_item(
-                source_index,
-                target,
-                anchor,
-                dock.handle(),
-                graphics,
-                dock_model,
-                auxiliary,
-            )?;
-        }
-        DockHitTarget::Jirachi => {
-            auxiliary.toggle_launcher(dock, dock_model, graphics)?;
-        }
-        DockHitTarget::Media(target) => {
-            auxiliary.dismiss_popups_for_activation();
-            auxiliary.activate_media(target, dock_model, dock.handle());
-        }
-        DockHitTarget::SystemStatus(kind) => {
-            auxiliary.dismiss_popups_for_activation();
-            if activate_system_status(kind, dock.handle(), activation_anchor) {
-                dock_model.advanced_color_changed();
-                auxiliary.refresh_status(dock_model.settings());
-            }
-        }
-        DockHitTarget::ShowDesktop => {
-            auxiliary.dismiss_popups_for_activation();
-            if let Err(error) = lotus_windows::desktop::toggle() {
-                show_error(
-                    dock.handle(),
-                    "Lotus",
-                    &format!("Lotus could not show the desktop.\n\n{error}"),
-                );
-            }
-        }
-    }
-    Ok(())
+    execute_dock_action(
+        DockAction::Activate {
+            target,
+            owner: dock.handle(),
+            anchor,
+        },
+        dock,
+        graphics,
+        dock_model,
+        auxiliary,
+    )
 }
 
 fn activate_dock_item(
@@ -259,7 +212,7 @@ fn native_panel_or_fallback(
 
 fn handle_context_menu(
     request: DockContextRequest,
-    _dock: &DockWindow,
+    dock: &DockWindow,
     graphics: &mut DeviceState,
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
     dock_model: &mut DockRuntime,
@@ -268,15 +221,17 @@ fn handle_context_menu(
     let Some((target, anchor, alignment)) = dock_model.popup_target_anchor(request) else {
         return Ok(());
     };
-    auxiliary.hide_launcher();
     if dock_model.pointer_cancelled() {
         surface.invalidate();
     }
-    open_context_target(
-        target,
-        anchor,
-        alignment,
-        request.shift_held(),
+    execute_dock_action(
+        DockAction::Context {
+            target,
+            anchor,
+            alignment,
+            shift_held: request.shift_held(),
+        },
+        dock,
         graphics,
         dock_model,
         auxiliary,
@@ -312,15 +267,15 @@ fn open_context_target(
     Ok(())
 }
 
-pub(super) fn handle_monitor_dock_action(
-    action: MonitorDockAction,
+pub(super) fn execute_dock_action(
+    action: DockAction,
     dock: &DockWindow,
     graphics: &mut DeviceState,
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     match action {
-        MonitorDockAction::Activate {
+        DockAction::Activate {
             target,
             owner,
             anchor,
@@ -359,7 +314,7 @@ pub(super) fn handle_monitor_dock_action(
                 }
             }
         },
-        MonitorDockAction::Context {
+        DockAction::Context {
             target,
             anchor,
             alignment,

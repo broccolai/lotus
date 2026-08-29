@@ -1,21 +1,15 @@
-use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit};
 use lotus_core::window::WindowInfo;
 use lotus_search::command::CommandId;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::activation::launch_target;
-use lotus_windows::clipboard::{read_text, write_text};
-use lotus_windows::clock::local_time;
+use lotus_windows::clipboard::write_text;
 use lotus_windows::dialog::{confirm_restart, confirm_shutdown, show_error};
-use lotus_windows::graphics::{
-    CompositionSurfaceState, DeviceState, GraphicsDeviceHealth, SurfaceSize,
-};
+use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, GraphicsDeviceHealth};
 use lotus_windows::interaction::request_exit;
-use lotus_windows::window::{
-    CursorMove as WindowCursorMove, DockWindow, SearchEdit, SearchEvent,
-};
+use lotus_windows::window::DockWindow;
 
-use super::presentation::{present_dock_change, resize_launcher_surface};
-use crate::app::launcher::{LauncherRuntime, LauncherSubmission};
+use super::presentation::present_dock_change;
+use crate::app::launcher::{LauncherEventOutcome, LauncherSubmission};
 use crate::app::modules::ModuleHost;
 use crate::app::{AppError, DockRuntime};
 
@@ -58,131 +52,32 @@ pub(super) fn drain_search_events(
     let events = auxiliary.drain_launcher_events();
     let had_events = !events.is_empty();
     for event in events {
-        if let SearchEvent::ContextMenuRequested(request) = event {
-            if let Some((anchor, path)) = auxiliary
-                .launcher_runtime()
-                .file_location_context(request)?
-            {
+        let outcome =
+            match auxiliary.handle_launcher_event(event, dock, graphics, dock_model) {
+                Ok(outcome) => outcome,
+                Err(error)
+                    if error.mark_graphics_lost(graphics)
+                        || graphics.health() == GraphicsDeviceHealth::Lost =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+        match outcome {
+            LauncherEventOutcome::None => {}
+            LauncherEventOutcome::Submission(submission) => {
+                execute_search_submission(
+                    submission, dock, graphics, dock_model, auxiliary,
+                )?;
+            }
+            LauncherEventOutcome::OpenFileLocation { anchor, path } => {
                 auxiliary.open_search_file_location_menu(anchor, path, graphics)?;
             }
-            continue;
-        }
-        let submission = match handle_search_event(
-            event,
-            dock,
-            graphics,
-            dock_model,
-            auxiliary.launcher_runtime(),
-        ) {
-            Ok(submission) => submission,
-            Err(error)
-                if error.mark_graphics_lost(graphics)
-                    || graphics.health() == GraphicsDeviceHealth::Lost =>
-            {
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        if let Some(submission) = submission {
-            execute_search_submission(submission, dock, graphics, dock_model, auxiliary)?;
         }
     }
     Ok(had_events)
 }
 
-pub(crate) fn handle_search_event(
-    event: SearchEvent,
-    dock: &DockWindow,
-    graphics: &mut DeviceState,
-    dock_model: &DockRuntime,
-    launcher: &mut LauncherRuntime,
-) -> Result<Option<LauncherSubmission>, AppError> {
-    let mut scene_changed = false;
-    let mut command = None;
-    match event {
-        SearchEvent::TextInput(character) => {
-            launcher.controller.push_character(character);
-            launcher.rebuild_scene(launcher.window.dpi())?;
-            scene_changed = true;
-        }
-        SearchEvent::Edit(edit) => {
-            if launcher.controller.edit_query(model_query_edit(edit)) {
-                launcher.rebuild_scene(launcher.window.dpi())?;
-                scene_changed = true;
-            }
-        }
-        SearchEvent::PasteRequested => {
-            if let Ok(text) = read_text()
-                && launcher.controller.insert_text(&text)
-            {
-                launcher.rebuild_scene(launcher.window.dpi())?;
-                scene_changed = true;
-            }
-        }
-        SearchEvent::MoveSelection(direction) => {
-            launcher.move_selection(direction)?;
-            scene_changed = true;
-        }
-        SearchEvent::DismissRequested => launcher.hide(),
-        SearchEvent::SubmitRequested => command = launcher.submit(dock.handle()),
-        SearchEvent::Resized { width, height } => {
-            if let (Some(size), Some(surface)) =
-                (SurfaceSize::new(width, height), launcher.surface.as_mut())
-            {
-                resize_launcher_surface(graphics, surface.value_mut(), size)?;
-                scene_changed = true;
-            }
-        }
-        SearchEvent::DpiChanged { dpi } => {
-            launcher.rebuild_scene(dpi)?;
-            scene_changed = true;
-        }
-        SearchEvent::ClockRefreshRequested => {
-            scene_changed = launcher.scene.as_mut().is_some_and(|scene| {
-                scene.set_footer_time(local_time(dock_model.settings().use_24_hour_time))
-            });
-        }
-        SearchEvent::FocusRefreshRequested => {
-            let _ = launcher.window.focus();
-        }
-        SearchEvent::RenderRequested => scene_changed = true,
-        SearchEvent::PointerMoved { x, y } => {
-            let hovered = launcher.result_at(x, y);
-            scene_changed = launcher.set_hovered_result(hovered);
-        }
-        SearchEvent::PointerLeft => scene_changed = launcher.set_hovered_result(None),
-        SearchEvent::PointerReleased { x, y } => {
-            if let Some(index) = launcher.result_at(x, y) {
-                let _ = launcher.select_result(index)?;
-                command = launcher.submit(dock.handle());
-            }
-        }
-        SearchEvent::ContextMenuRequested(_) => {}
-    }
-
-    if scene_changed && launcher.is_visible() {
-        launcher.sync_size(dock, graphics)?;
-        if let Some(surface) = &mut launcher.surface {
-            surface.invalidate();
-        }
-    }
-    Ok(command)
-}
-
-const fn model_query_edit(edit: SearchEdit) -> QueryEdit {
-    match edit {
-        SearchEdit::DeleteBackward => QueryEdit::DeleteBackward,
-        SearchEdit::DeletePreviousWord => QueryEdit::DeletePreviousWord,
-        SearchEdit::DeleteForward => QueryEdit::DeleteForward,
-        SearchEdit::MoveCursor(movement) => QueryEdit::MoveCursor(match movement {
-            WindowCursorMove::Home => ModelCursorMove::Home,
-            WindowCursorMove::End => ModelCursorMove::End,
-            WindowCursorMove::Previous => ModelCursorMove::Previous,
-            WindowCursorMove::Next => ModelCursorMove::Next,
-        }),
-        SearchEdit::SelectAll => QueryEdit::SelectAll,
-    }
-}
 fn execute_search_submission(
     submission: LauncherSubmission,
     dock: &DockWindow,

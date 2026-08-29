@@ -8,8 +8,8 @@ use lotus_windows::graphics::{
 };
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::window::{
-    DockContextRequest, DockWindow, PointerEvent, PopupAlignment, SignedPoint,
-    StatusWindow, WindowEvent,
+    DockContextRequest, DockEvent, DockReplicaWindow, DockWindow, PointerEvent,
+    PopupAlignment, SignedPoint,
 };
 use lotus_windows::window_tracker::WindowTracker;
 
@@ -19,7 +19,7 @@ use crate::app::runtime::resize_surface;
 use crate::app::visuals::{DockAnchor, DockHitTarget, DockScene, surface_size};
 
 #[derive(Clone, Copy)]
-pub(super) enum MonitorDockAction {
+pub(super) enum DockAction {
     Activate {
         target: DockHitTarget,
         owner: WindowHandle,
@@ -34,7 +34,7 @@ pub(super) enum MonitorDockAction {
 }
 
 pub(super) struct MonitorDockEventDrain {
-    pub(super) actions: Vec<MonitorDockAction>,
+    pub(super) actions: Vec<DockAction>,
     pub(super) had_events: bool,
 }
 
@@ -54,7 +54,7 @@ pub(super) enum MonitorIntegrationHealth {
 }
 
 struct MonitorDock {
-    window: StatusWindow,
+    window: DockReplicaWindow,
     surface: ScheduledSurface<CompositionSurfaceState>,
     scene: DockScene,
     presenter: DockPresenter,
@@ -211,16 +211,16 @@ impl MonitorDocks {
             had_events |= !events.is_empty();
             for event in events {
                 match event {
-                    WindowEvent::Pointer(pointer) => {
+                    DockEvent::Pointer(pointer) => {
                         if let Some(action) = replica.handle_pointer(pointer) {
                             actions.push(action);
                         }
                     }
-                    WindowEvent::ContextMenuRequested(request) => {
+                    DockEvent::ContextMenuRequested(request) => {
                         if let Some((target, anchor, alignment)) =
                             replica.popup_target_anchor(request)
                         {
-                            actions.push(MonitorDockAction::Context {
+                            actions.push(DockAction::Context {
                                 target,
                                 anchor,
                                 alignment,
@@ -228,23 +228,20 @@ impl MonitorDocks {
                             });
                         }
                     }
-                    WindowEvent::Resized { width, height } => {
+                    DockEvent::Resized { width, height } => {
                         if let Some(size) = SurfaceSize::new(width, height) {
                             resize_surface(graphics, replica.surface.value_mut(), size)?;
                         }
                     }
-                    WindowEvent::DpiChanged { .. }
-                    | WindowEvent::PlacementRefreshRequested => refresh = true,
-                    WindowEvent::RenderRequested => {
+                    DockEvent::DpiChanged { .. } | DockEvent::PlacementRefreshRequested => {
+                        refresh = true;
+                    }
+                    DockEvent::RenderRequested => {
                         replica.surface.invalidate();
                     }
-                    WindowEvent::AnimationFrame
-                    | WindowEvent::MascotAnimationDeadline
-                    | WindowEvent::StatusRefreshRequested
-                    | WindowEvent::Search(_)
-                    | WindowEvent::Settings(_)
-                    | WindowEvent::ContextMenu(_)
-                    | WindowEvent::Switcher(_) => {}
+                    DockEvent::AnimationFrame
+                    | DockEvent::MascotAnimationDeadline
+                    | DockEvent::StatusRefreshRequested => {}
                 }
             }
         }
@@ -322,7 +319,7 @@ impl MonitorDocks {
 }
 
 impl MonitorDock {
-    fn handle_pointer(&mut self, event: PointerEvent) -> Option<MonitorDockAction> {
+    fn handle_pointer(&mut self, event: PointerEvent) -> Option<DockAction> {
         let (action, scene_changed) = match event {
             PointerEvent::Moved { x, y } => {
                 let target = hit_test(&self.scene, x, y);
@@ -338,7 +335,7 @@ impl MonitorDock {
                 let pressed = self.scene.interaction().pressed;
                 let changed = self.scene.set_pressed(None);
                 let action = if pressed == target {
-                    target.map(|target| MonitorDockAction::Activate {
+                    target.map(|target| DockAction::Activate {
                         target,
                         owner: self.window.handle(),
                         anchor: self.activation_anchor(target, x, y),

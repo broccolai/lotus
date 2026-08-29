@@ -4,7 +4,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_CANCELMODE, WM_CAPTURECHANGED, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
 };
 
-use super::{PointerEvent, WindowEvent, push_window_event, with_window_state};
+use super::{PointerEvent, push_pointer_event, with_window_state};
 use crate::platform::windows::interaction::{
     capture_pointer, release_pointer, track_pointer_leave,
 };
@@ -38,7 +38,7 @@ pub(super) fn dispatch(hwnd: HWND, message: u32, lparam: LPARAM) -> Option<LRESU
         }
         _ => return None,
     };
-    push_window_event(hwnd, WindowEvent::Pointer(event));
+    push_pointer_event(hwnd, event);
     Some(LRESULT(0))
 }
 
@@ -59,7 +59,7 @@ fn cancel_pointer_if_pressed(hwnd: HWND) {
         was_pressed = state.left_button_pressed.replace(false);
     });
     if was_pressed {
-        push_window_event(hwnd, WindowEvent::Pointer(PointerEvent::Cancelled));
+        push_pointer_event(hwnd, PointerEvent::Cancelled);
     }
     release_pointer(hwnd);
 }

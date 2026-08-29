@@ -1,25 +1,22 @@
 use lotus_core::settings::DockSettings;
 use lotus_settings::scene::SettingsAction;
 use lotus_ui::frame::ScheduledSurface;
-use lotus_windows::clipboard::read_text;
+use lotus_windows::activation::launch_target;
 use lotus_windows::dialog::{confirm_reset_settings, show_error, show_information};
-use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
+use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, GraphicsDeviceHealth};
 use lotus_windows::interaction::request_exit;
 use lotus_windows::startup as startup_registration;
-use lotus_windows::window::{DockWindow, SettingsEvent, SettingsKey as WindowSettingsKey};
+use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
 
 use super::presentation::{apply_fullscreen_visibility, present_dock_change};
-use super::{controllers, update_events};
+use super::update_events;
 use crate::app::integration::{
     IntegrationRecovery, IntegrationRecoveryContext, IntegrationRecoverySource,
 };
-use crate::app::modules::ModuleHost;
-use crate::app::settings::{
-    ApplicationIconOutcome, ColorOutcome, ColorTarget, choose_application_icon,
-    choose_color, choose_mascot_image,
-};
-use crate::app::{AppError, DockRuntime};
+use crate::app::modules::{ModuleHost, SettingsIntent};
+use crate::app::settings::{ApplicationIconOutcome, ColorOutcome, ColorTarget};
+use crate::app::{AppError, DockRuntime, RestartError};
 
 pub(super) struct SettingsEventContext<'a> {
     pub(super) dock: &'a DockWindow,
@@ -31,140 +28,43 @@ pub(super) struct SettingsEventContext<'a> {
     pub(super) integration: &'a mut IntegrationRecovery,
 }
 
-pub(super) fn handle_settings_event(
-    event: SettingsEvent,
+pub(super) fn drain_settings_events(
     context: &mut SettingsEventContext<'_>,
-) -> Result<(), AppError> {
-    let action = match event {
-        SettingsEvent::Resized { width, height } => {
-            context
-                .auxiliary
-                .resize_settings(context.graphics, width, height)?;
-            return Ok(());
-        }
-        SettingsEvent::DpiChanged { dpi } => {
-            context.auxiliary.apply_settings_dpi(dpi);
-            return Ok(());
-        }
-        SettingsEvent::RenderRequested => {
-            context.auxiliary.invalidate_settings();
-            return Ok(());
-        }
-        SettingsEvent::PointerMoved { x, y } => {
-            let Some((x, y)) = u32::try_from(x).ok().zip(u32::try_from(y).ok()) else {
-                return Ok(());
-            };
-            if let Some(action) = context.auxiliary.move_settings_pointer(x, y) {
-                return apply_settings_action(action, context);
+) -> Result<bool, AppError> {
+    let events = context.auxiliary.drain_settings_events();
+    let had_events = !events.is_empty();
+    for event in events {
+        let result = (|| {
+            let intent = context.auxiliary.handle_settings_event(
+                event,
+                context.graphics,
+                context.dock_model.items(),
+            )?;
+            match intent {
+                SettingsIntent::None => Ok(()),
+                SettingsIntent::PasteQuery => {
+                    if let Ok(clipboard) = lotus_windows::clipboard::read_text() {
+                        context
+                            .auxiliary
+                            .paste_settings_query(&clipboard, context.dock_model.items());
+                    }
+                    Ok(())
+                }
+                SettingsIntent::Action(action) => execute_settings_action(action, context),
             }
-            return Ok(());
+        })();
+        match result {
+            Ok(()) => {}
+            Err(error)
+                if error.mark_graphics_lost(context.graphics)
+                    || context.graphics.health() == GraphicsDeviceHealth::Lost => {}
+            Err(error) => return Err(error),
         }
-        SettingsEvent::PointerLeft => {
-            context.auxiliary.settings_pointer_left();
-            return Ok(());
-        }
-        SettingsEvent::PointerPressed { x, y } => {
-            let Some((x, y)) = u32::try_from(x).ok().zip(u32::try_from(y).ok()) else {
-                return Ok(());
-            };
-            if let Some(action) = context.auxiliary.press_settings_pointer(x, y) {
-                return apply_settings_action(action, context);
-            }
-            return Ok(());
-        }
-        SettingsEvent::PointerReleased { x, y } => {
-            let Some(action) = context.auxiliary.release_settings_pointer(x, y) else {
-                return Ok(());
-            };
-            action
-        }
-        SettingsEvent::PointerCancelled => {
-            context.auxiliary.cancel_settings_pointer();
-            return Ok(());
-        }
-        SettingsEvent::Scroll { direction } => {
-            if context.auxiliary.scroll_settings(direction) {
-                hydrate_application_previews(context);
-            }
-            return Ok(());
-        }
-        SettingsEvent::CloseRequested => SettingsAction::Close,
-        SettingsEvent::TextInput(character) => {
-            append_application_query(character, context);
-            return Ok(());
-        }
-        SettingsEvent::KeyPressed(key) => {
-            if edit_application_query(key, context) {
-                return Ok(());
-            }
-            context.auxiliary.translate_settings_key(key)
-        }
-    };
-
-    apply_settings_action(action, context)
+    }
+    Ok(had_events)
 }
 
-fn edit_application_query(
-    key: WindowSettingsKey,
-    context: &mut SettingsEventContext<'_>,
-) -> bool {
-    match key {
-        WindowSettingsKey::Backspace => remove_application_query(context),
-        WindowSettingsKey::Paste => paste_application_query(context),
-        _ => return false,
-    }
-    true
-}
-
-fn append_application_query(character: char, context: &mut SettingsEventContext<'_>) {
-    if !context.auxiliary.settings_on_apps_page() || character.is_control() {
-        return;
-    }
-    update_application_query(
-        &format!("{}{character}", context.auxiliary.application_query()),
-        context,
-    );
-}
-
-fn remove_application_query(context: &mut SettingsEventContext<'_>) {
-    if !context.auxiliary.settings_on_apps_page() {
-        return;
-    }
-    let mut query = context.auxiliary.application_query().to_owned();
-    let _ = query.pop();
-    update_application_query(&query, context);
-}
-
-fn paste_application_query(context: &mut SettingsEventContext<'_>) {
-    if !context.auxiliary.settings_on_apps_page() {
-        return;
-    }
-
-    let Ok(clipboard) = read_text() else {
-        return;
-    };
-    let pasted = clipboard
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect::<String>();
-    if pasted.is_empty() {
-        return;
-    }
-
-    update_application_query(
-        &format!("{}{pasted}", context.auxiliary.application_query()),
-        context,
-    );
-}
-
-fn update_application_query(query: &str, context: &mut SettingsEventContext<'_>) {
-    if context.auxiliary.set_application_query(query) {
-        hydrate_application_previews(context);
-        context.auxiliary.invalidate_settings();
-    }
-}
-
-fn apply_settings_action(
+fn execute_settings_action(
     action: SettingsAction,
     context: &mut SettingsEventContext<'_>,
 ) -> Result<(), AppError> {
@@ -199,27 +99,18 @@ fn apply_settings_action(
             Ok(())
         }
         SettingsAction::ChooseMascotImage => {
-            let owner = context.auxiliary.settings_owner();
             let settings_directory = context.dock_model.settings_directory();
-            choose_mascot_image(
-                owner,
-                settings_directory,
-                context.auxiliary.settings_scene(),
-            );
+            context
+                .auxiliary
+                .choose_settings_mascot_image(settings_directory);
             context.auxiliary.invalidate_settings();
             Ok(())
         }
         SettingsAction::ChooseApplicationIcon(id) => {
-            let applications = context.auxiliary.settings_applications_snapshot();
-            let owner = context.auxiliary.settings_owner();
             let settings_directory = context.dock_model.settings_directory();
-            let outcome = choose_application_icon(
-                &id,
-                owner,
-                settings_directory,
-                context.auxiliary.settings_scene(),
-                &applications,
-            );
+            let outcome = context
+                .auxiliary
+                .choose_settings_application_icon(&id, settings_directory);
             if let ApplicationIconOutcome::Updated = outcome {
                 context.auxiliary.clear_icon_caches();
                 refresh_application_manager(context);
@@ -235,7 +126,7 @@ fn apply_settings_action(
             Ok(())
         }
         SettingsAction::CheckForUpdates => {
-            update_events::start_update_check(context.auxiliary.settings_runtime());
+            update_events::start_update_check(context.auxiliary);
             Ok(())
         }
         SettingsAction::RestartIntegration => {
@@ -434,7 +325,7 @@ fn reset_lotus(context: &mut SettingsEventContext<'_>) {
             ),
         );
     }
-    match controllers::restart_current_process() {
+    match restart_current_process() {
         Ok(()) => request_exit(0),
         Err(error) => {
             lotus_windows::diagnostics::record_error(
@@ -454,10 +345,7 @@ fn reset_lotus(context: &mut SettingsEventContext<'_>) {
 }
 
 fn apply_color_outcome(target: ColorTarget, context: &mut SettingsEventContext<'_>) {
-    let owner = context.auxiliary.settings_owner();
-    if let ColorOutcome::Changed =
-        choose_color(context.auxiliary.settings_scene(), owner, target)
-    {
+    if let ColorOutcome::Changed = context.auxiliary.choose_settings_color(target) {
         context.auxiliary.invalidate_settings();
     }
 }
@@ -484,7 +372,7 @@ fn apply_changed_settings(
             .auxiliary
             .mark_settings_applied(context.dock_model.settings().clone());
         context.auxiliary.hide_settings();
-        if let Err(error) = controllers::restart_current_process() {
+        if let Err(error) = restart_current_process() {
             context.auxiliary.open_settings_without_refresh(
                 context.dock_model.settings(),
                 context.graphics,
@@ -550,7 +438,7 @@ fn apply_changed_settings(
     context.auxiliary.invalidate_settings();
 
     if impact.restart_required {
-        if let Err(error) = controllers::restart_current_process() {
+        if let Err(error) = restart_current_process() {
             show_error(
                 context.auxiliary.settings_owner(),
                 "Lotus Settings",
@@ -560,6 +448,13 @@ fn apply_changed_settings(
             request_exit(0);
         }
     }
+    Ok(())
+}
+
+fn restart_current_process() -> Result<(), RestartError> {
+    let executable = std::env::current_exe()?;
+    let arguments = format!("--restart-after {} --open-settings", std::process::id());
+    launch_target(&executable.to_string_lossy(), Some(&arguments))?;
     Ok(())
 }
 

@@ -10,12 +10,12 @@ mod switcher;
 pub use context_menu::{ContextMenuWindow, PopupAlignment};
 pub use dock::DockWindow;
 pub use events::{
-    ContextMenuEvent, CursorMove, DockContextRequest, PointerEvent, SearchEdit,
-    SearchEvent, SelectionDirection, SettingsEvent, SettingsKey, SignedPoint,
-    SwitcherEvent, WindowEvent,
+    ContextMenuEvent, CursorMove, DockContextRequest, DockEvent, PointerEvent, SearchEdit,
+    SearchEvent, SelectionDirection, SettingsEvent, SettingsKey, SignedPoint, StatusEvent,
+    SwitcherEvent,
 };
 pub use lotus_dock::appbar::AppBarLayout;
 pub use search::SearchWindow;
 pub use settings::SettingsWindow;
-pub use status::StatusWindow;
+pub use status::{DockReplicaWindow, StatusWindow};
 pub use switcher::SwitcherWindow;

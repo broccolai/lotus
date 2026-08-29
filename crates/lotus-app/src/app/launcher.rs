@@ -3,19 +3,20 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use lotus_core::launcher_model::SelectionMove;
+use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit, SelectionMove};
 use lotus_core::settings::DockSettings;
 use lotus_search::command::CommandId;
 use lotus_search::controller::{SearchController, SearchPresentation};
 use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::theme::Theme;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::launch_target;
+use lotus_windows::clipboard::read_text;
 use lotus_windows::clock::local_time;
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError, SurfaceSize};
@@ -23,8 +24,8 @@ use lotus_windows::icon_hydrator::{LauncherIconClient, LauncherIconRequest};
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::window::{
-    DockContextRequest, DockWindow, SearchEvent, SearchWindow, SelectionDirection,
-    SignedPoint,
+    CursorMove as WindowCursorMove, DockContextRequest, DockWindow, SearchEdit,
+    SearchEvent, SearchWindow, SelectionDirection, SignedPoint,
 };
 
 use crate::app::AppError;
@@ -33,9 +34,9 @@ use crate::app::runtime::resize_launcher_surface;
 
 const MAX_HYDRATED_ICONS: usize = 64;
 
-type DockIcon = lotus_ui::icon::Icon<SvgAsset>;
-type LauncherResult = lotus_search::scene::LauncherResult<SvgAsset>;
-type LauncherScene = lotus_search::scene::LauncherScene<SvgAsset>;
+type DockIcon = lotus_ui::icon::Icon<EmbeddedIcon>;
+type LauncherResult = lotus_search::scene::LauncherResult<EmbeddedIcon>;
+type LauncherScene = lotus_search::scene::LauncherScene<EmbeddedIcon>;
 
 pub(super) struct LauncherRuntime {
     pub(super) window: SearchWindow,
@@ -58,6 +59,12 @@ pub(super) struct LauncherRuntime {
 pub(super) enum LauncherSubmission {
     Command(CommandId),
     Calculation(String),
+}
+
+pub(super) enum LauncherEventOutcome {
+    None,
+    Submission(LauncherSubmission),
+    OpenFileLocation { anchor: SignedPoint, path: String },
 }
 
 impl LauncherRuntime {
@@ -191,6 +198,10 @@ impl LauncherRuntime {
         Ok(true)
     }
 
+    pub(super) fn catalog_generation(&self) -> Option<u64> {
+        self.controller.catalog_generation()
+    }
+
     pub(super) fn drain_hydrated_icons(
         &mut self,
         results: impl IntoIterator<Item = lotus_windows::icon_hydrator::HydratedLauncherIcon>,
@@ -276,7 +287,7 @@ impl LauncherRuntime {
         if let Some(calculation) = self.controller.selected_calculation() {
             return vec![LauncherResult::calculator(
                 format!("= {}", calculation.value),
-                DockIcon::Embedded(SvgAsset::FluentCalculator),
+                DockIcon::Embedded(EmbeddedIcon::FluentCalculator),
             )];
         }
         if self.controller.is_command_mode() {
@@ -407,6 +418,96 @@ impl LauncherRuntime {
             SelectionDirection::Next => SelectionMove::Next,
         });
         self.rebuild_scene(self.window.dpi())
+    }
+
+    pub(super) fn handle_event(
+        &mut self,
+        event: SearchEvent,
+        dock: &DockWindow,
+        graphics: &mut DeviceState,
+        dock_model: &DockRuntime,
+    ) -> Result<LauncherEventOutcome, AppError> {
+        if let SearchEvent::ContextMenuRequested(request) = event {
+            let context = self.file_location_context(request)?;
+            return Ok(match context {
+                Some((anchor, path)) => {
+                    LauncherEventOutcome::OpenFileLocation { anchor, path }
+                }
+                None => LauncherEventOutcome::None,
+            });
+        }
+
+        let mut scene_changed = false;
+        let mut submission = None;
+        match event {
+            SearchEvent::TextInput(character) => {
+                self.controller.push_character(character);
+                self.rebuild_scene(self.window.dpi())?;
+                scene_changed = true;
+            }
+            SearchEvent::Edit(edit) => {
+                if self.controller.edit_query(model_query_edit(edit)) {
+                    self.rebuild_scene(self.window.dpi())?;
+                    scene_changed = true;
+                }
+            }
+            SearchEvent::PasteRequested => {
+                if let Ok(text) = read_text()
+                    && self.controller.insert_text(&text)
+                {
+                    self.rebuild_scene(self.window.dpi())?;
+                    scene_changed = true;
+                }
+            }
+            SearchEvent::MoveSelection(direction) => {
+                self.move_selection(direction)?;
+                scene_changed = true;
+            }
+            SearchEvent::DismissRequested => self.hide(),
+            SearchEvent::SubmitRequested => submission = self.submit(dock.handle()),
+            SearchEvent::Resized { width, height } => {
+                if let (Some(size), Some(surface)) =
+                    (SurfaceSize::new(width, height), self.surface.as_mut())
+                {
+                    resize_launcher_surface(graphics, surface.value_mut(), size)?;
+                    scene_changed = true;
+                }
+            }
+            SearchEvent::DpiChanged { dpi } => {
+                self.rebuild_scene(dpi)?;
+                scene_changed = true;
+            }
+            SearchEvent::ClockRefreshRequested => {
+                scene_changed = self.scene.as_mut().is_some_and(|scene| {
+                    scene
+                        .set_footer_time(local_time(dock_model.settings().use_24_hour_time))
+                });
+            }
+            SearchEvent::FocusRefreshRequested => {
+                let _ = self.window.focus();
+            }
+            SearchEvent::RenderRequested => scene_changed = true,
+            SearchEvent::PointerMoved { x, y } => {
+                let hovered = self.result_at(x, y);
+                scene_changed = self.set_hovered_result(hovered);
+            }
+            SearchEvent::PointerLeft => scene_changed = self.set_hovered_result(None),
+            SearchEvent::PointerReleased { x, y } => {
+                if let Some(index) = self.result_at(x, y) {
+                    let _ = self.select_result(index)?;
+                    submission = self.submit(dock.handle());
+                }
+            }
+            SearchEvent::ContextMenuRequested(_) => {
+                unreachable!("handled before event routing")
+            }
+        }
+
+        if scene_changed && self.is_visible() {
+            self.sync_size(dock, graphics)?;
+            self.invalidate();
+        }
+        Ok(submission.map_or(LauncherEventOutcome::None, LauncherEventOutcome::Submission))
     }
 
     pub(super) fn result_at(&self, x: i32, y: i32) -> Option<usize> {
@@ -562,7 +663,7 @@ impl LauncherRuntime {
             .surface
             .as_mut()
             .ok_or(AppError::InvalidLauncherScene)?;
-        let content = scene.render_presentation(SvgAsset::FluentSearch);
+        let content = scene.render_presentation(EmbeddedIcon::FluentSearch);
         let motion = scene.presentation();
         let render = |surface: &mut LauncherCompositionSurfaceState| {
             surface.render_scene(
@@ -624,6 +725,21 @@ impl LauncherRuntime {
     }
 }
 
+const fn model_query_edit(edit: SearchEdit) -> QueryEdit {
+    match edit {
+        SearchEdit::DeleteBackward => QueryEdit::DeleteBackward,
+        SearchEdit::DeletePreviousWord => QueryEdit::DeletePreviousWord,
+        SearchEdit::DeleteForward => QueryEdit::DeleteForward,
+        SearchEdit::MoveCursor(movement) => QueryEdit::MoveCursor(match movement {
+            WindowCursorMove::Home => ModelCursorMove::Home,
+            WindowCursorMove::End => ModelCursorMove::End,
+            WindowCursorMove::Previous => ModelCursorMove::Previous,
+            WindowCursorMove::Next => ModelCursorMove::Next,
+        }),
+        SearchEdit::SelectAll => QueryEdit::SelectAll,
+    }
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct LauncherIconKey {
     identity: String,
@@ -670,14 +786,14 @@ fn launcher_icon_size(dpi: u32) -> u32 {
 
 const fn command_icon(command: CommandId) -> DockIcon {
     let asset = match command {
-        CommandId::OpenSettings => SvgAsset::FluentSettings,
-        CommandId::OpenVolumeMixer => SvgAsset::FluentVolume,
-        CommandId::OpenNotificationArea => SvgAsset::FluentTray,
-        CommandId::ShowDesktop => SvgAsset::FluentDesktop,
-        CommandId::LockComputer => SvgAsset::FluentLock,
-        CommandId::RestartComputer => SvgAsset::FluentRestart,
-        CommandId::ShutDownComputer => SvgAsset::FluentPower,
-        CommandId::QuitLotus => SvgAsset::FluentDismiss,
+        CommandId::OpenSettings => EmbeddedIcon::FluentSettings,
+        CommandId::OpenVolumeMixer => EmbeddedIcon::FluentVolume,
+        CommandId::OpenNotificationArea => EmbeddedIcon::FluentTray,
+        CommandId::ShowDesktop => EmbeddedIcon::FluentDesktop,
+        CommandId::LockComputer => EmbeddedIcon::FluentLock,
+        CommandId::RestartComputer => EmbeddedIcon::FluentRestart,
+        CommandId::ShutDownComputer => EmbeddedIcon::FluentPower,
+        CommandId::QuitLotus => EmbeddedIcon::FluentDismiss,
     };
     DockIcon::Embedded(asset)
 }

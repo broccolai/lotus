@@ -18,8 +18,7 @@ use crate::platform::windows::native_window::{
     Activation, NativeWindow, WindowCreation, WindowHandle,
 };
 use crate::window::procedure::{
-    PointerEvent, SEARCH_OUTSIDE_CLICK_MESSAGE, SearchEvent, WindowClass, WindowEvent,
-    WindowState,
+    SEARCH_OUTSIDE_CLICK_MESSAGE, SearchEvent, WindowClass, WindowState,
 };
 
 const NORMAL_TOP_MINIMUM_DIPS: u32 = 52;
@@ -108,45 +107,11 @@ impl SearchWindow {
     }
 
     pub fn drain_events(&mut self) -> impl Iterator<Item = SearchEvent> + '_ {
-        self.window
-            .state_mut()
-            .drain()
-            .filter_map(search_event_from_window_event)
+        self.window.state_mut().drain_search().into_iter()
     }
 
     pub fn has_pending_events(&self) -> bool {
         self.window.state().has_pending_events()
-    }
-}
-
-fn search_event_from_window_event(event: WindowEvent) -> Option<SearchEvent> {
-    match event {
-        WindowEvent::Search(event) => Some(event),
-        WindowEvent::Resized { width, height } => {
-            Some(SearchEvent::Resized { width, height })
-        }
-        WindowEvent::DpiChanged { dpi } => Some(SearchEvent::DpiChanged { dpi }),
-        WindowEvent::RenderRequested => Some(SearchEvent::RenderRequested),
-        WindowEvent::Pointer(PointerEvent::Moved { x, y }) => {
-            Some(SearchEvent::PointerMoved { x, y })
-        }
-        WindowEvent::Pointer(PointerEvent::Left) => Some(SearchEvent::PointerLeft),
-        WindowEvent::Pointer(PointerEvent::LeftButtonReleased { x, y }) => {
-            Some(SearchEvent::PointerReleased { x, y })
-        }
-        WindowEvent::ContextMenuRequested(request) => {
-            Some(SearchEvent::ContextMenuRequested(request))
-        }
-        WindowEvent::Pointer(
-            PointerEvent::LeftButtonPressed { .. } | PointerEvent::Cancelled,
-        )
-        | WindowEvent::ContextMenu(_)
-        | WindowEvent::Settings(_)
-        | WindowEvent::Switcher(_)
-        | WindowEvent::PlacementRefreshRequested
-        | WindowEvent::AnimationFrame
-        | WindowEvent::MascotAnimationDeadline
-        | WindowEvent::StatusRefreshRequested => None,
     }
 }
 

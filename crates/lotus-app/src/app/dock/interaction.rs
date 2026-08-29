@@ -5,12 +5,14 @@ use lotus_core::dock::DockItem;
 use lotus_core::window::{TrackedWindowKey, WindowId, WindowInfo};
 use lotus_dock::interaction::map_visual_insertion_slot;
 use lotus_dock::popup::order_picker_windows;
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::foreground_window;
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
-use lotus_windows::window::{DockContextRequest, PopupAlignment, SignedPoint};
+use lotus_windows::window::{
+    DockContextRequest, PointerEvent, PopupAlignment, SignedPoint,
+};
 
 use super::projection::{media_source_matches_item, popup_overlap, status_popup_center};
 use super::{DockRuntime, NATIVE_ICON_SAMPLE_SCALE};
@@ -169,7 +171,10 @@ impl DockRuntime {
                 .ok()
                 .flatten()
         })
-        .map_or(DockIcon::Embedded(SvgAsset::FluentOpen), DockIcon::Raster);
+        .map_or(
+            DockIcon::Embedded(EmbeddedIcon::FluentOpen),
+            DockIcon::Raster,
+        );
         ordered
             .into_iter()
             .map(|window| {
@@ -281,6 +286,20 @@ impl DockRuntime {
         let target = self.hit_test(x, y);
         self.interaction
             .pointer_moved(&mut self.scene, target, x, y)
+    }
+
+    pub(in crate::app) fn handle_pointer_event(
+        &mut self,
+        event: PointerEvent,
+    ) -> Result<super::DockInteractionOutcome, AppError> {
+        let (changed, effect) = match event {
+            PointerEvent::Moved { x, y } => (self.pointer_moved(x, y), None),
+            PointerEvent::Left => (self.pointer_left(), None),
+            PointerEvent::LeftButtonPressed { x, y } => (self.pointer_pressed(x, y), None),
+            PointerEvent::LeftButtonReleased { x, y } => self.pointer_released(x, y)?,
+            PointerEvent::Cancelled => (self.pointer_cancelled(), None),
+        };
+        Ok(super::DockInteractionOutcome { changed, effect })
     }
 
     pub(in crate::app) fn pointer_left(&mut self) -> bool {

@@ -11,7 +11,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::w;
 
-use super::procedure::{WindowClass, WindowEvent, WindowState, apply_rounded_region};
+use super::procedure::{
+    DockEvent, StatusEvent, WindowClass, WindowState, apply_rounded_region,
+};
 use crate::NativeError;
 use crate::platform::windows::backdrop;
 use crate::platform::windows::display::{Display, primary_display, secondary_displays};
@@ -37,11 +39,12 @@ impl StatusWindow {
     pub(super) fn create_secondary_displays(
         class: &Rc<WindowClass>,
         owner: HWND,
-    ) -> Result<Vec<Self>> {
+    ) -> Result<Vec<DockReplicaWindow>> {
         secondary_displays()?
             .into_iter()
             .map(|display| {
                 Self::create_on_display(Rc::clone(class), owner, display, Some(display))
+                    .map(DockReplicaWindow)
             })
             .collect()
     }
@@ -247,8 +250,8 @@ impl StatusWindow {
         self.window.is_visible()
     }
 
-    pub fn drain_events(&mut self) -> impl Iterator<Item = WindowEvent> + '_ {
-        self.window.state_mut().drain()
+    pub fn drain_events(&mut self) -> impl Iterator<Item = StatusEvent> + '_ {
+        self.window.state_mut().drain_status().into_iter()
     }
 
     pub fn has_pending_events(&self) -> bool {
@@ -261,6 +264,49 @@ impl StatusWindow {
         } else {
             WindowLayer::Topmost
         }
+    }
+}
+
+pub struct DockReplicaWindow(StatusWindow);
+
+impl DockReplicaWindow {
+    pub fn handle(&self) -> WindowHandle {
+        self.0.handle()
+    }
+    pub fn dpi(&self) -> u32 {
+        self.0.dpi()
+    }
+    pub fn client_to_screen(
+        &self,
+        point: super::SignedPoint,
+    ) -> Result<super::SignedPoint> {
+        self.0.client_to_screen(point)
+    }
+    pub fn place_replica(
+        &self,
+        dock: HWND,
+        size: NonZeroPhysicalSize,
+        settings: &DockSettings,
+    ) -> Result<()> {
+        self.0.place_replica(dock, size, settings)
+    }
+    pub fn set_visible(&self, visible: bool) {
+        self.0.set_visible(visible);
+    }
+    pub fn set_fullscreen_occluded(&self, occluded: bool) -> Result<()> {
+        self.0.set_fullscreen_occluded(occluded)
+    }
+    pub fn is_fullscreen_occluded(&self) -> bool {
+        self.0.is_fullscreen_occluded()
+    }
+    pub fn is_visible(&self) -> bool {
+        self.0.is_visible()
+    }
+    pub fn drain_events(&mut self) -> impl Iterator<Item = DockEvent> + '_ {
+        self.0.window.state_mut().drain_dock().into_iter()
+    }
+    pub fn has_pending_events(&self) -> bool {
+        self.0.has_pending_events()
     }
 }
 

@@ -1,4 +1,4 @@
-pub mod assets;
+mod assets;
 mod composition_surface;
 pub mod context_menu_surface;
 mod device;
@@ -10,5 +10,6 @@ pub mod settings_surface;
 pub mod surface;
 pub mod switcher_surface;
 
+pub use assets::AssetError;
 pub use device::{DeviceState, GraphicsDevice, GraphicsDeviceError, GraphicsDeviceHealth};
 pub use surface::{CompositionSurfaceState, SurfaceError, SurfaceSize};

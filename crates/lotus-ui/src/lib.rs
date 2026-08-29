@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod embedded_icon;
 pub mod frame;
 pub mod geometry;
 pub mod icon;

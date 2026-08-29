@@ -1,15 +1,14 @@
-use lotus_settings::scene::SettingsUpdateActivity;
 use lotus_windows::dialog::{confirm_install_update, show_error, show_information};
 use lotus_windows::interaction::request_exit;
 use lotus_windows::update::{UpdateResult, UpdateStatus, is_installed, launch_installer};
 
-use crate::app::settings::SettingsRuntime;
+use crate::app::modules::ModuleHost;
 
-pub(super) fn start_update_check(settings: &mut SettingsRuntime) {
-    let owner = settings.owner();
-    match settings.start_update_check() {
+pub(super) fn start_update_check(auxiliary: &mut ModuleHost) {
+    let owner = auxiliary.settings_owner();
+    match auxiliary.start_update_check() {
         Ok(true) => {
-            settings.invalidate();
+            auxiliary.invalidate_settings();
         }
         Ok(false) => {}
         Err(error) => {
@@ -18,14 +17,14 @@ pub(super) fn start_update_check(settings: &mut SettingsRuntime) {
     }
 }
 
-pub(super) fn handle_update_results(settings: &mut SettingsRuntime) {
-    for result in settings.drain_update_results() {
+pub(super) fn handle_update_results(auxiliary: &mut ModuleHost) {
+    for result in auxiliary.drain_update_results() {
         match result {
             UpdateResult::Checked(result) => {
-                handle_update_check(result, settings);
+                handle_update_check(result, auxiliary);
             }
             UpdateResult::Staged(result) => {
-                handle_staged_update(result, settings);
+                handle_staged_update(result, auxiliary);
             }
         }
     }
@@ -33,13 +32,13 @@ pub(super) fn handle_update_results(settings: &mut SettingsRuntime) {
 
 fn handle_update_check(
     result: Result<UpdateStatus, lotus_windows::update::UpdateError>,
-    settings: &mut SettingsRuntime,
+    auxiliary: &mut ModuleHost,
 ) {
-    let owner = settings.owner();
+    let owner = auxiliary.settings_owner();
     let installed = match is_installed() {
         Ok(installed) => installed,
         Err(error) => {
-            reset_update_activity(settings);
+            reset_update_activity(auxiliary);
             show_error(owner, "Lotus Update", &error.to_string());
             return;
         }
@@ -47,7 +46,7 @@ fn handle_update_check(
 
     match result {
         Ok(UpdateStatus::Current { release }) if installed => {
-            reset_update_activity(settings);
+            reset_update_activity(auxiliary);
             show_information(
                 owner,
                 "Lotus is up to date",
@@ -58,10 +57,10 @@ fn handle_update_check(
             );
         }
         Ok(UpdateStatus::Current { release }) => {
-            offer_update(settings, release, false);
+            offer_update(auxiliary, release, false);
         }
         Ok(UpdateStatus::Ahead { current, release }) => {
-            reset_update_activity(settings);
+            reset_update_activity(auxiliary);
             show_information(
                 owner,
                 "Lotus is ahead of the latest release",
@@ -72,10 +71,10 @@ fn handle_update_check(
             );
         }
         Ok(UpdateStatus::Available { release, .. }) => {
-            offer_update(settings, release, installed);
+            offer_update(auxiliary, release, installed);
         }
         Err(error) => {
-            reset_update_activity(settings);
+            reset_update_activity(auxiliary);
             show_error(
                 owner,
                 "Lotus Update",
@@ -86,23 +85,23 @@ fn handle_update_check(
 }
 
 fn offer_update(
-    settings: &mut SettingsRuntime,
+    auxiliary: &mut ModuleHost,
     release: lotus_windows::update::Release,
     installed: bool,
 ) {
-    let owner = settings.owner();
+    let owner = auxiliary.settings_owner();
     if !confirm_install_update(owner, &release.version, installed) {
-        reset_update_activity(settings);
+        reset_update_activity(auxiliary);
         return;
     }
 
-    match settings.start_update_download(release) {
+    match auxiliary.start_update_download(release) {
         Ok(true) => {
-            settings.invalidate();
+            auxiliary.invalidate_settings();
         }
         Ok(false) => {}
         Err(error) => {
-            reset_update_activity(settings);
+            reset_update_activity(auxiliary);
             show_error(owner, "Lotus Update", &error.to_string());
         }
     }
@@ -110,19 +109,19 @@ fn offer_update(
 
 fn handle_staged_update(
     result: Result<lotus_windows::update::StagedUpdate, lotus_windows::update::UpdateError>,
-    settings: &mut SettingsRuntime,
+    auxiliary: &mut ModuleHost,
 ) {
-    let owner = settings.owner();
+    let owner = auxiliary.settings_owner();
     match result {
         Ok(staged) => match launch_installer(&staged) {
             Ok(()) => request_exit(0),
             Err(error) => {
-                reset_update_activity(settings);
+                reset_update_activity(auxiliary);
                 show_error(owner, "Lotus Update", &error.to_string());
             }
         },
         Err(error) => {
-            reset_update_activity(settings);
+            reset_update_activity(auxiliary);
             show_error(
                 owner,
                 "Lotus Update",
@@ -132,7 +131,6 @@ fn handle_staged_update(
     }
 }
 
-fn reset_update_activity(settings: &mut SettingsRuntime) {
-    settings.set_update_activity(SettingsUpdateActivity::Idle);
-    settings.invalidate();
+fn reset_update_activity(auxiliary: &mut ModuleHost) {
+    auxiliary.reset_update_activity();
 }

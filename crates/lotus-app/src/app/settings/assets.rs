@@ -1,6 +1,6 @@
 use lotus_settings::scene::SettingsAssets;
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_ui::frame::{FrameOutcome, FramePass};
-use lotus_windows::graphics::assets::SvgAsset;
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{DeviceState, SurfaceError};
 
@@ -18,8 +18,8 @@ pub(super) fn render_frame(
 
     let presentation = runtime.scene.presentation(
         &SettingsAssets {
-            lotus: SvgAsset::LotusPixel,
-            search: SvgAsset::FluentSearch,
+            lotus: EmbeddedIcon::LotusPixel,
+            search: EmbeddedIcon::FluentSearch,
         },
         lotus_windows::backdrop::settings_uses_translucent_material(runtime.scene.draft()),
     );

@@ -124,10 +124,7 @@ impl IntegrationRecovery {
             SystemLifecycleHealth::Healthy => "healthy",
             SystemLifecycleHealth::Degraded => "degraded",
         };
-        let input = if auxiliary
-            .input()
-            .is_none_or(lotus_windows::input::InputController::is_healthy)
-        {
+        let input = if auxiliary.input_healthy() {
             "healthy"
         } else {
             "degraded"
@@ -260,11 +257,7 @@ impl IntegrationRecovery {
                 "degraded"
             }
         };
-        let input_health = if context
-            .auxiliary
-            .input()
-            .is_none_or(lotus_windows::input::InputController::is_healthy)
-        {
+        let input_health = if context.auxiliary.input_healthy() {
             "healthy"
         } else {
             degraded = true;

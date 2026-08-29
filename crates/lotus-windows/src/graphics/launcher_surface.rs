@@ -1,3 +1,4 @@
+use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_ui::presentation::Presentation;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::DirectComposition::{
@@ -5,7 +6,6 @@ use windows::Win32::Graphics::DirectComposition::{
 };
 use windows::core::Error as WindowsError;
 
-use super::assets::SvgAsset;
 use super::composition_surface::{CompositionSurfaceCore, RecoverableSurface};
 use super::device::{DeviceLost, GraphicsDevice};
 use super::presentation_renderer::{
@@ -55,7 +55,7 @@ impl LauncherCompositionSurface {
 
     fn render(
         &mut self,
-        presentation: &Presentation<SvgAsset>,
+        presentation: &Presentation<EmbeddedIcon>,
         scale: f32,
         opacity: f32,
         needs_animation: bool,
@@ -123,7 +123,7 @@ impl LauncherCompositionSurfaceState {
 
     pub fn render_scene(
         &mut self,
-        presentation: &Presentation<SvgAsset>,
+        presentation: &Presentation<EmbeddedIcon>,
         scale: f32,
         opacity: f32,
         needs_animation: bool,
