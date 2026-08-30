@@ -1,30 +1,28 @@
-use lotus_ui::frame::{FrameOutcome, FramePass, FrameTrigger, ScheduledSurface};
+use lotus_ui::frame::{FrameTrigger, ScheduledSurface};
 use lotus_windows::appbar::fullscreen_notification;
-use lotus_windows::graphics::recovery::{
-    GraphicsRecoverySchedule, GraphicsRecoveryScheduler,
-};
 use lotus_windows::graphics::{
     CompositionSurfaceState, DeviceState, GraphicsDeviceHealth, SurfaceError,
 };
-use lotus_windows::icon_hydrator::is_icon_hydration_wake;
-use lotus_windows::input::{UiHeartbeatTimer, is_input_wake};
+use lotus_windows::input::UiHeartbeatTimer;
 use lotus_windows::interaction::{NativeMessage, next_message};
-use lotus_windows::media::is_media_wake;
-use lotus_windows::responsiveness::{METRICS, SlowUiEvent, UiMessagePhase};
-use lotus_windows::search_catalog::is_search_catalog_wake;
-use lotus_windows::taskbar_badges::is_taskbar_badge_wake;
-use lotus_windows::update::is_update_wake;
+use lotus_windows::responsiveness::{METRICS, UiMessagePhase};
 use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
 
 use super::work::RuntimeWork;
-use super::{
-    dock_events, present_dock_change, presentation, search_events, settings_events,
-    update_events, window_events,
-};
+use super::{dock_events, presentation, settings_events, window_events};
 use crate::app::integration::IntegrationRecoveryContext;
 use crate::app::modules::ModuleHost;
 use crate::app::{AppError, DockRuntime, RuntimeServices};
+
+mod frame;
+mod graphics_recovery;
+mod timing;
+mod wakes;
+
+use graphics_recovery::GraphicsRecoveryScheduler;
+use timing::MessageTiming;
+use wakes::{WakeEvents, is_input_wake};
 
 pub(crate) fn run_message_loop(
     runtime: &mut RuntimeServices<'_>,
@@ -59,48 +57,7 @@ pub(crate) fn flush_frame(
     auxiliary: &mut ModuleHost,
     trigger: FrameTrigger,
 ) -> Result<(), AppError> {
-    if graphics.health() == GraphicsDeviceHealth::Lost {
-        dock.set_animation_active(false)?;
-        return Ok(());
-    }
-    let mut pass = FramePass::new(trigger);
-    let device_generation = graphics.generation();
-    let animation_allowed = !dock.is_fullscreen_occluded();
-    pass.render(surface, |surface| {
-        presentation::render_surface(graphics, surface, dock_model).map(|outcome| {
-            match outcome {
-                FrameOutcome::Complete {
-                    continues_animation,
-                } => FrameOutcome::complete(continues_animation && animation_allowed),
-                FrameOutcome::Retry => FrameOutcome::Retry,
-            }
-        })
-    })?;
-    match auxiliary.render_frames(&mut pass, graphics) {
-        Ok(()) => {}
-        Err(AppError::Surface(SurfaceError::DeviceLost(loss))) => {
-            graphics.mark_lost(loss);
-            dock.set_animation_active(false)?;
-            return Ok(());
-        }
-        Err(error) => return Err(error),
-    }
-
-    if graphics.generation() != device_generation {
-        surface.invalidate();
-        auxiliary.invalidate_surfaces();
-        pass.request_next_frame();
-    }
-
-    dock.set_animation_active(pass.animation_active())?;
-    let mascot_visible = (dock.is_visible() && !dock.is_fullscreen_occluded())
-        || auxiliary.has_visible_monitor_dock();
-    dock.set_mascot_animation_delay(
-        mascot_visible
-            .then(|| dock_model.mascot_animation_delay())
-            .flatten(),
-    )?;
-    Ok(())
+    frame::flush_frame(dock, graphics, surface, dock_model, auxiliary, trigger)
 }
 
 struct MessageLoop<'a, 'runtime> {
@@ -285,20 +242,6 @@ impl MessageLoop<'_, '_> {
         }
     }
 
-    fn handle_graphics_recovery_wake(
-        &mut self,
-        message: &NativeMessage,
-    ) -> Result<bool, AppError> {
-        if !self.graphics_recovery.is_wake(message.id()) {
-            return Ok(false);
-        }
-        if !self.graphics_recovery.take_wake(message.parameter()) {
-            return Ok(true);
-        }
-        self.retry_graphics_recovery()?;
-        Ok(true)
-    }
-
     fn handle_shell_fullscreen(&mut self, message: &NativeMessage, work: &mut RuntimeWork) {
         if let Some(fullscreen) = fullscreen_notification(
             message.is_thread_message(),
@@ -409,79 +352,6 @@ impl MessageLoop<'_, '_> {
         Ok(true)
     }
 
-    fn process_wakes(&mut self, wakes: WakeEvents) -> Result<bool, AppError> {
-        let mut changed = false;
-        let mut presented_size = self.dock_model.scene().desired_size();
-        if wakes.update {
-            update_events::handle_update_results(self.auxiliary);
-            changed = true;
-        }
-        if wakes.badges
-            && let Some(controller) = self.runtime.taskbar_badges
-            && let Ok(snapshot) = controller.snapshot()
-        {
-            self.dock_model.set_notifications(snapshot);
-            self.render_dock();
-            changed = true;
-        }
-        if wakes.media && self.auxiliary.drain_media(self.dock_model) {
-            present_dock_change(
-                self.dock,
-                self.graphics,
-                self.surface,
-                self.auxiliary,
-                self.dock_model,
-            )?;
-            presented_size = self.dock_model.scene().desired_size();
-            self.render_dock();
-            changed = true;
-        }
-        if wakes.search_catalog {
-            let catalog_changed = search_events::refresh_catalog(
-                self.dock,
-                self.graphics,
-                self.surface,
-                self.window_tracker.current_windows(),
-                self.dock_model,
-                self.auxiliary,
-            )?;
-            if catalog_changed {
-                presented_size = self.dock_model.scene().desired_size();
-                changed = true;
-            }
-        }
-        if wakes.icon_hydration {
-            self.auxiliary.drain_hydrated_icons(self.dock_model)?;
-            changed = true;
-        }
-
-        if self.dock_model.scene().desired_size() != presented_size {
-            present_dock_change(
-                self.dock,
-                self.graphics,
-                self.surface,
-                self.auxiliary,
-                self.dock_model,
-            )?;
-            changed = true;
-        }
-
-        Ok(changed)
-    }
-
-    fn handle_input_wake(&mut self) -> bool {
-        self.auxiliary.handle_input_actions(
-            self.dock,
-            self.window_tracker,
-            self.dock_model,
-            self.graphics,
-        )
-    }
-
-    fn render_dock(&mut self) {
-        self.surface.invalidate();
-    }
-
     fn drain_settings_events(&mut self) -> Result<bool, AppError> {
         let had_events = settings_events::drain_settings_events(
             &mut settings_events::SettingsEventContext {
@@ -511,69 +381,6 @@ impl MessageLoop<'_, '_> {
         Ok(())
     }
 
-    fn schedule_graphics_recovery(&mut self) {
-        if self.graphics.health() != GraphicsDeviceHealth::Lost {
-            return;
-        }
-        match self.graphics_recovery.schedule() {
-            GraphicsRecoverySchedule::Scheduled { attempt } => {
-                lotus_windows::diagnostics::record_diagnostic(
-                    "graphics.recovery_scheduled",
-                    &format!("attempt={attempt}"),
-                );
-            }
-            GraphicsRecoverySchedule::Exhausted => {
-                lotus_windows::diagnostics::record_diagnostic(
-                    "graphics.recovery_exhausted",
-                    "attempts=3",
-                );
-            }
-            GraphicsRecoverySchedule::Pending
-            | GraphicsRecoverySchedule::AlreadyExhausted
-            | GraphicsRecoverySchedule::Unavailable => {}
-        }
-    }
-
-    fn retry_graphics_recovery(&mut self) -> Result<(), AppError> {
-        if self.graphics.health() != GraphicsDeviceHealth::Lost {
-            self.graphics_recovery.reset();
-            return Ok(());
-        }
-        match self.graphics.recover() {
-            Ok(()) => match self.recover_surfaces() {
-                Ok(()) => {
-                    self.graphics_recovery.reset();
-                    self.surface.invalidate();
-                    self.auxiliary.invalidate_surfaces();
-                    self.last_monitor_key = None;
-                    lotus_windows::diagnostics::record_diagnostic(
-                        "graphics.recovered",
-                        &format!("generation={}", self.graphics.generation()),
-                    );
-                }
-                Err(AppError::Surface(SurfaceError::DeviceLost(loss))) => {
-                    self.graphics.mark_lost(loss);
-                    self.schedule_graphics_recovery();
-                }
-                Err(error) => return Err(error),
-            },
-            Err(error) => {
-                lotus_windows::diagnostics::record_error(
-                    "graphics.recovery_failed",
-                    &error,
-                );
-                self.schedule_graphics_recovery();
-            }
-        }
-        Ok(())
-    }
-
-    fn recover_surfaces(&mut self) -> Result<(), AppError> {
-        let device = self.graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-        self.surface.value_mut().recover(device)?;
-        self.auxiliary.recover_surfaces(device)
-    }
-
     fn recover_integration(
         &mut self,
         source: crate::app::integration::IntegrationRecoverySource,
@@ -600,114 +407,10 @@ impl MessageLoop<'_, '_> {
         self.last_monitor_key = None;
         work.insert(RuntimeWork::FRAME);
     }
-
-    fn record_slow_message(
-        &self,
-        message: &NativeMessage,
-        total: std::time::Duration,
-        timing: MessageTiming,
-        graphics_generation: u64,
-    ) {
-        let total_us = duration_micros(total);
-        if total_us < 50_000 {
-            return;
-        }
-        let (phase, phase_us) = timing.slowest();
-        let (aux_dirty, aux_animating, visible_features) =
-            self.auxiliary.diagnostic_surface_masks();
-        let dirty_surface_mask = aux_dirty | u32::from(self.surface.is_dirty());
-        let animating_surface_mask = aux_animating | u32::from(self.surface.is_animating());
-        METRICS.record_slow_ui_event(SlowUiEvent {
-            timestamp_ms: lotus_windows::interaction::monotonic_millis(),
-            message_id: message.id(),
-            category: if message.is_thread_message() {
-                "thread"
-            } else {
-                "window"
-            },
-            total_us,
-            accounted_us: timing.accounted_us,
-            slowest_phase: phase.name(),
-            slowest_phase_us: phase_us,
-            window_count: self.window_tracker.current_windows().len(),
-            monitor_replica_count: self.auxiliary.monitor_replica_count(),
-            dirty_surface_mask,
-            animating_surface_mask,
-            graphics_generation: self.graphics.generation(),
-            graphics_recovered: graphics_generation != self.graphics.generation(),
-            visible_feature_mask: visible_features | u32::from(self.dock.is_visible()),
-            input_fail_open: !self.auxiliary.input_healthy(),
-        });
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-struct MessageTiming {
-    phase_us: [u64; 9],
-    accounted_us: u64,
 }
 
 #[derive(Clone, Copy, Default)]
 struct EventDrainOutcome {
     animation_tick: bool,
     changed: bool,
-}
-
-impl MessageTiming {
-    fn record(&mut self, phase: UiMessagePhase, duration: std::time::Duration) {
-        let micros = METRICS.record_ui_phase(phase, duration);
-        self.phase_us[phase.index()] = self.phase_us[phase.index()].saturating_add(micros);
-        self.accounted_us = self.accounted_us.saturating_add(micros);
-    }
-
-    fn slowest(self) -> (UiMessagePhase, u64) {
-        [
-            UiMessagePhase::Tracker,
-            UiMessagePhase::Dispatch,
-            UiMessagePhase::WindowDrain,
-            UiMessagePhase::SettingsDrain,
-            UiMessagePhase::SwitcherDrain,
-            UiMessagePhase::MonitorDrain,
-            UiMessagePhase::Wake,
-            UiMessagePhase::MonitorSync,
-            UiMessagePhase::Frame,
-        ]
-        .into_iter()
-        .map(|phase| (phase, self.phase_us[phase.index()]))
-        .max_by_key(|(_, micros)| *micros)
-        .unwrap_or((UiMessagePhase::Dispatch, 0))
-    }
-}
-
-fn duration_micros(duration: std::time::Duration) -> u64 {
-    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
-}
-
-#[derive(Clone, Copy)]
-struct WakeEvents {
-    search_catalog: bool,
-    update: bool,
-    media: bool,
-    badges: bool,
-    icon_hydration: bool,
-}
-
-impl WakeEvents {
-    const fn any(self) -> bool {
-        self.search_catalog
-            || self.update
-            || self.media
-            || self.badges
-            || self.icon_hydration
-    }
-
-    fn from_message(runtime: &RuntimeServices<'_>, message: u32) -> Self {
-        Self {
-            search_catalog: is_search_catalog_wake(message),
-            update: is_update_wake(message),
-            media: is_media_wake(message),
-            badges: runtime.taskbar_badges.is_some() && is_taskbar_badge_wake(message),
-            icon_hydration: is_icon_hydration_wake(message),
-        }
-    }
 }
