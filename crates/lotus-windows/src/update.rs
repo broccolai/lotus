@@ -586,8 +586,17 @@ fn is_stale(path: &Path) -> bool {
         .is_some_and(|age| age >= STALE_STAGING_AGE)
 }
 fn paths_equal(left: &Path, right: &Path) -> bool {
-    left.to_string_lossy()
-        .eq_ignore_ascii_case(&right.to_string_lossy())
+    let mut left = left.components();
+    let mut right = right.components();
+
+    loop {
+        match (left.next(), right.next()) {
+            (Some(left), Some(right))
+                if left.as_os_str().eq_ignore_ascii_case(right.as_os_str()) => {}
+            (None, None) => return true,
+            _ => return false,
+        }
+    }
 }
 fn argument_eq(argument: &OsStr, expected: &str) -> bool {
     argument
