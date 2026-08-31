@@ -6,10 +6,9 @@ use super::{
     ROW_HEIGHT_DIP, SECTION_GAP_DIP, SECTION_LABEL_HEIGHT_DIP, SettingsControl,
     SettingsControlLayout, SettingsLayout, SettingsPage, SettingsRect, SettingsScene,
     SettingsSection, SettingsSectionLayout, SettingsSlider, SettingsToggle,
-    UPDATE_PROMPT_ACCEPT_WIDTH_DIP, UPDATE_PROMPT_BUTTON_GAP_DIP,
-    UPDATE_PROMPT_BUTTON_HEIGHT_DIP, UPDATE_PROMPT_CANCEL_WIDTH_DIP,
-    UPDATE_PROMPT_HEIGHT_DIP, UPDATE_PROMPT_INSET_DIP, UPDATE_PROMPT_WIDTH_DIP, WIDTH_DIP,
-    u32_index,
+    UPDATE_PROMPT_BUTTON_GAP_DIP, UPDATE_PROMPT_BUTTON_HEIGHT_DIP,
+    UPDATE_PROMPT_BUTTON_WIDTH_DIP, UPDATE_PROMPT_HEIGHT_DIP, UPDATE_PROMPT_INSET_DIP,
+    WIDTH_DIP, u32_index, update_prompt_left_dip,
 };
 
 impl SettingsScene {
@@ -117,22 +116,20 @@ impl SettingsScene {
     }
 
     fn append_update_prompt_controls(&self, controls: &mut Vec<SettingsControlLayout>) {
-        let card_left = (WIDTH_DIP - UPDATE_PROMPT_WIDTH_DIP) / 2;
+        let card_left = update_prompt_left_dip();
         let card_top = (HEIGHT_DIP - UPDATE_PROMPT_HEIGHT_DIP) / 2;
         let button_top = card_top + UPDATE_PROMPT_HEIGHT_DIP
             - UPDATE_PROMPT_INSET_DIP
             - UPDATE_PROMPT_BUTTON_HEIGHT_DIP;
-        let accept_left = card_left + UPDATE_PROMPT_WIDTH_DIP
-            - UPDATE_PROMPT_INSET_DIP
-            - UPDATE_PROMPT_ACCEPT_WIDTH_DIP;
-        let cancel_left =
-            accept_left - UPDATE_PROMPT_BUTTON_GAP_DIP - UPDATE_PROMPT_CANCEL_WIDTH_DIP;
+        let cancel_left = card_left + UPDATE_PROMPT_INSET_DIP;
+        let accept_left =
+            cancel_left + UPDATE_PROMPT_BUTTON_WIDTH_DIP + UPDATE_PROMPT_BUTTON_GAP_DIP;
         controls.push(SettingsControlLayout {
             control: SettingsControl::CancelUpdate,
             bounds: self.rect(
                 cancel_left,
                 button_top,
-                UPDATE_PROMPT_CANCEL_WIDTH_DIP,
+                UPDATE_PROMPT_BUTTON_WIDTH_DIP,
                 UPDATE_PROMPT_BUTTON_HEIGHT_DIP,
             ),
         });
@@ -141,7 +138,7 @@ impl SettingsScene {
             bounds: self.rect(
                 accept_left,
                 button_top,
-                UPDATE_PROMPT_ACCEPT_WIDTH_DIP,
+                UPDATE_PROMPT_BUTTON_WIDTH_DIP,
                 UPDATE_PROMPT_BUTTON_HEIGHT_DIP,
             ),
         });

@@ -42,13 +42,17 @@ const APPLY_WIDTH_DIP: u32 = 92;
 const REVERT_WIDTH_DIP: u32 = 92;
 const FOOTER_HEIGHT_DIP: u32 = 72;
 const CLOSE_SIZE_DIP: u32 = 40;
-const UPDATE_PROMPT_WIDTH_DIP: u32 = 440;
+const UPDATE_PROMPT_WIDTH_DIP: u32 = 372;
 const UPDATE_PROMPT_HEIGHT_DIP: u32 = 236;
 const UPDATE_PROMPT_BUTTON_HEIGHT_DIP: u32 = 44;
-const UPDATE_PROMPT_CANCEL_WIDTH_DIP: u32 = 112;
-const UPDATE_PROMPT_ACCEPT_WIDTH_DIP: u32 = 144;
+const UPDATE_PROMPT_BUTTON_WIDTH_DIP: u32 = 152;
 const UPDATE_PROMPT_BUTTON_GAP_DIP: u32 = 12;
 const UPDATE_PROMPT_INSET_DIP: u32 = 28;
+
+const fn update_prompt_left_dip() -> u32 {
+    let content_width = WIDTH_DIP - CONTENT_LEFT_DIP - CONTENT_RIGHT_DIP;
+    CONTENT_LEFT_DIP + (content_width - UPDATE_PROMPT_WIDTH_DIP) / 2
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettingsPage {

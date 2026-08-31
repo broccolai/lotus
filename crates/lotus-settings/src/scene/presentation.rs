@@ -9,8 +9,8 @@ use lotus_ui::theme::Color;
 use super::{
     OnboardingModule, OnboardingStep, SettingsControl, SettingsLayout, SettingsPage,
     SettingsRect, SettingsScene, SettingsSlider, SettingsToggle, SettingsUpdateActivity,
-    UPDATE_PROMPT_HEIGHT_DIP, UPDATE_PROMPT_INSET_DIP, UPDATE_PROMPT_WIDTH_DIP, WIDTH_DIP,
-    is_page_content,
+    UPDATE_PROMPT_HEIGHT_DIP, UPDATE_PROMPT_INSET_DIP, UPDATE_PROMPT_WIDTH_DIP,
+    is_page_content, update_prompt_left_dip,
 };
 use crate::appearance::{AccentPreset, ForegroundPreset, SurfacePreset};
 
@@ -63,7 +63,7 @@ impl SettingsScene {
             return;
         };
         let theme = self.theme();
-        let card_left = scale(self, (WIDTH_DIP - UPDATE_PROMPT_WIDTH_DIP) / 2);
+        let card_left = scale(self, update_prompt_left_dip());
         let card_top = scale(self, (super::HEIGHT_DIP - UPDATE_PROMPT_HEIGHT_DIP) / 2);
         let card_width = scale(self, UPDATE_PROMPT_WIDTH_DIP);
         let card_height = scale(self, UPDATE_PROMPT_HEIGHT_DIP);
@@ -87,9 +87,9 @@ impl SettingsScene {
         ));
         output.push(text(
             if prompt.is_installed() {
-                "Update Lotus"
+                "Update available"
             } else {
-                "Install Lotus"
+                "Ready to install"
             },
             rect(
                 card_left + inset,
@@ -101,7 +101,7 @@ impl SettingsScene {
             theme.text,
         ));
         output.push(text(
-            format!("Lotus {} is ready.", prompt.version()),
+            format!("Version {} is ready.", prompt.version()),
             rect(
                 card_left + inset,
                 card_top + scale(self, 72),
@@ -138,9 +138,9 @@ impl SettingsScene {
                 bounds,
                 SettingsControl::AcceptUpdate,
                 if prompt.is_installed() {
-                    "Update Lotus"
+                    "Update now"
                 } else {
-                    "Install Lotus"
+                    "Install now"
                 },
                 true,
                 true,
