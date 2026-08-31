@@ -9,6 +9,7 @@ use lotus_ui::theme::Color;
 use super::{
     OnboardingModule, OnboardingStep, SettingsControl, SettingsLayout, SettingsPage,
     SettingsRect, SettingsScene, SettingsSlider, SettingsToggle, SettingsUpdateActivity,
+    UPDATE_PROMPT_HEIGHT_DIP, UPDATE_PROMPT_INSET_DIP, UPDATE_PROMPT_WIDTH_DIP, WIDTH_DIP,
     is_page_content,
 };
 use crate::appearance::{AccentPreset, ForegroundPreset, SurfacePreset};
@@ -47,7 +48,104 @@ impl SettingsScene {
             self.present_content(&mut output, &layout, assets);
             self.present_footer(&mut output, &layout);
         }
+        if self.update_prompt().is_some() {
+            self.present_update_prompt(&mut output, &layout);
+        }
         output
+    }
+
+    fn present_update_prompt<Asset>(
+        &self,
+        output: &mut Presentation<Asset>,
+        layout: &SettingsLayout,
+    ) {
+        let Some(prompt) = self.update_prompt() else {
+            return;
+        };
+        let theme = self.theme();
+        let card_left = scale(self, (WIDTH_DIP - UPDATE_PROMPT_WIDTH_DIP) / 2);
+        let card_top = scale(self, (super::HEIGHT_DIP - UPDATE_PROMPT_HEIGHT_DIP) / 2);
+        let card_width = scale(self, UPDATE_PROMPT_WIDTH_DIP);
+        let card_height = scale(self, UPDATE_PROMPT_HEIGHT_DIP);
+        let inset = scale(self, UPDATE_PROMPT_INSET_DIP);
+
+        output.push(fill(
+            rect(0, 0, layout.size.width(), layout.size.height()),
+            0.0,
+            theme.canvas.with_alpha(0.72),
+        ));
+        output.push(fill(
+            rect(card_left, card_top, card_width, card_height),
+            scaled(self, theme.radii.panel),
+            theme.elevated_surface,
+        ));
+        output.push(stroke(
+            rect(card_left, card_top, card_width, card_height),
+            scaled(self, theme.radii.panel),
+            scaled(self, 1.0),
+            theme.border_strong,
+        ));
+        output.push(text(
+            if prompt.is_installed() {
+                "Update Lotus"
+            } else {
+                "Install Lotus"
+            },
+            rect(
+                card_left + inset,
+                card_top + inset,
+                card_width - inset * 2,
+                scale(self, 30),
+            ),
+            title(self, false),
+            theme.text,
+        ));
+        output.push(text(
+            format!("Lotus {} is ready.", prompt.version()),
+            rect(
+                card_left + inset,
+                card_top + scale(self, 72),
+                card_width - inset * 2,
+                scale(self, 26),
+            ),
+            body(self, false),
+            theme.text,
+        ));
+        output.push(text(
+            "Lotus will restart when installation is ready.",
+            rect(
+                card_left + inset,
+                card_top + scale(self, 102),
+                card_width - inset * 2,
+                scale(self, 24),
+            ),
+            small(self, false),
+            theme.text_muted,
+        ));
+        if let Some(bounds) = layout.bounds(SettingsControl::CancelUpdate) {
+            self.present_button(
+                output,
+                bounds,
+                SettingsControl::CancelUpdate,
+                "Not now",
+                true,
+                false,
+            );
+        }
+        if let Some(bounds) = layout.bounds(SettingsControl::AcceptUpdate) {
+            self.present_button(
+                output,
+                bounds,
+                SettingsControl::AcceptUpdate,
+                if prompt.is_installed() {
+                    "Update Lotus"
+                } else {
+                    "Install Lotus"
+                },
+                true,
+                true,
+            );
+        }
     }
 
     fn present_navigation<Asset>(
@@ -390,6 +488,8 @@ impl SettingsScene {
                 self.theme().text_muted,
             )),
             SettingsControl::Navigate(_)
+            | SettingsControl::CancelUpdate
+            | SettingsControl::AcceptUpdate
             | SettingsControl::OnboardingModule(_)
             | SettingsControl::OnboardingZone(_)
             | SettingsControl::OnboardingBack

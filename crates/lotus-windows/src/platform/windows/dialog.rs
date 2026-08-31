@@ -30,30 +30,6 @@ pub fn show_information(owner: WindowHandle, title: &str, message: &str) {
     }
 }
 
-pub fn confirm_install_update(owner: WindowHandle, version: &str, installed: bool) -> bool {
-    let title = HSTRING::from(if installed {
-        "Update Lotus"
-    } else {
-        "Install Lotus"
-    });
-    let action = if installed {
-        "Download and install"
-    } else {
-        "Install"
-    };
-    let message = HSTRING::from(format!(
-        "{action} Lotus {version}?\n\nLotus will restart when it is ready."
-    ));
-    unsafe {
-        MessageBoxW(
-            Some(owner.raw()),
-            &message,
-            &title,
-            MB_YESNO | MB_ICONINFORMATION,
-        ) == IDYES
-    }
-}
-
 fn show_error_for(owner: HWND, title: &str, message: &str) {
     let title = HSTRING::from(title);
     let message = HSTRING::from(message);

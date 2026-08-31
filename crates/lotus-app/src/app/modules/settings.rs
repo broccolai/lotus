@@ -168,6 +168,24 @@ impl ModuleHost {
         self.settings.start_update_download(release)
     }
 
+    pub(in crate::app) fn offer_update(
+        &mut self,
+        release: lotus_windows::update::Release,
+        installed: bool,
+    ) -> bool {
+        self.settings.offer_update(release, installed)
+    }
+
+    pub(in crate::app) fn take_update_offer(
+        &mut self,
+    ) -> Option<lotus_windows::update::Release> {
+        self.settings.take_update_offer()
+    }
+
+    pub(in crate::app) fn cancel_update_offer(&mut self) {
+        self.settings.cancel_update_offer();
+    }
+
     pub(in crate::app) fn reset_update_activity(&mut self) {
         self.settings
             .set_update_activity(lotus_settings::scene::SettingsUpdateActivity::Idle);

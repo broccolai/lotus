@@ -68,23 +68,31 @@ impl SettingsRuntime {
                 });
             }
             SettingsEvent::TextInput(character) => {
+                if self.scene.update_prompt().is_some() {
+                    return Ok(SettingsEventOutcome::None);
+                }
                 if self.append_query(character) {
                     return Ok(SettingsEventOutcome::HydrateApplicationPreviews);
                 }
                 return Ok(SettingsEventOutcome::None);
             }
             SettingsEvent::KeyPressed(SettingsKey::Backspace) => {
+                if self.scene.update_prompt().is_some() {
+                    return Ok(SettingsEventOutcome::None);
+                }
                 if self.remove_query() {
                     return Ok(SettingsEventOutcome::HydrateApplicationPreviews);
                 }
                 return Ok(SettingsEventOutcome::None);
             }
             SettingsEvent::KeyPressed(SettingsKey::Paste) => {
-                return Ok(if self.page_is_apps() {
-                    SettingsEventOutcome::PasteQuery
-                } else {
-                    SettingsEventOutcome::None
-                });
+                return Ok(
+                    if self.scene.update_prompt().is_none() && self.page_is_apps() {
+                        SettingsEventOutcome::PasteQuery
+                    } else {
+                        SettingsEventOutcome::None
+                    },
+                );
             }
             SettingsEvent::CloseRequested => SettingsAction::Close,
             SettingsEvent::KeyPressed(key) => self.translated_key(key),

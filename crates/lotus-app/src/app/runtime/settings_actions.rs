@@ -8,6 +8,7 @@ use super::settings_support::{export_diagnostics, export_settings, reset_lotus};
 use super::update_events;
 use crate::app::AppError;
 use crate::app::integration::{IntegrationRecoveryContext, IntegrationRecoverySource};
+use crate::app::modules::ModuleHost;
 use crate::app::settings::ApplicationIconOutcome;
 
 pub(super) fn execute_settings_action(
@@ -17,13 +18,11 @@ pub(super) fn execute_settings_action(
     match action {
         SettingsAction::None => Ok(()),
         SettingsAction::Changed => {
-            if context.auxiliary.settings_on_apps_page() {
-                if context.auxiliary.application_catalog_is_empty() {
-                    refresh_application_manager(context);
-                } else {
-                    hydrate_application_previews(context);
-                }
-            }
+            handle_changed_settings(context);
+            context.auxiliary.invalidate_settings();
+            Ok(())
+        }
+        SettingsAction::RefreshPresentation => {
             context.auxiliary.invalidate_settings();
             Ok(())
         }
@@ -71,8 +70,10 @@ pub(super) fn execute_settings_action(
             context.auxiliary.invalidate_settings();
             Ok(())
         }
-        SettingsAction::CheckForUpdates => {
-            update_events::start_update_check(context.auxiliary);
+        action @ (SettingsAction::CheckForUpdates
+        | SettingsAction::CancelUpdate
+        | SettingsAction::AcceptUpdate) => {
+            execute_update_action(&action, context.auxiliary);
             Ok(())
         }
         SettingsAction::RestartIntegration => {
@@ -129,6 +130,26 @@ pub(super) fn execute_settings_action(
             }
             Ok(())
         }
+    }
+}
+
+fn execute_update_action(action: &SettingsAction, auxiliary: &mut ModuleHost) {
+    match action {
+        SettingsAction::CheckForUpdates => update_events::start_update_check(auxiliary),
+        SettingsAction::CancelUpdate => update_events::cancel_update(auxiliary),
+        SettingsAction::AcceptUpdate => update_events::accept_update(auxiliary),
+        _ => {}
+    }
+}
+
+fn handle_changed_settings(context: &mut SettingsEventContext<'_>) {
+    if !context.auxiliary.settings_on_apps_page() {
+        return;
+    }
+    if context.auxiliary.application_catalog_is_empty() {
+        refresh_application_manager(context);
+    } else {
+        hydrate_application_previews(context);
     }
 }
 

@@ -28,6 +28,10 @@ pub(in crate::app) use pickers::{ApplicationIconOutcome, ColorOutcome, ColorTarg
 
 use crate::app::AppError;
 
+struct PendingUpdate {
+    release: Release,
+}
+
 pub(in crate::app) struct SettingsRuntime {
     window: SettingsWindow,
     scene: SettingsScene,
@@ -38,6 +42,7 @@ pub(in crate::app) struct SettingsRuntime {
     native_icons: NativeIconCache,
     custom_images: CustomImageCache,
     update_checker: UpdateChecker,
+    pending_update: Option<PendingUpdate>,
 }
 
 impl SettingsRuntime {
@@ -59,6 +64,7 @@ impl SettingsRuntime {
             native_icons: NativeIconCache::default(),
             custom_images: CustomImageCache::default(),
             update_checker: UpdateChecker::new(),
+            pending_update: None,
         })
     }
 
@@ -119,6 +125,7 @@ impl SettingsRuntime {
     }
 
     pub(in crate::app) fn hide(&mut self) {
+        self.cancel_update_offer();
         self.window.hide();
         self.window.set_pointer_cursor(PointerCursor::Arrow);
         self.visible = false;
@@ -225,6 +232,40 @@ impl SettingsRuntime {
         let _ = self.scene.set_update_activity(activity);
     }
 
+    pub(in crate::app) fn offer_update(
+        &mut self,
+        release: Release,
+        installed: bool,
+    ) -> bool {
+        if !self.visible {
+            return false;
+        }
+        let changed = self
+            .scene
+            .show_update_prompt(release.version.clone(), installed);
+        self.pending_update = Some(PendingUpdate { release });
+        if changed {
+            self.invalidate();
+        }
+        true
+    }
+
+    pub(in crate::app) fn take_update_offer(&mut self) -> Option<Release> {
+        let offer = self.pending_update.take()?;
+        let _ = self.scene.dismiss_update_prompt();
+        self.invalidate();
+        Some(offer.release)
+    }
+
+    pub(in crate::app) fn cancel_update_offer(&mut self) {
+        if self.pending_update.take().is_none() {
+            return;
+        }
+        let _ = self.scene.dismiss_update_prompt();
+        let _ = self.scene.set_update_activity(SettingsUpdateActivity::Idle);
+        self.invalidate();
+    }
+
     pub(in crate::app) fn invalidate(&mut self) {
         if let Some(surface) = &mut self.surface {
             surface.invalidate();
@@ -320,7 +361,7 @@ impl SettingsRuntime {
         self.pressed_control = self
             .dragging_slider
             .is_none()
-            .then(|| self.scene.layout().hit_test(x, y))
+            .then(|| self.scene.hit_test(x, y))
             .flatten();
         let action = self
             .dragging_slider
@@ -348,7 +389,7 @@ impl SettingsRuntime {
         let released_control = u32::try_from(x)
             .ok()
             .zip(u32::try_from(y).ok())
-            .and_then(|(x, y)| self.scene.layout().hit_test(x, y));
+            .and_then(|(x, y)| self.scene.hit_test(x, y));
         let pressed_control = self.pressed_control.take();
         if pressed_control.is_none() || pressed_control != released_control {
             return Some(SettingsAction::None);
@@ -399,6 +440,9 @@ impl SettingsRuntime {
             WindowSettingsKey::Right => lotus_settings::scene::SettingsKey::Right,
             WindowSettingsKey::Up => lotus_settings::scene::SettingsKey::Up,
             WindowSettingsKey::Down => lotus_settings::scene::SettingsKey::Down,
+            WindowSettingsKey::Save if self.scene.update_prompt().is_some() => {
+                return SettingsAction::None;
+            }
             WindowSettingsKey::Save if self.scene.is_dirty() => {
                 return SettingsAction::Apply(Box::new(
                     self.scene.draft().clone().normalized(),

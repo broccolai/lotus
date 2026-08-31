@@ -1,4 +1,4 @@
-use lotus_windows::dialog::{confirm_install_update, show_error, show_information};
+use lotus_windows::dialog::{show_error, show_information};
 use lotus_windows::interaction::request_exit;
 use lotus_windows::update::{UpdateResult, UpdateStatus, is_installed, launch_installer};
 
@@ -89,22 +89,31 @@ fn offer_update(
     release: lotus_windows::update::Release,
     installed: bool,
 ) {
+    if !auxiliary.offer_update(release, installed) {
+        reset_update_activity(auxiliary);
+    }
+}
+
+pub(super) fn accept_update(auxiliary: &mut ModuleHost) {
     let owner = auxiliary.settings_owner();
-    if !confirm_install_update(owner, &release.version, installed) {
+    let Some(release) = auxiliary.take_update_offer() else {
         reset_update_activity(auxiliary);
         return;
-    }
-
+    };
     match auxiliary.start_update_download(release) {
         Ok(true) => {
             auxiliary.invalidate_settings();
         }
-        Ok(false) => {}
+        Ok(false) => reset_update_activity(auxiliary),
         Err(error) => {
             reset_update_activity(auxiliary);
             show_error(owner, "Lotus Update", &error.to_string());
         }
     }
+}
+
+pub(super) fn cancel_update(auxiliary: &mut ModuleHost) {
+    auxiliary.cancel_update_offer();
 }
 
 fn handle_staged_update(

@@ -42,6 +42,13 @@ const APPLY_WIDTH_DIP: u32 = 92;
 const REVERT_WIDTH_DIP: u32 = 92;
 const FOOTER_HEIGHT_DIP: u32 = 72;
 const CLOSE_SIZE_DIP: u32 = 40;
+const UPDATE_PROMPT_WIDTH_DIP: u32 = 440;
+const UPDATE_PROMPT_HEIGHT_DIP: u32 = 236;
+const UPDATE_PROMPT_BUTTON_HEIGHT_DIP: u32 = 44;
+const UPDATE_PROMPT_CANCEL_WIDTH_DIP: u32 = 112;
+const UPDATE_PROMPT_ACCEPT_WIDTH_DIP: u32 = 144;
+const UPDATE_PROMPT_BUTTON_GAP_DIP: u32 = 12;
+const UPDATE_PROMPT_INSET_DIP: u32 = 28;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettingsPage {
@@ -221,6 +228,8 @@ pub enum SettingsControl {
     ChooseApplicationIcon(usize),
     ResetApplicationIcon(usize),
     CheckForUpdates,
+    CancelUpdate,
+    AcceptUpdate,
     RestartIntegration,
     ReplaySetup,
     ExportSettings,
@@ -240,6 +249,7 @@ pub enum SettingsControl {
 pub enum SettingsAction {
     None,
     Changed,
+    RefreshPresentation,
     Reverted,
     OpenApplications,
     ChooseBackgroundColor,
@@ -249,6 +259,8 @@ pub enum SettingsAction {
     ChooseApplicationIcon(String),
     ResetApplicationIcon(String),
     CheckForUpdates,
+    CancelUpdate,
+    AcceptUpdate,
     RestartIntegration,
     ReplaySetup,
     ExportSettings,
@@ -265,6 +277,22 @@ pub enum SettingsUpdateActivity {
     Idle,
     Checking,
     Installing,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettingsUpdatePrompt {
+    version: String,
+    installed: bool,
+}
+
+impl SettingsUpdatePrompt {
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub const fn is_installed(&self) -> bool {
+        self.installed
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -423,6 +451,8 @@ pub struct SettingsScene {
     focus_visible: bool,
     installed: bool,
     update_activity: SettingsUpdateActivity,
+    update_prompt: Option<SettingsUpdatePrompt>,
+    focus_before_update_prompt: Option<SettingsControl>,
     onboarding: OnboardingState,
     scroll_offset_dip: u32,
     applications: Vec<SettingsApplicationRecord>,
@@ -445,6 +475,8 @@ impl SettingsScene {
             focus_visible: false,
             installed,
             update_activity: SettingsUpdateActivity::Idle,
+            update_prompt: None,
+            focus_before_update_prompt: None,
             onboarding: OnboardingState::default(),
             scroll_offset_dip: 0,
             applications: Vec::new(),
@@ -519,6 +551,38 @@ impl SettingsScene {
     }
     pub const fn is_installed(&self) -> bool {
         self.installed
+    }
+
+    pub fn update_prompt(&self) -> Option<&SettingsUpdatePrompt> {
+        self.update_prompt.as_ref()
+    }
+
+    pub fn show_update_prompt(&mut self, version: String, installed: bool) -> bool {
+        let prompt = SettingsUpdatePrompt { version, installed };
+        if self.update_prompt.as_ref() == Some(&prompt) {
+            return false;
+        }
+        if self.update_prompt.is_none() {
+            self.focus_before_update_prompt = self.focused;
+        }
+        self.update_prompt = Some(prompt);
+        self.hovered = None;
+        self.focused = Some(SettingsControl::AcceptUpdate);
+        self.focus_visible = false;
+        true
+    }
+
+    pub fn dismiss_update_prompt(&mut self) -> bool {
+        if self.update_prompt.take().is_none() {
+            return false;
+        }
+        self.hovered = None;
+        let previous = self.focus_before_update_prompt.take();
+        self.focused = previous
+            .filter(|control| self.layout().bounds(*control).is_some())
+            .or(Some(SettingsControl::CheckForUpdates));
+        self.focus_visible = false;
+        true
     }
 
     pub fn applications(&self) -> &[SettingsApplicationRecord] {
@@ -680,7 +744,10 @@ impl SettingsScene {
     }
 
     pub fn scroll(&mut self, direction: i32) -> bool {
-        if self.onboarding.step().is_some() || direction == 0 {
+        if self.update_prompt.is_some()
+            || self.onboarding.step().is_some()
+            || direction == 0
+        {
             return false;
         }
 
@@ -711,12 +778,25 @@ impl SettingsScene {
     }
 
     pub fn pointer_move(&mut self, x: u32, y: u32) -> bool {
-        let hovered = self.layout().hit_test(x, y);
+        let hovered = self.hit_test(x, y);
         self.set_hovered(hovered)
     }
 
+    pub fn hit_test(&self, x: u32, y: u32) -> Option<SettingsControl> {
+        let control = self.layout().hit_test(x, y)?;
+        if self.update_prompt.is_some()
+            && !matches!(
+                control,
+                SettingsControl::CancelUpdate | SettingsControl::AcceptUpdate
+            )
+        {
+            return None;
+        }
+        Some(control)
+    }
+
     pub fn pointer_activate(&mut self, x: u32, y: u32) -> SettingsAction {
-        let Some(control) = self.layout().hit_test(x, y) else {
+        let Some(control) = self.hit_test(x, y) else {
             return SettingsAction::None;
         };
         self.focused = Some(control);
@@ -756,7 +836,7 @@ impl SettingsScene {
     }
 
     pub fn pointer_style(&self, x: u32, y: u32) -> SettingsPointerStyle {
-        let Some(control) = self.layout().hit_test(x, y) else {
+        let Some(control) = self.hit_test(x, y) else {
             return SettingsPointerStyle::Default;
         };
         match control {
@@ -789,6 +869,8 @@ impl SettingsScene {
             | SettingsControl::ChooseApplicationIcon(_)
             | SettingsControl::ResetApplicationIcon(_)
             | SettingsControl::CheckForUpdates
+            | SettingsControl::CancelUpdate
+            | SettingsControl::AcceptUpdate
             | SettingsControl::RestartIntegration
             | SettingsControl::ReplaySetup
             | SettingsControl::ExportSettings
@@ -806,7 +888,7 @@ impl SettingsScene {
     }
 
     pub fn slider_at(&self, x: u32, y: u32) -> Option<SettingsSlider> {
-        let SettingsControl::Slider(slider) = self.layout().hit_test(x, y)? else {
+        let SettingsControl::Slider(slider) = self.hit_test(x, y)? else {
             return None;
         };
         let bounds = self.layout().bounds(SettingsControl::Slider(slider))?;
@@ -836,6 +918,9 @@ impl SettingsScene {
 
     pub fn key(&mut self, key: SettingsKey) -> SettingsAction {
         self.focus_visible = true;
+        if self.update_prompt.is_some() {
+            return self.update_prompt_key(key);
+        }
         if key == SettingsKey::Escape {
             if self.onboarding.required() {
                 return SettingsAction::None;
@@ -914,6 +999,29 @@ impl SettingsScene {
                 self.cycle_onboarding_zone(module, false)
             }
             _ => SettingsAction::None,
+        }
+    }
+
+    fn update_prompt_key(&mut self, key: SettingsKey) -> SettingsAction {
+        match key {
+            SettingsKey::Escape => SettingsAction::CancelUpdate,
+            SettingsKey::Activate => self
+                .focused
+                .map_or(SettingsAction::None, |control| self.activate(control)),
+            SettingsKey::Tab
+            | SettingsKey::ReverseTab
+            | SettingsKey::Left
+            | SettingsKey::Right
+            | SettingsKey::Up
+            | SettingsKey::Down => {
+                self.focused =
+                    Some(if self.focused == Some(SettingsControl::AcceptUpdate) {
+                        SettingsControl::CancelUpdate
+                    } else {
+                        SettingsControl::AcceptUpdate
+                    });
+                SettingsAction::RefreshPresentation
+            }
         }
     }
 

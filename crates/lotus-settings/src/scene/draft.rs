@@ -427,6 +427,8 @@ impl SettingsScene {
             {
                 SettingsAction::CheckForUpdates
             }
+            SettingsControl::CancelUpdate => SettingsAction::CancelUpdate,
+            SettingsControl::AcceptUpdate => SettingsAction::AcceptUpdate,
             SettingsControl::RestartIntegration => SettingsAction::RestartIntegration,
             SettingsControl::ReplaySetup => SettingsAction::ReplaySetup,
             SettingsControl::ExportSettings => SettingsAction::ExportSettings,

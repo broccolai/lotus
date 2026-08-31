@@ -5,7 +5,10 @@ use super::{
     OnboardingModule, OnboardingStep, PageContentLayout, REVERT_WIDTH_DIP, ROW_GAP_DIP,
     ROW_HEIGHT_DIP, SECTION_GAP_DIP, SECTION_LABEL_HEIGHT_DIP, SettingsControl,
     SettingsControlLayout, SettingsLayout, SettingsPage, SettingsRect, SettingsScene,
-    SettingsSection, SettingsSectionLayout, SettingsSlider, SettingsToggle, WIDTH_DIP,
+    SettingsSection, SettingsSectionLayout, SettingsSlider, SettingsToggle,
+    UPDATE_PROMPT_ACCEPT_WIDTH_DIP, UPDATE_PROMPT_BUTTON_GAP_DIP,
+    UPDATE_PROMPT_BUTTON_HEIGHT_DIP, UPDATE_PROMPT_CANCEL_WIDTH_DIP,
+    UPDATE_PROMPT_HEIGHT_DIP, UPDATE_PROMPT_INSET_DIP, UPDATE_PROMPT_WIDTH_DIP, WIDTH_DIP,
     u32_index,
 };
 
@@ -100,6 +103,9 @@ impl SettingsScene {
                 CLOSE_SIZE_DIP,
             ),
         });
+        if self.update_prompt.is_some() {
+            self.append_update_prompt_controls(&mut controls);
+        }
         SettingsLayout {
             size,
             controls,
@@ -108,6 +114,37 @@ impl SettingsScene {
             content_scroll_offset: self.scale(self.scroll_offset_dip),
             scrollbar_thumb: self.scrollbar_thumb_for(content_height),
         }
+    }
+
+    fn append_update_prompt_controls(&self, controls: &mut Vec<SettingsControlLayout>) {
+        let card_left = (WIDTH_DIP - UPDATE_PROMPT_WIDTH_DIP) / 2;
+        let card_top = (HEIGHT_DIP - UPDATE_PROMPT_HEIGHT_DIP) / 2;
+        let button_top = card_top + UPDATE_PROMPT_HEIGHT_DIP
+            - UPDATE_PROMPT_INSET_DIP
+            - UPDATE_PROMPT_BUTTON_HEIGHT_DIP;
+        let accept_left = card_left + UPDATE_PROMPT_WIDTH_DIP
+            - UPDATE_PROMPT_INSET_DIP
+            - UPDATE_PROMPT_ACCEPT_WIDTH_DIP;
+        let cancel_left =
+            accept_left - UPDATE_PROMPT_BUTTON_GAP_DIP - UPDATE_PROMPT_CANCEL_WIDTH_DIP;
+        controls.push(SettingsControlLayout {
+            control: SettingsControl::CancelUpdate,
+            bounds: self.rect(
+                cancel_left,
+                button_top,
+                UPDATE_PROMPT_CANCEL_WIDTH_DIP,
+                UPDATE_PROMPT_BUTTON_HEIGHT_DIP,
+            ),
+        });
+        controls.push(SettingsControlLayout {
+            control: SettingsControl::AcceptUpdate,
+            bounds: self.rect(
+                accept_left,
+                button_top,
+                UPDATE_PROMPT_ACCEPT_WIDTH_DIP,
+                UPDATE_PROMPT_BUTTON_HEIGHT_DIP,
+            ),
+        });
     }
 
     fn append_page_content(
