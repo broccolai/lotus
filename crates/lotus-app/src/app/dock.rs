@@ -38,6 +38,9 @@ pub(super) use projection::{
 };
 
 use crate::app::AppError;
+use crate::app::monitors::{
+    MonitorPresentationInput, MonitorReplicaInput, MonitorReplicaTarget,
+};
 use crate::app::visuals::{
     DockIcon, DockItem as SceneDockItem, DockMetrics, DockScene, MediaItem, MediaSymbols,
 };
@@ -323,15 +326,30 @@ impl DockRuntime {
         true
     }
 
-    pub(super) fn replica_scene(
+    pub(super) fn prepare_monitor_presentation(
         &mut self,
-        dpi: u32,
-        owner: WindowHandle,
-    ) -> Result<DockScene, AppError> {
+        targets: Vec<MonitorReplicaTarget>,
+    ) -> Result<MonitorPresentationInput, AppError> {
         let settings = self.model.settings().clone();
-        let mut scene = Self::configured_scene(dpi, &settings, metrics(&settings)?)
+        let replicas = targets
+            .into_iter()
+            .map(|target| self.prepare_monitor_replica(target, &settings))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(MonitorPresentationInput {
+            settings,
+            revision: self.revision,
+            replicas,
+        })
+    }
+
+    fn prepare_monitor_replica(
+        &mut self,
+        target: MonitorReplicaTarget,
+        settings: &DockSettings,
+    ) -> Result<MonitorReplicaInput, AppError> {
+        let mut scene = Self::configured_scene(target.dpi, settings, metrics(settings)?)
             .ok_or(AppError::InvalidScene)?;
-        scene.replace_status_items(docked_status_items(&settings, owner));
+        scene.replace_status_items(docked_status_items(settings, target.owner));
         if settings.show_media_controls && settings.media_zone == settings.dock_zone {
             scene.replace_media(self.media.clone());
         }
@@ -339,7 +357,10 @@ impl DockRuntime {
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
         scene.replace_items(self.scene_items_at_size(icon_size));
-        Ok(scene)
+        Ok(MonitorReplicaInput {
+            owner: target.owner,
+            scene,
+        })
     }
 
     pub(super) const fn revision(&self) -> u64 {
@@ -575,7 +596,15 @@ impl DockRuntime {
                         .is_some_and(|window| window.key() == result.window)
                     && result.pixel_size == icon_size
             });
-            if current && result.icon.is_some() {
+            let duplicate = self
+                .hydrated_window_icons
+                .get(&result.identity)
+                .is_some_and(|existing| {
+                    existing.window == result.window
+                        && existing.pixel_size == result.pixel_size
+                        && existing.icon == result.icon
+                });
+            if current && result.icon.is_some() && !duplicate {
                 self.hydrated_window_icons
                     .insert(result.identity.clone(), result);
                 changed = true;

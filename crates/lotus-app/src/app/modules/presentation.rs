@@ -6,18 +6,27 @@ use crate::app::AppError;
 
 impl ModuleHost {
     pub(in crate::app) fn diagnostic_surface_masks(&self) -> (u32, u32, u32) {
+        const LAUNCHER_BIT: u32 = 1 << 1;
+        const CONTEXT_MENU_BIT: u32 = 1 << 2;
+        const SETTINGS_BIT: u32 = 1 << 3;
+        const SWITCHER_BIT: u32 = 1 << 4;
+        const STATUS_BIT: u32 = 1 << 5;
+        const MONITORS_BIT: u32 = 1 << 6;
+
         let states = [
-            self.launcher.diagnostic_surface_state(),
-            self.context_menu.diagnostic_surface_state(),
-            self.settings.diagnostic_surface_state(),
-            self.switcher.diagnostic_surface_state(),
-            self.status.diagnostic_surface_masks(),
-            self.monitors.diagnostic_surface_masks(),
+            (LAUNCHER_BIT, self.launcher.diagnostic_surface_state()),
+            (
+                CONTEXT_MENU_BIT,
+                self.context_menu.diagnostic_surface_state(),
+            ),
+            (SETTINGS_BIT, self.settings.diagnostic_surface_state()),
+            (SWITCHER_BIT, self.switcher.diagnostic_surface_state()),
+            (STATUS_BIT, self.status.diagnostic_surface_masks()),
+            (MONITORS_BIT, self.monitors.diagnostic_surface_masks()),
         ];
-        states.into_iter().enumerate().fold(
+        states.into_iter().fold(
             (0, 0, 0),
-            |(dirty, animating, visible), (index, (is_dirty, is_animating, is_visible))| {
-                let bit = 1_u32 << (index + 1);
+            |(dirty, animating, visible), (bit, (is_dirty, is_animating, is_visible))| {
                 (
                     dirty | (u32::from(is_dirty) * bit),
                     animating | (u32::from(is_animating) * bit),

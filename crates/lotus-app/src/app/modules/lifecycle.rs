@@ -4,14 +4,13 @@ use lotus_core::settings::DockSettings;
 use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
 use lotus_windows::graphics::DeviceState;
-use lotus_windows::icon_hydrator::IconHydrator;
 use lotus_windows::input::{InputConfig, InputController};
-use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::update::is_installed;
 use lotus_windows::window::DockWindow;
 
 use super::ModuleHost;
 use crate::app::AppError;
+use crate::app::applications::ApplicationServices;
 use crate::app::context_menu::ContextMenuRuntime;
 use crate::app::dock::DockRuntime;
 use crate::app::launcher::LauncherRuntime;
@@ -30,8 +29,8 @@ impl ModuleHost {
         modules_active: bool,
     ) -> Result<Self, AppError> {
         let search_window = dock.create_search_window()?;
-        let icon_hydrator = IconHydrator::start()?;
-        dock_model.attach_icon_hydrator(icon_hydrator.dock_client());
+        let applications = ApplicationServices::new()?;
+        dock_model.attach_icon_hydrator(applications.dock_icon_client());
         lotus_windows::backdrop::apply_search_settings(
             search_window.handle(),
             dock_model.settings(),
@@ -42,7 +41,7 @@ impl ModuleHost {
             &theme_for(dock_model.settings()),
             usage,
             usage_store,
-            icon_hydrator.launcher_client(),
+            applications.launcher_icon_client(),
         );
         let settings = SettingsRuntime::new(
             dock.create_settings_window()?,
@@ -67,7 +66,7 @@ impl ModuleHost {
             switcher_window,
             dock_model.settings(),
             &theme_for(dock_model.settings()),
-            icon_hydrator.switcher_client(),
+            applications.switcher_icon_client(),
         );
         let status = StatusRuntime::new(
             [dock.create_status_window()?, dock.create_status_window()?],
@@ -75,9 +74,8 @@ impl ModuleHost {
         )?;
 
         let mut host = Self {
-            modules: ModuleRuntime::new(),
-            icon_hydrator,
-            applications: SearchCatalogCache::new(),
+            lifecycle: ModuleLifecycle::new(),
+            applications,
             launcher,
             settings,
             context_menu,
@@ -96,17 +94,25 @@ impl ModuleHost {
         settings: &DockSettings,
         active: bool,
     ) -> Result<(), AppError> {
-        self.modules.reconcile(
-            settings,
-            active,
-            &mut ModuleResources {
-                dock,
-                launcher: &mut self.launcher,
-                switcher: &mut self.switcher,
-                media: &mut self.media,
-                status: &mut self.status,
-            },
-        )
+        let transition = self.lifecycle.transition(settings, active);
+
+        if transition.disabled(ModuleId::Search) {
+            self.launcher.hide();
+        }
+        if transition.disabled(ModuleId::AltTab) {
+            self.switcher.abandon();
+        }
+        if transition.disabled(ModuleId::Status) {
+            self.status.set_visible(false);
+        }
+
+        self.media.set_enabled(transition.enabled(ModuleId::Media));
+        dock.set_status_refresh_active(
+            transition.enabled(ModuleId::Status) && settings.show_date_time_status,
+        )?;
+        self.lifecycle.reconcile_input(settings, transition.next);
+        self.lifecycle.enabled = transition.next;
+        Ok(())
     }
 
     pub(in crate::app) fn propagate_settings(
@@ -122,21 +128,28 @@ impl ModuleHost {
     }
 }
 
-pub(super) struct ModuleRuntime {
+pub(super) struct ModuleLifecycle {
     enabled: ModuleSet,
     input_config: Option<InputConfig>,
-    pub(super) input: Option<InputController>,
+    input: Option<InputController>,
 }
 
-struct ModuleResources<'a> {
-    dock: &'a DockWindow,
-    launcher: &'a mut LauncherRuntime,
-    switcher: &'a mut SwitcherRuntime,
-    media: &'a mut MediaRuntime,
-    status: &'a mut StatusRuntime,
+struct LifecycleTransition {
+    previous: ModuleSet,
+    next: ModuleSet,
 }
 
-impl ModuleRuntime {
+impl LifecycleTransition {
+    const fn disabled(&self, module: ModuleId) -> bool {
+        self.previous.contains(module) && !self.next.contains(module)
+    }
+
+    const fn enabled(&self, module: ModuleId) -> bool {
+        self.next.contains(module)
+    }
+}
+
+impl ModuleLifecycle {
     fn new() -> Self {
         Self {
             enabled: ModuleSet::default(),
@@ -145,35 +158,17 @@ impl ModuleRuntime {
         }
     }
 
-    fn reconcile(
-        &mut self,
-        settings: &DockSettings,
-        active: bool,
-        resources: &mut ModuleResources<'_>,
-    ) -> Result<(), AppError> {
+    fn transition(&self, settings: &DockSettings, active: bool) -> LifecycleTransition {
         let next = if active {
             ModuleSet::from_settings(settings)
         } else {
             ModuleSet::default()
         };
 
-        if self.was_disabled(ModuleId::Search, next) {
-            resources.launcher.hide();
+        LifecycleTransition {
+            previous: self.enabled,
+            next,
         }
-        if self.was_disabled(ModuleId::AltTab, next) {
-            resources.switcher.abandon();
-        }
-        if self.was_disabled(ModuleId::Status, next) {
-            resources.status.set_visible(false);
-        }
-
-        resources.media.set_enabled(next.contains(ModuleId::Media));
-        resources.dock.set_status_refresh_active(
-            next.contains(ModuleId::Status) && settings.show_date_time_status,
-        )?;
-        self.reconcile_input(settings, next);
-        self.enabled = next;
-        Ok(())
     }
 
     pub(super) const fn is_enabled(&self, module: ModuleId) -> bool {
@@ -194,8 +189,8 @@ impl ModuleRuntime {
         }
     }
 
-    fn was_disabled(&self, module: ModuleId, next: ModuleSet) -> bool {
-        self.enabled.contains(module) && !next.contains(module)
+    pub(super) fn input_controller(&self) -> Option<&InputController> {
+        self.input.as_ref()
     }
 
     fn reconcile_input(&mut self, settings: &DockSettings, modules: ModuleSet) {

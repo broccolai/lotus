@@ -18,8 +18,16 @@ fn main() {
             return;
         }
     }
-    if lotus_windows::exclusive_taskbar::run_guardian_if_requested() {
-        return;
+    match lotus_windows::exclusive_taskbar::run_guardian_if_requested() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            lotus_windows::dialog::show_unowned_error(
+                "Lotus Taskbar Recovery",
+                &format!("Lotus could not run taskbar recovery.\n\n{error}"),
+            );
+            return;
+        }
     }
     let result = app::run();
     lotus_windows::diagnostics::record_diagnostic(

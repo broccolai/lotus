@@ -82,7 +82,7 @@ impl MediaWidgetLayout {
             metadata_left,
             padding,
             metadata.unwrap_or_default(),
-            height - padding * 2,
+            height.saturating_sub(padding.saturating_mul(2)),
         );
         let previous_left = metadata.map_or(metadata_left, |metadata| {
             metadata_left.saturating_add(metadata).saturating_add(gap)

@@ -1,6 +1,8 @@
 use lotus_settings::scene::SettingsAction;
 
-use super::settings_commit::{apply_changed_settings, apply_color_outcome};
+use super::settings_commit::{
+    SettingsApplyMode, apply_changed_settings, apply_color_outcome,
+};
 use super::settings_events::SettingsEventContext;
 use super::settings_support::{export_diagnostics, export_settings, reset_lotus};
 use super::update_events;
@@ -110,11 +112,18 @@ pub(super) fn execute_settings_action(
             }
             Ok(())
         }
-        SettingsAction::Apply(next) => apply_changed_settings(*next, context, false),
+        SettingsAction::Apply(next) => {
+            apply_changed_settings(*next, context, SettingsApplyMode::Ordinary)
+        }
         SettingsAction::CompleteOnboarding(next) => {
             let initial_setup = context.auxiliary.onboarding_required_for_close();
             context.auxiliary.end_onboarding();
-            apply_changed_settings(*next, context, initial_setup)?;
+            let mode = if initial_setup {
+                SettingsApplyMode::OnboardingRestart
+            } else {
+                SettingsApplyMode::Ordinary
+            };
+            apply_changed_settings(*next, context, mode)?;
             if !initial_setup {
                 context.auxiliary.hide_settings();
             }

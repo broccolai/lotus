@@ -10,10 +10,9 @@ mod status;
 
 use lotus_settings::scene::SettingsAction;
 use lotus_windows::WindowHandle;
-use lotus_windows::icon_hydrator::IconHydrator;
-use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::window::SignedPoint;
 
+use crate::app::applications::ApplicationServices;
 use crate::app::context_menu::ContextMenuRuntime;
 use crate::app::launcher::LauncherRuntime;
 use crate::app::media::MediaRuntime;
@@ -23,9 +22,8 @@ use crate::app::status::{AuxiliaryZoneAction, StatusRuntime};
 use crate::app::switcher::SwitcherRuntime;
 
 pub(super) struct ModuleHost {
-    modules: lifecycle::ModuleRuntime,
-    icon_hydrator: IconHydrator,
-    applications: SearchCatalogCache,
+    lifecycle: lifecycle::ModuleLifecycle,
+    applications: ApplicationServices,
     launcher: LauncherRuntime,
     settings: SettingsRuntime,
     context_menu: ContextMenuRuntime,

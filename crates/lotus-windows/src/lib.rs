@@ -1,3 +1,4 @@
+mod bridge_cache;
 mod error;
 mod platform;
 mod process_resources;

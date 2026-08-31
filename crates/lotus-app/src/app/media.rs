@@ -20,7 +20,13 @@ impl MediaRuntime {
 
     pub(super) fn set_enabled(&mut self, enabled: bool) {
         match (enabled, self.controller.is_some()) {
-            (true, false) => self.controller = MediaController::start().ok(),
+            (true, false) => match MediaController::start() {
+                Ok(controller) => self.controller = Some(controller),
+                Err(error) => {
+                    lotus_windows::diagnostics::record_error("media.enable", &error);
+                    self.controller = None;
+                }
+            },
             (false, true) => {
                 self.controller = None;
                 let _ = self.model.replace(None);

@@ -138,13 +138,11 @@ enum PopupKind<Asset> {
     Power,
     FileLocation(String),
     App {
-        source_index: usize,
         identity: String,
         running_windows: usize,
         entries: Vec<AppEntry>,
     },
     Picker {
-        source_index: usize,
         style: WindowPickerStyle,
         entries: Vec<PickerWindow<Asset>>,
     },
@@ -170,7 +168,6 @@ impl<Asset: Clone> DockPopup<Asset> {
 
     pub fn app(
         dpi: u32,
-        source_index: usize,
         identity: String,
         running_windows: usize,
         pinned: bool,
@@ -221,7 +218,6 @@ impl<Asset: Clone> DockPopup<Asset> {
         Some(Self {
             scale: DpiScale::new(dpi)?,
             kind: PopupKind::App {
-                source_index,
                 identity,
                 running_windows,
                 entries: [Some(open), Some(customize), Some(pin), close]
@@ -260,17 +256,12 @@ impl<Asset: Clone> DockPopup<Asset> {
 
     pub fn picker(
         dpi: u32,
-        source_index: usize,
         style: WindowPickerStyle,
         entries: Vec<PickerWindow<Asset>>,
     ) -> Option<Self> {
         (!entries.is_empty()).then_some(Self {
             scale: DpiScale::new(dpi)?,
-            kind: PopupKind::Picker {
-                source_index,
-                style,
-                entries,
-            },
+            kind: PopupKind::Picker { style, entries },
             hovered: None,
             selected: None,
             offset: 0,
@@ -350,14 +341,6 @@ impl<Asset: Clone> DockPopup<Asset> {
         close.action = action;
         close.label = label;
         true
-    }
-
-    pub const fn source_index(&self) -> Option<usize> {
-        match &self.kind {
-            PopupKind::System(_) | PopupKind::Power | PopupKind::FileLocation(_) => None,
-            PopupKind::App { source_index, .. }
-            | PopupKind::Picker { source_index, .. } => Some(*source_index),
-        }
     }
 
     pub const fn picker_style(&self) -> Option<WindowPickerStyle> {

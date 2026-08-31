@@ -52,6 +52,34 @@ pub enum InputAction {
     },
 }
 
+pub struct InputActionBatch {
+    actions: Vec<InputAction>,
+    cancelled_sequence: Option<u64>,
+    shared: Arc<Shared>,
+}
+
+impl InputActionBatch {
+    pub fn actions(&self) -> impl Iterator<Item = InputAction> + '_ {
+        self.actions.iter().copied()
+    }
+
+    pub const fn cancelled_sequence(&self) -> Option<u64> {
+        self.cancelled_sequence
+    }
+
+    pub fn take_alt_tab_cycles(&self, sequence: u64) -> i32 {
+        mailbox::take_cycles(&self.shared, sequence)
+    }
+
+    pub fn claim(&self, sequence: u64) -> bool {
+        claim_sequence(&self.shared, sequence)
+    }
+
+    pub fn reject(&self, sequence: u64) {
+        reject_sequence(&self.shared, sequence);
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum InputError {
     #[error(transparent)]
@@ -124,38 +152,18 @@ impl InputController {
         }
     }
 
-    pub fn drain_actions(&self) -> Vec<InputAction> {
+    pub fn drain_action_batch(&self) -> InputActionBatch {
         let mut actions = self.receiver.try_iter().collect::<Vec<_>>();
         self.shared.wake_pending.store(false, Ordering::Release);
         actions.extend(self.receiver.try_iter());
         mailbox::subtract_depth(&self.shared.mailbox_depth, actions.len());
-        actions
-    }
+        let cancelled_sequence = self.take_cancelled_sequence();
 
-    pub fn take_alt_tab_cycles(&self, sequence: u64) -> i32 {
-        mailbox::take_cycles(&self.shared, sequence)
-    }
-
-    pub fn claim(&self, sequence: u64) -> bool {
-        let mut decision = lock_decision(&self.shared);
-        if self.shared.fail_open.load(Ordering::Acquire)
-            || !health::cleanup_is_complete(&self.shared)
-            || sequence < decision.invalid_before
-        {
-            return false;
+        InputActionBatch {
+            actions,
+            cancelled_sequence,
+            shared: Arc::clone(&self.shared),
         }
-        decision.claimed_sequence = decision.claimed_sequence.max(sequence);
-        true
-    }
-
-    pub fn reject(&self, sequence: u64) {
-        let mut decision = lock_decision(&self.shared);
-        decision.invalid_before = decision.invalid_before.max(sequence.saturating_add(1));
-        decision.rejected_sequence = decision.rejected_sequence.max(sequence);
-        drop(decision);
-        let _ =
-            health::enter_fail_open(&self.shared, InputFailOpenReason::RejectedSequence);
-        let _ = health::request_cleanup_for_sequence(&self.shared, sequence);
     }
 
     pub fn heartbeat(&self) {
@@ -169,7 +177,7 @@ impl InputController {
         !self.shared.fail_open.load(Ordering::Acquire)
     }
 
-    pub fn take_cancelled_sequence(&self) -> Option<u64> {
+    fn take_cancelled_sequence(&self) -> Option<u64> {
         let sequence = self.shared.cancelled_sequence.swap(0, Ordering::AcqRel);
         (sequence != 0).then_some(sequence)
     }
@@ -177,6 +185,27 @@ impl InputController {
 
 pub fn capture_age(captured_at: u64) -> Duration {
     Duration::from_millis(health::tick_count().saturating_sub(captured_at))
+}
+
+fn claim_sequence(shared: &Shared, sequence: u64) -> bool {
+    let mut decision = lock_decision(shared);
+    if shared.fail_open.load(Ordering::Acquire)
+        || !health::cleanup_is_complete(shared)
+        || sequence < decision.invalid_before
+    {
+        return false;
+    }
+    decision.claimed_sequence = decision.claimed_sequence.max(sequence);
+    true
+}
+
+fn reject_sequence(shared: &Shared, sequence: u64) {
+    let mut decision = lock_decision(shared);
+    decision.invalid_before = decision.invalid_before.max(sequence.saturating_add(1));
+    decision.rejected_sequence = decision.rejected_sequence.max(sequence);
+    drop(decision);
+    let _ = health::enter_fail_open(shared, InputFailOpenReason::RejectedSequence);
+    let _ = health::request_cleanup_for_sequence(shared, sequence);
 }
 
 impl Drop for InputController {

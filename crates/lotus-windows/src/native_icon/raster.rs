@@ -327,9 +327,13 @@ impl OwnedDib {
                 0,
             )?
         };
-        let bits = NonNull::new(bits.cast::<u8>()).ok_or_else(|| {
-            Error::new(E_FAIL, "CreateDIBSection returned no pixel storage")
-        })?;
+        let Some(bits) = NonNull::new(bits.cast::<u8>()) else {
+            // SAFETY: CreateDIBSection returned this handle, so this path owns it.
+            let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
+            return Err(
+                Error::new(E_FAIL, "CreateDIBSection returned no pixel storage").into(),
+            );
+        };
         Ok(Self { bitmap, bits })
     }
 

@@ -19,7 +19,7 @@ type SetWindowPosFn =
     unsafe extern "system" fn(HWND, HWND, i32, i32, i32, i32, SET_WINDOW_POS_FLAGS) -> BOOL;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
-static HOOK_READY: AtomicBool = AtomicBool::new(false);
+static HOOK_CREATED: AtomicBool = AtomicBool::new(false);
 static ANCHOR_X: AtomicI32 = AtomicI32::new(0);
 static ANCHOR_Y: AtomicI32 = AtomicI32::new(0);
 static LEASE_DEADLINE: AtomicU64 = AtomicU64::new(0);
@@ -31,6 +31,7 @@ pub(crate) fn handle_message(message: &CWPSTRUCT) {
     }
     if message.lParam.0 == DISABLE_SENTINEL {
         ENABLED.store(false, Ordering::Release);
+        LEASE_DEADLINE.store(0, Ordering::Release);
         acknowledge(message.wParam, true);
         return;
     }
@@ -43,17 +44,25 @@ pub(crate) fn handle_message(message: &CWPSTRUCT) {
         Ordering::Release,
     );
 
+    let Some(_configuration) = worker::begin_configuration() else {
+        acknowledge(message.wParam, false);
+        return;
+    };
+
     let active = install();
+    if active {
+        LEASE_DEADLINE.store(
+            tick_count().saturating_add(LEASE_MILLISECONDS),
+            Ordering::Release,
+        );
+    }
     ENABLED.store(active, Ordering::Release);
     acknowledge(message.wParam, active);
 }
 
 fn install() -> bool {
-    if HOOK_READY.load(Ordering::Acquire) {
-        return true;
-    }
-    if !worker::start_cleanup_worker() {
-        return false;
+    if HOOK_CREATED.load(Ordering::Acquire) {
+        return enable_hook();
     }
 
     catch_unwind(AssertUnwindSafe(install_inner)).unwrap_or(false)
@@ -63,32 +72,64 @@ fn install_inner() -> bool {
     let Some(target) = target::set_window_pos_address() else {
         return false;
     };
-    let Ok(original) =
-        (unsafe { MinHook::create_hook(target, hooked_set_window_pos as *mut c_void) })
-    else {
-        return HOOK_READY.load(Ordering::Acquire);
-    };
-    ORIGINAL_SET_WINDOW_POS.store(original.addr(), Ordering::Release);
+    let original =
+        match unsafe { MinHook::create_hook(target, hooked_set_window_pos as *mut c_void) }
+        {
+            Ok(original) => original.addr(),
+            Err(MH_STATUS::MH_ERROR_ALREADY_CREATED) => {
+                let original = ORIGINAL_SET_WINDOW_POS.load(Ordering::Acquire);
+                if original == 0 {
+                    return false;
+                }
+                original
+            }
+            Err(_) => return false,
+        };
+    ORIGINAL_SET_WINDOW_POS.store(original, Ordering::Release);
+    HOOK_CREATED.store(true, Ordering::Release);
 
+    if enable_hook_at(target) {
+        return true;
+    }
+
+    let _ = disable_hook_at(target);
+    false
+}
+
+fn enable_hook() -> bool {
+    let Some(target) = target::set_window_pos_address() else {
+        return false;
+    };
+    enable_hook_at(target)
+}
+
+fn enable_hook_at(target: *mut c_void) -> bool {
     match unsafe { MinHook::enable_hook(target) } {
-        Ok(()) | Err(MH_STATUS::MH_ERROR_ENABLED) => {
-            HOOK_READY.store(true, Ordering::Release);
-            true
-        }
+        Ok(()) | Err(MH_STATUS::MH_ERROR_ENABLED) => true,
         Err(_) => false,
     }
 }
 
-pub(crate) fn uninstall_after_lease() {
+pub(crate) fn disable_after_lease() -> bool {
     ENABLED.store(false, Ordering::Release);
-    if let Some(target) = target::set_window_pos_address() {
-        let _ = catch_unwind(AssertUnwindSafe(|| {
-            let _ = unsafe { MinHook::disable_hook(target) };
-            let _ = unsafe { MinHook::remove_hook(target) };
-        }));
+    if !HOOK_CREATED.load(Ordering::Acquire) {
+        return true;
     }
-    HOOK_READY.store(false, Ordering::Release);
-    ORIGINAL_SET_WINDOW_POS.store(0, Ordering::Release);
+    let Some(target) = target::set_window_pos_address() else {
+        return false;
+    };
+
+    disable_hook_at(target)
+}
+
+fn disable_hook_at(target: *mut c_void) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        matches!(
+            MinHook::disable_hook(target),
+            Ok(()) | Err(MH_STATUS::MH_ERROR_DISABLED)
+        )
+    }))
+    .unwrap_or(false)
 }
 
 pub(crate) fn lease_deadline() -> u64 {

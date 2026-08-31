@@ -40,8 +40,18 @@ impl ModuleHost {
         graphics: &mut DeviceState,
         window_tracker: &WindowTracker,
     ) -> Result<(), AppError> {
+        let mut request =
+            self.monitors
+                .begin_sync(dock, dock_model.settings(), dock_model.revision())?;
+        let input = match dock_model.prepare_monitor_presentation(request.take_targets()) {
+            Ok(input) => input,
+            Err(error) => {
+                self.monitors.abort_sync(&request, &error);
+                return Err(error);
+            }
+        };
         self.monitors
-            .sync(dock, dock_model, graphics, window_tracker)
+            .finish_sync(dock, request, input, graphics, window_tracker)
     }
 
     pub(in crate::app) fn drain_monitor_dock_events(

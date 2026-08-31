@@ -1,3 +1,4 @@
+use lotus_core::module::ModuleId;
 use lotus_media::MediaHitTarget;
 use lotus_windows::WindowHandle;
 use lotus_windows::graphics::DeviceState;
@@ -9,7 +10,7 @@ use crate::app::dock::DockRuntime;
 
 impl ModuleHost {
     pub(in crate::app) fn refresh_media(&mut self, dock_model: &mut DockRuntime) -> bool {
-        if self.modules.is_enabled(lotus_core::module::ModuleId::Media) {
+        if self.lifecycle.is_enabled(ModuleId::Media) {
             self.media.refresh(dock_model)
         } else {
             self.media.drain(dock_model)

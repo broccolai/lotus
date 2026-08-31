@@ -41,7 +41,15 @@ pub(in crate::app) fn choose_mascot_image(
                 MascotImageOutcome::Unchanged
             }
         },
-        Ok(None) | Err(_) => MascotImageOutcome::Unchanged,
+        Ok(None) => MascotImageOutcome::Unchanged,
+        Err(error) => {
+            show_error(
+                owner,
+                "Lotus Settings",
+                &format!("Lotus could not open the image picker.\n\n{error}"),
+            );
+            MascotImageOutcome::Unchanged
+        }
     }
 }
 
@@ -86,7 +94,15 @@ pub(in crate::app) fn choose_application_icon(
                 }
             }
         }
-        Ok(None) | Err(_) => ApplicationIconOutcome::Unchanged,
+        Ok(None) => ApplicationIconOutcome::Unchanged,
+        Err(error) => {
+            show_error(
+                owner,
+                "Lotus Settings",
+                &format!("Lotus could not open the image picker.\n\n{error}"),
+            );
+            ApplicationIconOutcome::Unchanged
+        }
     }
 }
 
@@ -117,6 +133,14 @@ pub(in crate::app) fn choose_color(
             }
             ColorOutcome::Changed
         }
-        Ok(None) | Err(_) => ColorOutcome::Unchanged,
+        Ok(None) => ColorOutcome::Unchanged,
+        Err(error) => {
+            show_error(
+                owner,
+                "Lotus Settings",
+                &format!("Lotus could not open the color picker.\n\n{error}"),
+            );
+            ColorOutcome::Unchanged
+        }
     }
 }

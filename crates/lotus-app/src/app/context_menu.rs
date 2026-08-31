@@ -93,13 +93,11 @@ impl ContextMenuRuntime {
     pub(super) fn open_app(
         &mut self,
         anchor: SignedPoint,
-        source_index: usize,
         options: AppMenuOptions,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         let mut scene = ContextMenuScene::app(
             self.window.dpi(),
-            source_index,
             options.identity,
             options.running_windows,
             options.pinned,
@@ -144,15 +142,13 @@ impl ContextMenuRuntime {
     pub(super) fn open_picker(
         &mut self,
         anchor: SignedPoint,
-        source_index: usize,
         identity: String,
         style: WindowPickerStyle,
         windows: Vec<NativePickerWindow>,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        let mut scene =
-            ContextMenuScene::picker(self.window.dpi(), source_index, style, windows)
-                .ok_or(AppError::InvalidContextMenuScene)?;
+        let mut scene = ContextMenuScene::picker(self.window.dpi(), style, windows)
+            .ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = Some(identity);
@@ -166,7 +162,6 @@ impl ContextMenuRuntime {
 
     pub(super) fn replace_picker(
         &mut self,
-        source_index: usize,
         style: WindowPickerStyle,
         windows: Vec<NativePickerWindow>,
         graphics: &mut DeviceState,
@@ -179,9 +174,8 @@ impl ContextMenuRuntime {
             self.hide();
             return Ok(());
         };
-        let mut scene =
-            ContextMenuScene::picker(self.window.dpi(), source_index, style, windows)
-                .ok_or(AppError::InvalidContextMenuScene)?;
+        let mut scene = ContextMenuScene::picker(self.window.dpi(), style, windows)
+            .ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.prepare_surface(anchor, graphics)?;

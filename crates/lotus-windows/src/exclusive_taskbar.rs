@@ -48,7 +48,13 @@ impl ExclusiveTaskbarGuard {
     pub fn start() -> Result<Self, ExclusiveTaskbarError> {
         let control_directory = guardian::control_directory();
         fs::create_dir(&control_directory)?;
-        let mut child = guardian::spawn(std::process::id(), &control_directory)?;
+        let mut child = match guardian::spawn(std::process::id(), &control_directory) {
+            Ok(child) => child,
+            Err(error) => {
+                guardian::cleanup_control_directory(&control_directory);
+                return Err(error.into());
+            }
+        };
 
         let started = Instant::now();
         loop {
@@ -92,14 +98,12 @@ impl Drop for ExclusiveTaskbarGuard {
 }
 
 /// Runs the recovery guardian instead of the normal application when requested.
-pub fn run_guardian_if_requested() -> bool {
-    let Ok(request) = guardian::request(std::env::args_os().skip(1)) else {
-        return true;
-    };
+pub fn run_guardian_if_requested() -> Result<bool, ExclusiveTaskbarError> {
+    let request = guardian::request(std::env::args_os().skip(1))?;
     let Some((parent_process_id, control_directory)) = request else {
-        return false;
+        return Ok(false);
     };
 
-    let _ = guardian::run(parent_process_id, &control_directory);
-    true
+    guardian::run(parent_process_id, &control_directory)?;
+    Ok(true)
 }

@@ -104,7 +104,6 @@ impl ModuleHost {
         };
         self.context_menu.open_app(
             anchor,
-            source_index,
             AppMenuOptions {
                 identity: item.id.clone(),
                 running_windows: item.windows.len(),
@@ -139,14 +138,8 @@ impl ModuleHost {
             .map(|item| item.id.clone())
             .unwrap_or_default();
         let style = dock_model.settings().window_picker_style;
-        self.context_menu.open_picker(
-            anchor,
-            source_index,
-            identity,
-            style,
-            entries,
-            graphics,
-        )
+        self.context_menu
+            .open_picker(anchor, identity, style, entries, graphics)
     }
 
     pub(in crate::app) fn open_power_menu(
@@ -182,7 +175,6 @@ impl ModuleHost {
             );
         }
         let style = dock_model.settings().window_picker_style;
-        self.context_menu
-            .replace_picker(source_index, style, windows, graphics)
+        self.context_menu.replace_picker(style, windows, graphics)
     }
 }

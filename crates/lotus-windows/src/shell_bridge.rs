@@ -14,7 +14,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, PCSTR};
 
-const BRIDGE_FILE_NAME: &str = "lotus_shell_bridge.dll";
 const MESSAGE_TIMEOUT_MILLISECONDS: u32 = 250;
 
 pub(crate) struct ShellBridgeLease {
@@ -29,7 +28,9 @@ pub(crate) struct ShellBridgeLease {
 impl ShellBridgeLease {
     pub(crate) fn attach(window: HWND, owner: HWND) -> Option<Self> {
         let thread_id = trusted_shell_thread(window)?;
-        let path = bridge_path()?;
+        let path = crate::bridge_cache::cached_bridge_path(
+            crate::bridge_cache::BridgeBinary::ShellHost,
+        )?;
         let path = HSTRING::from(path.as_os_str());
 
         let module = unsafe { LoadLibraryW(&path) }.ok()?;
@@ -55,8 +56,9 @@ impl ShellBridgeLease {
         let message = unsafe { RegisterWindowMessageW(CONFIG_MESSAGE_NAME) };
         let ack_message = unsafe { RegisterWindowMessageW(ACK_MESSAGE_NAME) };
         if message == 0 || ack_message == 0 {
-            let _ = unsafe { UnhookWindowsHookEx(hook) };
-            let _ = unsafe { FreeLibrary(module) };
+            if unsafe { UnhookWindowsHookEx(hook) }.is_ok() {
+                let _ = unsafe { FreeLibrary(module) };
+            }
             return None;
         }
 
@@ -88,8 +90,9 @@ impl ShellBridgeLease {
 impl Drop for ShellBridgeLease {
     fn drop(&mut self) {
         let _ = self.send(DISABLE_SENTINEL);
-        let _ = unsafe { UnhookWindowsHookEx(self.hook) };
-        let _ = unsafe { FreeLibrary(self.module) };
+        if unsafe { UnhookWindowsHookEx(self.hook) }.is_ok() {
+            let _ = unsafe { FreeLibrary(self.module) };
+        }
     }
 }
 
@@ -134,7 +137,7 @@ fn trusted_shell_thread(window: HWND) -> Option<u32> {
     let length = unsafe { GetClassNameW(window, &mut class_name) };
     let length = usize::try_from(length).ok()?;
     let class_name = String::from_utf16_lossy(&class_name[..length]);
-    if class_name != "ControlCenterWindow" && class_name != "Windows.UI.Core.CoreWindow" {
+    if class_name != "ControlCenterWindow" {
         return None;
     }
 
@@ -150,11 +153,6 @@ fn trusted_shell_thread(window: HWND) -> Option<u32> {
         .join("System32")
         .join("ShellHost.exe");
     same_windows_path(&actual, &expected).then_some(thread_id)
-}
-
-fn bridge_path() -> Option<PathBuf> {
-    let path = env::current_exe().ok()?.parent()?.join(BRIDGE_FILE_NAME);
-    path.is_file().then_some(path)
 }
 
 fn same_windows_path(left: &Path, right: &Path) -> bool {

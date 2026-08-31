@@ -19,7 +19,7 @@ use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceSize};
 use lotus_windows::interaction::PointerCursor;
 use lotus_windows::native_icon::NativeIconCache;
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
-use lotus_windows::search_catalog::SearchCatalogCache;
+use lotus_windows::search_catalog::ApplicationCatalogSnapshot;
 use lotus_windows::update::{Release, UpdateChecker, UpdateResult, UpdateStartError};
 use lotus_windows::window::{
     SettingsEvent, SettingsKey as WindowSettingsKey, SettingsWindow,
@@ -471,10 +471,10 @@ impl SettingsRuntime {
 
     pub(in crate::app) fn hydrate_application_previews(
         &mut self,
-        cache: &SearchCatalogCache,
+        applications: &ApplicationCatalogSnapshot,
         dock_items: &[lotus_core::dock::DockItem],
     ) {
-        applications::hydrate_previews(self, cache, dock_items);
+        applications::hydrate_previews(self, applications, dock_items);
     }
 
     pub(in crate::app) fn render_frame(

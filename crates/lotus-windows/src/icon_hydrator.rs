@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use lotus_core::application::{ApplicationPresentationIcon, is_shared_host_executable};
 use lotus_core::window::TrackedWindowKey;
@@ -16,6 +17,8 @@ use crate::launch::ComApartment;
 use crate::messages::ICON_HYDRATION_WAKE;
 use crate::native_icon::NativeIconCache;
 use crate::responsiveness::METRICS;
+
+const START_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug)]
 pub struct LauncherIconRequest {
@@ -86,6 +89,12 @@ pub enum IconHydrationResult {
 pub enum IconHydratorError {
     #[error("Lotus could not create its icon worker: {0}")]
     Thread(#[from] std::io::Error),
+    #[error("Lotus could not initialize COM for its icon worker")]
+    ComUnavailable,
+    #[error("the icon worker stopped before it became ready")]
+    WorkerExitedBeforeReady,
+    #[error("the icon worker did not become ready within two seconds")]
+    StartTimeout,
 }
 
 #[derive(Clone)]
@@ -135,6 +144,10 @@ struct State {
     results: Vec<IconHydrationResult>,
 }
 
+enum WorkerStartupError {
+    ComUnavailable,
+}
+
 impl IconHydrator {
     pub fn start() -> Result<Self, IconHydratorError> {
         let shared = Arc::new(SharedState {
@@ -150,14 +163,33 @@ impl IconHydrator {
             wake_queued: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
         });
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
             .name("lotus-icon-hydrator".to_owned())
-            .spawn(move || hydrate_icons(&worker_shared))?;
-        Ok(Self {
-            shared,
-            worker: Some(worker),
-        })
+            .spawn(move || hydrate_icons(&worker_shared, &ready_sender))?;
+
+        match ready_receiver.recv_timeout(START_TIMEOUT) {
+            Ok(Ok(())) => Ok(Self {
+                shared,
+                worker: Some(worker),
+            }),
+            Ok(Err(WorkerStartupError::ComUnavailable)) => {
+                let _ = worker.join();
+                Err(IconHydratorError::ComUnavailable)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = worker.join();
+                Err(IconHydratorError::WorkerExitedBeforeReady)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                shared.stopping.store(true, Ordering::Release);
+                shared.wake.notify_all();
+                drop(ready_receiver);
+                drop(worker);
+                Err(IconHydratorError::StartTimeout)
+            }
+        }
     }
 
     pub fn launcher_client(&self) -> LauncherIconClient {
@@ -255,8 +287,18 @@ enum Work {
     Dock(Vec<DockIconRequest>),
 }
 
-fn hydrate_icons(shared: &SharedState) {
-    let _apartment = ComApartment::enter();
+fn hydrate_icons(
+    shared: &SharedState,
+    ready: &mpsc::SyncSender<Result<(), WorkerStartupError>>,
+) {
+    let Some(_apartment) = ComApartment::enter() else {
+        let _ = ready.send(Err(WorkerStartupError::ComUnavailable));
+        return;
+    };
+    if ready.send(Ok(())).is_err() {
+        return;
+    }
+
     let mut native_icons = NativeIconCache::default();
     let mut custom_images = CustomImageCache::default();
 

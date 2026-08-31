@@ -67,7 +67,7 @@ unsafe extern "system" fn find_shell_bridge_window_callback(
     let Some(class_name) = window_class_name(window) else {
         return BOOL(1);
     };
-    if !shell_panel_class_name(&class_name) {
+    if class_name != "ControlCenterWindow" {
         return BOOL(1);
     }
     let mut process_id = 0;

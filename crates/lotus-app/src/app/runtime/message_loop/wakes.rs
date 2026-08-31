@@ -80,8 +80,11 @@ impl MessageLoop<'_, '_> {
             }
         }
         if wakes.icon_hydration {
-            self.auxiliary.drain_hydrated_icons(self.dock_model)?;
-            changed = true;
+            let hydration = self.auxiliary.drain_hydrated_icons(self.dock_model)?;
+            if hydration.dock_presentation_changed() {
+                self.render_dock();
+            }
+            changed |= hydration.requests_frame();
         }
 
         if self.dock_model.scene().desired_size() != presented_size {
@@ -99,12 +102,14 @@ impl MessageLoop<'_, '_> {
     }
 
     pub(super) fn handle_input_wake(&mut self) -> bool {
-        self.auxiliary.handle_input_actions(
-            self.dock,
-            self.window_tracker,
-            self.dock_model,
-            self.graphics,
-        )
+        self.auxiliary
+            .handle_input_actions(
+                self.dock,
+                self.window_tracker,
+                self.dock_model,
+                self.graphics,
+            )
+            .requests_frame()
     }
 
     fn render_dock(&mut self) {

@@ -1,4 +1,5 @@
 mod activation;
+mod applications;
 mod context_menu;
 mod dock;
 mod icon_override;

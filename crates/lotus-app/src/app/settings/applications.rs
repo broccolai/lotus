@@ -10,18 +10,17 @@ use lotus_settings::scene::{SettingsApplicationRecord, SettingsControl};
 use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::native_icon::NativeIconCache;
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
-use lotus_windows::search_catalog::SearchCatalogCache;
+use lotus_windows::search_catalog::ApplicationCatalogSnapshot;
 
 use super::SettingsRuntime;
 
 const PREVIEW_ICON_PIXEL_SIZE: u32 = 96;
 
 pub(in crate::app) fn application_records(
-    cache: &SearchCatalogCache,
+    snapshot: &ApplicationCatalogSnapshot,
     dock_items: &[DockItem],
     settings: &DockSettings,
 ) -> Vec<SettingsApplicationRecord> {
-    let snapshot = cache.snapshot();
     let mut applications = snapshot
         .applications
         .iter()
@@ -47,7 +46,7 @@ pub(in crate::app) fn application_records(
 
 pub(super) fn hydrate_previews(
     runtime: &mut SettingsRuntime,
-    cache: &SearchCatalogCache,
+    snapshot: &ApplicationCatalogSnapshot,
     dock_items: &[DockItem],
 ) {
     let ids = visible_application_ids(runtime);
@@ -56,8 +55,6 @@ pub(super) fn hydrate_previews(
     }
 
     let settings = runtime.scene.draft().clone();
-    let snapshot = cache.snapshot();
-
     for id in ids {
         let source = snapshot
             .applications

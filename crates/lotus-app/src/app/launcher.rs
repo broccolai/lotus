@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit, SelectionMove};
 use lotus_core::settings::DockSettings;
@@ -22,13 +22,13 @@ use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError, SurfaceSize};
 use lotus_windows::icon_hydrator::{LauncherIconClient, LauncherIconRequest};
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
-use lotus_windows::search_catalog::SearchCatalogCache;
 use lotus_windows::window::{
     CursorMove as WindowCursorMove, DockContextRequest, DockWindow, SearchEdit,
     SearchEvent, SearchWindow, SelectionDirection, SignedPoint,
 };
 
 use crate::app::AppError;
+use crate::app::applications::PreparedLauncherCatalog;
 use crate::app::dock::DockRuntime;
 use crate::app::runtime::resize_launcher_surface;
 
@@ -112,22 +112,17 @@ impl LauncherRuntime {
         )
     }
 
-    pub(super) fn toggle(
+    pub(super) fn open(
         &mut self,
         dock: &DockWindow,
         dock_model: &DockRuntime,
-        catalog: &SearchCatalogCache,
+        catalog: PreparedLauncherCatalog,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        if self.visible {
-            self.hide();
-            return Ok(());
-        }
         if self.surface.is_none() && graphics.ready().is_none() {
             return Err(AppError::GraphicsUnavailable);
         }
 
-        let _ = catalog.refresh_if_stale(Duration::from_mins(5));
         self.prepare_catalog(dock_model, catalog);
         self.presentation.begin();
         self.rebuild_scene(dock.dpi())?;
@@ -174,27 +169,24 @@ impl LauncherRuntime {
     pub(super) fn refresh_catalog_if_ready(
         &mut self,
         dock: &DockWindow,
-        dock_model: &DockRuntime,
-        catalog: &SearchCatalogCache,
+        catalog: PreparedLauncherCatalog,
         graphics: &mut DeviceState,
     ) -> Result<bool, AppError> {
-        let Some(ready) = catalog.ready_catalog(
-            dock_model.items(),
-            &dock_model.settings().hidden_executables,
-        ) else {
+        let Some(generation) = catalog.generation else {
             return Ok(false);
         };
-        if !self
-            .controller
-            .refresh_catalog(ready.generation, ready.catalog)
-        {
+
+        if !self.controller.refresh_catalog(generation, catalog.catalog) {
             return Ok(false);
         }
+
         if !self.visible {
             return Ok(true);
         }
+
         self.rebuild_scene(self.window.dpi())?;
         self.sync_size(dock, graphics)?;
+
         Ok(true)
     }
 
@@ -334,9 +326,13 @@ impl LauncherRuntime {
             .collect()
     }
 
-    fn prepare_catalog(&mut self, dock_model: &DockRuntime, catalog: &SearchCatalogCache) {
+    fn prepare_catalog(
+        &mut self,
+        dock_model: &DockRuntime,
+        catalog: PreparedLauncherCatalog,
+    ) {
         let projection = catalog_projection(dock_model);
-        let ready_generation = catalog.ready_generation();
+        let ready_generation = catalog.generation;
         if self.catalog_projection == Some(projection)
             && self.controller.catalog_generation() == ready_generation
         {
@@ -344,20 +340,7 @@ impl LauncherRuntime {
             return;
         }
 
-        if let Some(ready) = catalog.ready_catalog(
-            dock_model.items(),
-            &dock_model.settings().hidden_executables,
-        ) {
-            self.controller.begin(Some(ready.generation), ready.catalog);
-        } else {
-            self.controller.begin(
-                None,
-                catalog.catalog(
-                    dock_model.items(),
-                    &dock_model.settings().hidden_executables,
-                ),
-            );
-        }
+        self.controller.begin(catalog.generation, catalog.catalog);
         self.catalog_projection = Some(projection);
     }
 

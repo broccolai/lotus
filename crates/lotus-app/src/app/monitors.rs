@@ -1,3 +1,6 @@
+use std::error::Error;
+
+use lotus_core::settings::DockSettings;
 use lotus_dock::scene::DockPresenter;
 use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
@@ -14,7 +17,7 @@ use lotus_windows::window::{
 use lotus_windows::window_tracker::WindowTracker;
 
 use crate::app::AppError;
-use crate::app::dock::{DockRuntime, popup_overlap, status_popup_center};
+use crate::app::dock::{popup_overlap, status_popup_center};
 use crate::app::runtime::resize_surface;
 use crate::app::visuals::{DockAnchor, DockHitTarget, DockScene, surface_size};
 
@@ -36,6 +39,46 @@ pub(super) enum DockAction {
 pub(super) struct MonitorDockEventDrain {
     pub(super) actions: Vec<DockAction>,
     pub(super) had_events: bool,
+}
+
+pub(super) struct MonitorPresentationInput {
+    pub(super) settings: DockSettings,
+    pub(super) revision: u64,
+    pub(super) replicas: Vec<MonitorReplicaInput>,
+}
+
+pub(super) struct MonitorReplicaInput {
+    pub(super) owner: WindowHandle,
+    pub(super) scene: DockScene,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct MonitorReplicaTarget {
+    pub(super) dpi: u32,
+    pub(super) owner: WindowHandle,
+}
+
+pub(super) enum MonitorPresentationRequest {
+    Disabled,
+    Recreate(Vec<DockReplicaWindow>),
+    Refresh(Vec<MonitorReplicaTarget>),
+    Current,
+}
+
+impl MonitorPresentationRequest {
+    pub(super) fn take_targets(&mut self) -> Vec<MonitorReplicaTarget> {
+        match self {
+            Self::Disabled | Self::Current => Vec::new(),
+            Self::Recreate(windows) => windows
+                .iter()
+                .map(|window| MonitorReplicaTarget {
+                    dpi: window.dpi(),
+                    owner: window.handle(),
+                })
+                .collect(),
+            Self::Refresh(targets) => std::mem::take(targets),
+        }
+    }
 }
 
 pub(super) struct MonitorDocks {
@@ -81,44 +124,82 @@ impl MonitorDocks {
         }
     }
 
-    pub(super) fn sync(
+    pub(super) fn begin_sync(
         &mut self,
         dock: &DockWindow,
-        model: &mut DockRuntime,
-        graphics: &mut DeviceState,
-        tracker: &WindowTracker,
-    ) -> Result<(), AppError> {
-        if !model.settings().show_on_all_monitors {
+        settings: &DockSettings,
+        revision: u64,
+    ) -> Result<MonitorPresentationRequest, AppError> {
+        if !settings.show_on_all_monitors {
             self.docks.clear();
-            self.rendered_revision = model.revision();
+            self.rendered_revision = revision;
+            self.topology_dirty = true;
             self.health = MonitorIntegrationHealth::Disabled;
-            return Ok(());
+            return Ok(MonitorPresentationRequest::Disabled);
         }
 
         if self.topology_dirty {
-            if let Err(error) = self.recreate(dock, model, graphics) {
-                self.health = MonitorIntegrationHealth::Degraded;
-                lotus_windows::diagnostics::record_error(
-                    "monitors.recovery_failed",
-                    &error,
-                );
-                return Err(error);
-            }
-            self.health = MonitorIntegrationHealth::Healthy;
-            lotus_windows::diagnostics::record_diagnostic(
-                "monitors.recovered",
-                &format!(
-                    "replicas={} topology={}",
-                    self.docks.len(),
-                    self.topology_generation
-                ),
-            );
-        } else if self.rendered_revision != model.revision() {
-            self.refresh_content(dock, model, graphics)?;
+            return match dock.create_secondary_dock_windows() {
+                Ok(windows) => Ok(MonitorPresentationRequest::Recreate(windows)),
+                Err(error) => {
+                    self.record_recovery_failure(&error);
+                    Err(error.into())
+                }
+            };
         }
-        self.rendered_revision = model.revision();
-        self.sync_visibility(model, tracker)?;
+
+        if self.rendered_revision != revision {
+            return Ok(MonitorPresentationRequest::Refresh(self.replica_targets()));
+        }
+
+        Ok(MonitorPresentationRequest::Current)
+    }
+
+    pub(super) fn finish_sync(
+        &mut self,
+        dock: &DockWindow,
+        request: MonitorPresentationRequest,
+        input: MonitorPresentationInput,
+        graphics: &mut DeviceState,
+        tracker: &WindowTracker,
+    ) -> Result<(), AppError> {
+        let MonitorPresentationInput {
+            settings,
+            revision,
+            replicas,
+        } = input;
+        let recreating = matches!(request, MonitorPresentationRequest::Recreate(_));
+        let result = match request {
+            MonitorPresentationRequest::Disabled | MonitorPresentationRequest::Current => {
+                Ok(())
+            }
+            MonitorPresentationRequest::Recreate(windows) => {
+                self.recreate(dock, windows, replicas, &settings, graphics)
+            }
+            MonitorPresentationRequest::Refresh(_) => {
+                self.refresh_content(dock, replicas, &settings, graphics)
+            }
+        };
+        if let Err(error) = result {
+            if recreating {
+                self.record_recovery_failure(&error);
+            }
+            return Err(error);
+        }
+
+        self.rendered_revision = revision;
+        self.sync_visibility(&settings, tracker)?;
         Ok(())
+    }
+
+    pub(super) fn abort_sync(
+        &mut self,
+        request: &MonitorPresentationRequest,
+        error: &AppError,
+    ) {
+        if matches!(request, MonitorPresentationRequest::Recreate(_)) {
+            self.record_recovery_failure(error);
+        }
     }
 
     pub(super) fn mark_topology_dirty(&mut self) {
@@ -185,12 +266,12 @@ impl MonitorDocks {
 
     pub(super) fn sync_visibility(
         &mut self,
-        model: &DockRuntime,
+        settings: &DockSettings,
         tracker: &WindowTracker,
     ) -> Result<(), AppError> {
         for replica in &mut self.docks {
             let fullscreen = tracker.fullscreen_on_same_monitor(replica.window.handle());
-            let occluded = model.settings().hide_when_fullscreen && fullscreen;
+            let occluded = settings.hide_when_fullscreen && fullscreen;
             replica.window.set_fullscreen_occluded(occluded)?;
             if occluded {
                 replica.surface.stop_animation();
@@ -257,9 +338,15 @@ impl MonitorDocks {
     fn recreate(
         &mut self,
         dock: &DockWindow,
-        model: &mut DockRuntime,
+        windows: Vec<DockReplicaWindow>,
+        inputs: Vec<MonitorReplicaInput>,
+        settings: &DockSettings,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
+        if !replica_inputs_match(windows.iter().map(DockReplicaWindow::handle), &inputs) {
+            return Err(AppError::InvalidScene);
+        }
+
         lotus_windows::diagnostics::record_diagnostic(
             "monitors.recovery_requested",
             &format!(
@@ -269,13 +356,13 @@ impl MonitorDocks {
             ),
         );
         let mut docks = Vec::new();
-        for window in dock.create_secondary_dock_windows()? {
-            let scene = model.replica_scene(window.dpi(), window.handle())?;
+        for (window, replica_input) in windows.into_iter().zip(inputs) {
+            let scene = replica_input.scene;
             let size = scene.desired_size();
             let physical = NonZeroPhysicalSize::new(size.width(), size.height())
                 .ok_or(AppError::ZeroSizedSurface)?;
-            dock.place_secondary_dock_window(&window, physical, model.settings())?;
-            lotus_windows::backdrop::apply_dock_settings(window.handle(), model.settings());
+            dock.place_secondary_dock_window(&window, physical, settings)?;
+            lotus_windows::backdrop::apply_dock_settings(window.handle(), settings);
             let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
             let surface = CompositionSurfaceState::create(
                 device,
@@ -292,30 +379,68 @@ impl MonitorDocks {
         }
         self.docks = docks;
         self.topology_dirty = false;
+        self.health = MonitorIntegrationHealth::Healthy;
+        lotus_windows::diagnostics::record_diagnostic(
+            "monitors.recovered",
+            &format!(
+                "replicas={} topology={}",
+                self.docks.len(),
+                self.topology_generation
+            ),
+        );
         Ok(())
     }
 
     fn refresh_content(
         &mut self,
         dock: &DockWindow,
-        model: &mut DockRuntime,
+        inputs: Vec<MonitorReplicaInput>,
+        settings: &DockSettings,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        for replica in &mut self.docks {
-            replica.scene =
-                model.replica_scene(replica.window.dpi(), replica.window.handle())?;
+        if !replica_inputs_match(
+            self.docks.iter().map(|replica| replica.window.handle()),
+            &inputs,
+        ) {
+            return Err(AppError::InvalidScene);
+        }
+
+        for (replica, replica_input) in self.docks.iter_mut().zip(inputs) {
+            replica.scene = replica_input.scene;
             let size = replica.scene.desired_size();
             let physical = NonZeroPhysicalSize::new(size.width(), size.height())
                 .ok_or(AppError::ZeroSizedSurface)?;
-            dock.place_secondary_dock_window(&replica.window, physical, model.settings())?;
-            lotus_windows::backdrop::apply_dock_settings(
-                replica.window.handle(),
-                model.settings(),
-            );
+            dock.place_secondary_dock_window(&replica.window, physical, settings)?;
+            lotus_windows::backdrop::apply_dock_settings(replica.window.handle(), settings);
             resize_surface(graphics, replica.surface.value_mut(), surface_size(size))?;
         }
         Ok(())
     }
+
+    fn replica_targets(&self) -> Vec<MonitorReplicaTarget> {
+        self.docks
+            .iter()
+            .map(|replica| MonitorReplicaTarget {
+                dpi: replica.window.dpi(),
+                owner: replica.window.handle(),
+            })
+            .collect()
+    }
+
+    fn record_recovery_failure<E: Error + 'static>(&mut self, error: &E) {
+        self.health = MonitorIntegrationHealth::Degraded;
+        lotus_windows::diagnostics::record_error("monitors.recovery_failed", error);
+    }
+}
+
+fn replica_inputs_match(
+    expected: impl ExactSizeIterator<Item = WindowHandle>,
+    inputs: &[MonitorReplicaInput],
+) -> bool {
+    expected.len() == inputs.len()
+        && expected
+            .zip(inputs)
+            .all(|(owner, input)| owner == input.owner)
 }
 
 impl MonitorDock {

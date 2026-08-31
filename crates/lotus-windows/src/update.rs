@@ -204,6 +204,10 @@ pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
         parse_startup_args(&arguments).map_err(UpdateInstallError::StartupArguments)?;
     let mut journal = read_journal()?.ok_or(UpdateInstallError::MissingJournal)?;
     validate_journal(&journal)?;
+    if !matches!(journal.phase, UpdatePhase::Prepared) {
+        return Err(UpdateInstallError::UnexpectedHelperPhase);
+    }
+    let installer = validated_journal_installer(&installer, &journal)?;
     wait_for_update_source(startup.restart_after)?;
     journal.phase = UpdatePhase::InstallerRunning;
     if let Err(error) = write_journal(&journal) {
@@ -476,6 +480,28 @@ fn validate_journal_staging(journal: &UpdateJournal) -> Result<(), UpdateInstall
     }
 }
 
+fn validated_journal_installer(
+    requested: &Path,
+    journal: &UpdateJournal,
+) -> Result<PathBuf, UpdateInstallError> {
+    let expected = journal.staging_directory.join("lotus-setup.exe");
+    let expected = canonicalize_installer_path(expected)?;
+    let requested = canonicalize_installer_path(requested.to_owned())?;
+    if paths_equal(&requested, &expected) {
+        Ok(expected)
+    } else {
+        Err(UpdateInstallError::InstallerPathMismatch {
+            requested,
+            expected,
+        })
+    }
+}
+
+fn canonicalize_installer_path(path: PathBuf) -> Result<PathBuf, UpdateInstallError> {
+    path.canonicalize()
+        .map_err(|source| UpdateInstallError::InstallerPathCanonicalize { path, source })
+}
+
 fn cleanup_journal_staging(journal: &UpdateJournal) -> Result<(), UpdateInstallError> {
     validate_journal_staging(journal)?;
     remove_staging_directory(&journal.staging_directory)
@@ -586,6 +612,8 @@ pub enum UpdateInstallError {
     MissingJournal,
     #[error("the update journal records a failed installation")]
     FailedJournal,
+    #[error("the update helper requires a prepared update journal")]
+    UnexpectedHelperPhase,
     #[error("the update installed Lotus {actual}, but expected Lotus {expected}")]
     TargetVersionMismatch { expected: String, actual: String },
     #[error("the update source executable is invalid")]
@@ -606,6 +634,19 @@ pub enum UpdateInstallError {
     LaunchHelper(#[source] std::io::Error),
     #[error("Lotus could not launch its installer: {0}")]
     LaunchInstaller(#[source] std::io::Error),
+    #[error("the update helper installer target could not be resolved ({path}): {source}")]
+    InstallerPathCanonicalize {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "the update helper installer target does not match the prepared update ({requested} instead of {expected})"
+    )]
+    InstallerPathMismatch {
+        requested: PathBuf,
+        expected: PathBuf,
+    },
     #[error("the Lotus installer exited unsuccessfully ({0:?})")]
     InstallerExit(Option<i32>),
     #[error("Lotus could not relaunch its pre-update executable: {0}")]

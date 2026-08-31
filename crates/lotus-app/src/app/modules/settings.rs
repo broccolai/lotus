@@ -51,8 +51,9 @@ impl ModuleHost {
             return Ok(());
         };
         let identity = record.id.clone();
+        let application_catalog = self.applications.snapshot();
         let mut applications = application_records(
-            &self.applications,
+            &application_catalog,
             dock_model.items(),
             dock_model.settings(),
         );
@@ -62,6 +63,7 @@ impl ModuleHost {
         {
             applications.push(record);
         }
+
         self.settings.open(dock_model.settings(), graphics)?;
         self.settings.set_applications(applications);
         self.settings.open_application_manager(&identity);
@@ -195,8 +197,9 @@ impl ModuleHost {
                 Ok(SettingsIntent::None)
             }
             SettingsEventOutcome::HydrateApplicationPreviews => {
+                let application_catalog = self.applications.snapshot();
                 self.settings
-                    .hydrate_application_previews(&self.applications, dock_items);
+                    .hydrate_application_previews(&application_catalog, dock_items);
                 self.settings.invalidate();
                 Ok(SettingsIntent::None)
             }
@@ -211,8 +214,9 @@ impl ModuleHost {
         dock_items: &[DockItem],
     ) {
         if self.settings.paste_query(clipboard) {
+            let application_catalog = self.applications.snapshot();
             self.settings
-                .hydrate_application_previews(&self.applications, dock_items);
+                .hydrate_application_previews(&application_catalog, dock_items);
         }
     }
 
@@ -235,26 +239,30 @@ impl ModuleHost {
         if !visible_on_apps_page {
             return;
         }
+
         self.refresh_application_records(dock_items);
         self.settings.invalidate();
     }
 
     pub(in crate::app) fn hydrate_application_previews(&mut self, dock_items: &[DockItem]) {
+        let application_catalog = self.applications.snapshot();
         self.settings
-            .hydrate_application_previews(&self.applications, dock_items);
+            .hydrate_application_previews(&application_catalog, dock_items);
     }
 
     fn refresh_application_records(&mut self, dock_items: &[DockItem]) {
         let selected = self.settings.selected_application_id().clone();
         let settings = self.settings.draft().clone();
-        let applications = application_records(&self.applications, dock_items, &settings);
+        let application_catalog = self.applications.snapshot();
+        let applications = application_records(&application_catalog, dock_items, &settings);
+
         self.settings.set_applications(applications);
         if let Some(selected) = selected {
             self.settings.open_application_manager(&selected);
         }
 
         self.settings
-            .hydrate_application_previews(&self.applications, dock_items);
+            .hydrate_application_previews(&application_catalog, dock_items);
     }
 }
 
