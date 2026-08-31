@@ -252,6 +252,12 @@ impl LauncherRuntime {
         }
     }
 
+    pub(super) fn focus_if_visible(&self) {
+        if self.visible {
+            let _ = self.window.focus();
+        }
+    }
+
     pub(super) fn rebuild_scene(&mut self, dpi: u32) -> Result<(), AppError> {
         let results = self.results_with_icons(dpi);
         let mut scene = LauncherScene::new(

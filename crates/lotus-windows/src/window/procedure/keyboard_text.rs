@@ -88,7 +88,9 @@ fn dispatch_wheel(hwnd: HWND, wparam: WPARAM) -> Option<LRESULT> {
 
 fn dispatch_search_activation(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let inactive = low_word(wparam.0) == WA_INACTIVE;
-    if inactive {
+    let activated_window = HWND(lparam.0.cast_unsigned() as *mut _);
+    let opening_context_menu = inactive && is_context_menu_window(activated_window);
+    if inactive && !opening_context_menu {
         push_event(hwnd, SearchEvent::DismissRequested);
     }
     let result = unsafe { DefWindowProcW(hwnd, WM_ACTIVATE, wparam, lparam) };

@@ -23,6 +23,8 @@ pub(super) fn handle_context_menu_event(
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
+    let refocus_launcher = matches!(event, ContextMenuEvent::DismissRequested)
+        && auxiliary.launcher_is_visible();
     if let Some(invocation) = auxiliary.handle_context_menu_event(event)? {
         let mut context = PopupActionContext {
             dock,
@@ -33,6 +35,8 @@ pub(super) fn handle_context_menu_event(
             auxiliary,
         };
         execute_popup_action(invocation.action, &mut context)?;
+    } else if refocus_launcher {
+        auxiliary.focus_launcher_if_visible();
     }
     Ok(())
 }
@@ -107,21 +111,22 @@ fn execute_popup_action(
             }
         }
         PopupAction::OpenFileLocation(path) => {
-            context.auxiliary.hide_launcher();
-            if let Err(error) =
-                lotus_windows::activation::reveal_in_file_explorer(Path::new(&path))
-            {
-                lotus_windows::diagnostics::record_error(
-                    "activation.open_file_location",
-                    &error,
-                );
-                show_error(
-                    context.dock.handle(),
-                    "Lotus Search",
-                    &format!(
-                        "Lotus could not open that application's location.\n\n{error}"
-                    ),
-                );
+            match lotus_windows::activation::reveal_in_file_explorer(Path::new(&path)) {
+                Ok(()) => context.auxiliary.hide_launcher(),
+                Err(error) => {
+                    lotus_windows::diagnostics::record_error(
+                        "activation.open_file_location",
+                        &error,
+                    );
+                    show_error(
+                        context.dock.handle(),
+                        "Lotus Search",
+                        &format!(
+                            "Lotus could not open that application's location.\n\n{error}"
+                        ),
+                    );
+                    context.auxiliary.focus_launcher_if_visible();
+                }
             }
         }
     }

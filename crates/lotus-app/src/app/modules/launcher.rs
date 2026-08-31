@@ -36,6 +36,10 @@ impl ModuleHost {
         self.launcher.hide();
     }
 
+    pub(in crate::app) fn focus_launcher_if_visible(&self) {
+        self.launcher.focus_if_visible();
+    }
+
     pub(in crate::app) fn launcher_is_visible(&self) -> bool {
         self.launcher.is_visible()
     }
