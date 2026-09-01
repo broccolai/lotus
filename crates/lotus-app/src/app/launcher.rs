@@ -252,8 +252,19 @@ impl LauncherRuntime {
         }
     }
 
-    pub(super) fn focus_if_visible(&self) {
+    pub(super) fn pause_for_context_menu(&mut self) {
+        self.window.pause_for_context_menu();
+    }
+
+    pub(super) fn resume_after_context_menu_if_visible(&mut self) {
         if self.visible {
+            self.window.resume_after_context_menu();
+        }
+    }
+
+    pub(super) fn focus_if_visible(&mut self) {
+        if self.visible {
+            self.resume_after_context_menu_if_visible();
             let _ = self.window.focus();
         }
     }
@@ -426,18 +437,21 @@ impl LauncherRuntime {
             });
         }
 
-        let mut scene_changed = false;
+        let mut presentation_changed = false;
+        let mut window_size_changed = false;
         let mut submission = None;
         match event {
             SearchEvent::TextInput(character) => {
                 self.controller.push_character(character);
                 self.rebuild_scene(self.window.dpi())?;
-                scene_changed = true;
+                presentation_changed = true;
+                window_size_changed = true;
             }
             SearchEvent::Edit(edit) => {
                 if self.controller.edit_query(model_query_edit(edit)) {
                     self.rebuild_scene(self.window.dpi())?;
-                    scene_changed = true;
+                    presentation_changed = true;
+                    window_size_changed = true;
                 }
             }
             SearchEvent::PasteRequested => {
@@ -445,12 +459,13 @@ impl LauncherRuntime {
                     && self.controller.insert_text(&text)
                 {
                     self.rebuild_scene(self.window.dpi())?;
-                    scene_changed = true;
+                    presentation_changed = true;
+                    window_size_changed = true;
                 }
             }
             SearchEvent::MoveSelection(direction) => {
                 self.move_selection(direction)?;
-                scene_changed = true;
+                presentation_changed = true;
             }
             SearchEvent::DismissRequested => self.hide(),
             SearchEvent::SubmitRequested => submission = self.submit(dock.handle()),
@@ -459,15 +474,16 @@ impl LauncherRuntime {
                     (SurfaceSize::new(width, height), self.surface.as_mut())
                 {
                     resize_launcher_surface(graphics, surface.value_mut(), size)?;
-                    scene_changed = true;
+                    presentation_changed = true;
                 }
             }
             SearchEvent::DpiChanged { dpi } => {
                 self.rebuild_scene(dpi)?;
-                scene_changed = true;
+                presentation_changed = true;
+                window_size_changed = true;
             }
             SearchEvent::ClockRefreshRequested => {
-                scene_changed = self.scene.as_mut().is_some_and(|scene| {
+                presentation_changed = self.scene.as_mut().is_some_and(|scene| {
                     scene
                         .set_footer_time(local_time(dock_model.settings().use_24_hour_time))
                 });
@@ -475,12 +491,14 @@ impl LauncherRuntime {
             SearchEvent::FocusRefreshRequested => {
                 let _ = self.window.focus();
             }
-            SearchEvent::RenderRequested => scene_changed = true,
+            SearchEvent::RenderRequested => presentation_changed = true,
             SearchEvent::PointerMoved { x, y } => {
                 let hovered = self.result_at(x, y);
-                scene_changed = self.set_hovered_result(hovered);
+                presentation_changed = self.set_hovered_result(hovered);
             }
-            SearchEvent::PointerLeft => scene_changed = self.set_hovered_result(None),
+            SearchEvent::PointerLeft => {
+                presentation_changed = self.set_hovered_result(None);
+            }
             SearchEvent::PointerReleased { x, y } => {
                 if let Some(index) = self.result_at(x, y) {
                     let _ = self.select_result(index)?;
@@ -492,8 +510,10 @@ impl LauncherRuntime {
             }
         }
 
-        if scene_changed && self.is_visible() {
-            self.sync_size(dock, graphics)?;
+        if presentation_changed && self.is_visible() {
+            if window_size_changed {
+                self.sync_size(dock, graphics)?;
+            }
             self.invalidate();
         }
         Ok(submission.map_or(LauncherEventOutcome::None, LauncherEventOutcome::Submission))
@@ -624,7 +644,7 @@ impl LauncherRuntime {
             .ok_or(AppError::InvalidLauncherScene)?
             .desired_size();
         self.window
-            .show_sized(dock.handle(), desired.width(), desired.height())?;
+            .resize_sized(dock.handle(), desired.width(), desired.height())?;
         if let Some(surface) = &mut self.surface {
             resize_launcher_surface(
                 graphics,

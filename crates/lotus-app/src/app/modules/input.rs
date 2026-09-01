@@ -132,7 +132,7 @@ impl ModuleHost {
                         .record_input_delivery(capture_age(captured_at));
 
                     if self.launcher.is_visible() {
-                        self.launcher.hide();
+                        self.hide_launcher();
                         changed = true;
                         continue;
                     }

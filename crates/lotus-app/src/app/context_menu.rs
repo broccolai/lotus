@@ -26,6 +26,14 @@ pub(super) struct ContextMenuRuntime {
     anchor: Option<SignedPoint>,
     alignment: PopupAlignment,
     picker_identity: Option<String>,
+    source: ContextMenuSource,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum ContextMenuSource {
+    #[default]
+    Other,
+    Search,
 }
 
 pub(super) struct AppMenuOptions {
@@ -63,6 +71,7 @@ impl ContextMenuRuntime {
             anchor: None,
             alignment: PopupAlignment::Center,
             picker_identity: None,
+            source: ContextMenuSource::Other,
         })
     }
 
@@ -86,6 +95,7 @@ impl ContextMenuRuntime {
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = None;
+        self.source = ContextMenuSource::Other;
         self.alignment = alignment;
         self.open_current(anchor, graphics)
     }
@@ -107,6 +117,7 @@ impl ContextMenuRuntime {
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = None;
+        self.source = ContextMenuSource::Other;
         self.alignment = PopupAlignment::Center;
         self.open_current(anchor, graphics)
     }
@@ -122,6 +133,7 @@ impl ContextMenuRuntime {
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = None;
+        self.source = ContextMenuSource::Search;
         self.alignment = PopupAlignment::Start;
         self.open_current(anchor, graphics)
     }
@@ -136,6 +148,7 @@ impl ContextMenuRuntime {
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = None;
+        self.source = ContextMenuSource::Other;
         self.open_current(anchor, graphics)
     }
 
@@ -152,12 +165,23 @@ impl ContextMenuRuntime {
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = Some(identity);
+        self.source = ContextMenuSource::Other;
         self.alignment = PopupAlignment::Center;
         self.open_current(anchor, graphics)
     }
 
     pub(super) fn picker_identity(&self) -> Option<&str> {
         self.picker_identity.as_deref()
+    }
+
+    pub(super) fn is_search_owned(&self) -> bool {
+        self.visible && self.source == ContextMenuSource::Search
+    }
+
+    pub(super) fn hide_search_owned(&mut self) {
+        if self.is_search_owned() {
+            self.hide();
+        }
     }
 
     pub(super) fn replace_picker(
@@ -232,6 +256,7 @@ impl ContextMenuRuntime {
             self.thumbnails.clear();
             self.anchor = None;
             self.picker_identity = None;
+            self.source = ContextMenuSource::Other;
             let _ = self.scene.pointer_left();
             if let Some(surface) = &mut self.surface {
                 surface.stop_animation();

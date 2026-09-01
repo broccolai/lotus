@@ -19,7 +19,7 @@ impl ModuleHost {
         }
 
         if self.launcher.is_visible() {
-            self.launcher.hide();
+            self.hide_launcher();
             return Ok(());
         }
 
@@ -33,11 +33,16 @@ impl ModuleHost {
     }
 
     pub(in crate::app) fn hide_launcher(&mut self) {
+        self.hide_search_owned_context_menu();
         self.launcher.hide();
     }
 
-    pub(in crate::app) fn focus_launcher_if_visible(&self) {
+    pub(in crate::app) fn focus_launcher_if_visible(&mut self) {
         self.launcher.focus_if_visible();
+    }
+
+    pub(in crate::app) fn resume_launcher_after_context_menu_if_visible(&mut self) {
+        self.launcher.resume_after_context_menu_if_visible();
     }
 
     pub(in crate::app) fn launcher_is_visible(&self) -> bool {
@@ -65,12 +70,17 @@ impl ModuleHost {
         graphics: &mut DeviceState,
         dock_model: &DockRuntime,
     ) -> Result<LauncherEventOutcome, AppError> {
-        self.launcher
-            .handle_event(event, dock, graphics, dock_model)
+        let outcome = self
+            .launcher
+            .handle_event(event, dock, graphics, dock_model)?;
+        if matches!(event, lotus_windows::window::SearchEvent::DismissRequested) {
+            self.hide_search_owned_context_menu();
+        }
+        Ok(outcome)
     }
 
     pub(in crate::app) fn dismiss_popups_for_activation(&mut self) {
-        self.launcher.hide();
+        self.hide_launcher();
     }
 
     pub(in crate::app) fn hide_launcher_on_status_press(
@@ -83,7 +93,7 @@ impl ModuleHost {
                 lotus_windows::window::PointerEvent::LeftButtonPressed { .. }
             )
         ) {
-            self.launcher.hide();
+            self.hide_launcher();
         }
     }
 }

@@ -79,7 +79,19 @@ impl ModuleHost {
     }
 
     pub(in crate::app) fn hide_context_menu(&mut self) {
+        let was_search_owned = self.context_menu.is_search_owned();
         self.context_menu.hide();
+        if was_search_owned {
+            self.resume_launcher_after_context_menu_if_visible();
+        }
+    }
+
+    pub(in crate::app) fn context_menu_is_search_owned(&self) -> bool {
+        self.context_menu.is_search_owned()
+    }
+
+    pub(in crate::app) fn hide_search_owned_context_menu(&mut self) {
+        self.context_menu.hide_search_owned();
     }
 
     pub(in crate::app) fn open_context_menu(
@@ -120,7 +132,12 @@ impl ModuleHost {
         path: String,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        self.context_menu.open_file_location(anchor, path, graphics)
+        self.launcher.pause_for_context_menu();
+        if let Err(error) = self.context_menu.open_file_location(anchor, path, graphics) {
+            self.launcher.focus_if_visible();
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(in crate::app) fn open_window_picker(

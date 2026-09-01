@@ -77,7 +77,7 @@ impl SearchWindow {
     ) -> Result<()> {
         let size = PopupSize::new(width, height)?;
         self.window.state_mut().clear_events();
-        position_launcher(&self.window, anchor.raw(), size)?;
+        position_launcher(&self.window, anchor.raw(), size, Activation::Activate, true)?;
         super::procedure::apply_rounded_region(self.hwnd(), 0);
         super::procedure::start_search_clock_timer(self.hwnd())?;
         super::procedure::start_search_focus_timer(self.hwnd())?;
@@ -90,12 +90,43 @@ impl SearchWindow {
         Ok(())
     }
 
+    pub fn resize_sized(
+        &self,
+        anchor: WindowHandle,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let size = PopupSize::new(width, height)?;
+        position_launcher(
+            &self.window,
+            anchor.raw(),
+            size,
+            Activation::KeepInactive,
+            false,
+        )?;
+        super::procedure::apply_rounded_region(self.hwnd(), 0);
+        Ok(())
+    }
+
     pub fn focus(&self) -> bool {
         let focused = claim_keyboard_focus(self.hwnd()).is_owned();
         if focused {
             super::procedure::stop_search_focus_timer(self.hwnd());
         }
         focused
+    }
+
+    pub fn pause_for_context_menu(&mut self) {
+        super::procedure::stop_search_focus_timer(self.hwnd());
+        self.outside_click = None;
+    }
+
+    pub fn resume_after_context_menu(&mut self) {
+        let _ = super::procedure::start_search_focus_timer(self.hwnd());
+        if self.outside_click.is_none() {
+            self.outside_click =
+                OutsideClickObserver::start(self.hwnd(), SEARCH_OUTSIDE_CLICK_MESSAGE).ok();
+        }
     }
 
     pub fn hide(&mut self) {
@@ -144,6 +175,8 @@ fn position_launcher(
     window: &NativeWindow<WindowState>,
     anchor: HWND,
     size: PopupSize,
+    activation: Activation,
+    show: bool,
 ) -> Result<()> {
     let anchor = if anchor.is_invalid() {
         window.hwnd()
@@ -153,7 +186,7 @@ fn position_launcher(
     let monitor = nearest_display(anchor)?;
     let dpi = monitor.dpi()?;
     let (x, y) = normal_position(monitor.work_area, size, dpi);
-    window.place_topmost(x, y, size.width, size.height, Activation::Activate, true)?;
+    window.place_topmost(x, y, size.width, size.height, activation, show)?;
     Ok(())
 }
 

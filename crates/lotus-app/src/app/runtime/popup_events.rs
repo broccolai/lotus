@@ -24,6 +24,7 @@ pub(super) fn handle_context_menu_event(
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
     let refocus_launcher = matches!(event, ContextMenuEvent::DismissRequested)
+        && auxiliary.context_menu_is_search_owned()
         && auxiliary.launcher_is_visible();
     if let Some(invocation) = auxiliary.handle_context_menu_event(event)? {
         let mut context = PopupActionContext {

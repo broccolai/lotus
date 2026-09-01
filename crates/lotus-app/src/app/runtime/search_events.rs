@@ -51,7 +51,20 @@ pub(super) fn drain_search_events(
 ) -> Result<bool, AppError> {
     let events = auxiliary.drain_launcher_events();
     let had_events = !events.is_empty();
-    for event in events {
+    let context_menu_request = events.iter().position(|event| {
+        matches!(
+            event,
+            lotus_windows::window::SearchEvent::ContextMenuRequested(_)
+        )
+    });
+    for (index, event) in events.into_iter().enumerate() {
+        // The outside-click hook sees the right-button press before Windows sends the
+        // context-menu request on release. Preserve that in-Search handoff only.
+        if context_menu_request.is_some_and(|request_index| index < request_index)
+            && matches!(event, lotus_windows::window::SearchEvent::DismissRequested)
+        {
+            continue;
+        }
         let outcome =
             match auxiliary.handle_launcher_event(event, dock, graphics, dock_model) {
                 Ok(outcome) => outcome,

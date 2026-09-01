@@ -97,7 +97,7 @@ impl ModuleHost {
         let transition = self.lifecycle.transition(settings, active);
 
         if transition.disabled(ModuleId::Search) {
-            self.launcher.hide();
+            self.hide_launcher();
         }
         if transition.disabled(ModuleId::AltTab) {
             self.switcher.abandon();
