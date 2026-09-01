@@ -34,10 +34,8 @@ impl SettingsRuntime {
                 return Ok(SettingsEventOutcome::None);
             }
             SettingsEvent::PointerMoved { x, y } => {
-                return Ok(u32::try_from(x)
-                    .ok()
-                    .zip(u32::try_from(y).ok())
-                    .and_then(|(x, y)| self.pointer_moved(x, y))
+                return Ok(self
+                    .pointer_moved(x, y)
                     .map_or(SettingsEventOutcome::None, SettingsEventOutcome::Action));
             }
             SettingsEvent::PointerLeft => {

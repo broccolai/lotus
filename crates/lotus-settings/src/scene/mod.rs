@@ -786,6 +786,63 @@ impl SettingsScene {
         self.set_hovered(hovered)
     }
 
+    pub fn scrollbar_press(&mut self, x: u32, y: u32) -> Option<u32> {
+        if self.update_prompt.is_some() || self.onboarding.step().is_some() {
+            return None;
+        }
+        let layout = self.layout();
+        let thumb = layout.scrollbar_thumb?;
+        let tolerance = self.scale(8);
+        let in_hit_width = x >= thumb.left.saturating_sub(tolerance)
+            && x < thumb
+                .left
+                .saturating_add(thumb.width)
+                .saturating_add(tolerance);
+        if !in_hit_width
+            || y < layout.content_viewport.top
+            || y >= layout
+                .content_viewport
+                .top
+                .saturating_add(layout.content_viewport.height)
+        {
+            return None;
+        }
+        let grab_offset = if y >= thumb.top && y < thumb.top.saturating_add(thumb.height) {
+            y.saturating_sub(thumb.top)
+        } else {
+            thumb.height / 2
+        };
+        self.set_scrollbar_from_pointer(i32::try_from(y).unwrap_or(i32::MAX), grab_offset);
+        Some(grab_offset)
+    }
+
+    pub fn set_scrollbar_from_pointer(&mut self, y: i32, grab_offset: u32) -> bool {
+        let layout = self.layout();
+        let Some(thumb) = layout.scrollbar_thumb else {
+            return false;
+        };
+        let maximum = self.maximum_scroll_offset_dip();
+        let travel = layout.content_viewport.height.saturating_sub(thumb.height);
+        if maximum == 0 || travel == 0 {
+            return false;
+        }
+        let track_top = i64::from(layout.content_viewport.top);
+        let target = (i64::from(y) - i64::from(grab_offset))
+            .clamp(track_top, track_top.saturating_add(i64::from(travel)));
+        let position = u32::try_from(target.saturating_sub(track_top)).unwrap_or(travel);
+        let next = u32::try_from(
+            (u64::from(position) * u64::from(maximum) + u64::from(travel / 2))
+                / u64::from(travel),
+        )
+        .unwrap_or(maximum);
+        if next == self.scroll_offset_dip {
+            return false;
+        }
+        self.scroll_offset_dip = next.min(maximum);
+        self.hovered = None;
+        true
+    }
+
     pub fn hit_test(&self, x: u32, y: u32) -> Option<SettingsControl> {
         let control = self.layout().hit_test(x, y)?;
         if self.update_prompt.is_some()

@@ -38,6 +38,7 @@ pub(in crate::app) struct SettingsRuntime {
     surface: Option<ScheduledSurface<SettingsCompositionSurfaceState>>,
     visible: bool,
     dragging_slider: Option<lotus_settings::scene::SettingsSlider>,
+    dragging_scrollbar: Option<u32>,
     pressed_control: Option<SettingsControl>,
     native_icons: NativeIconCache,
     custom_images: CustomImageCache,
@@ -60,6 +61,7 @@ impl SettingsRuntime {
             surface: None,
             visible: false,
             dragging_slider: None,
+            dragging_scrollbar: None,
             pressed_control: None,
             native_icons: NativeIconCache::default(),
             custom_images: CustomImageCache::default(),
@@ -130,6 +132,7 @@ impl SettingsRuntime {
         self.window.set_pointer_cursor(PointerCursor::Arrow);
         self.visible = false;
         self.dragging_slider = None;
+        self.dragging_scrollbar = None;
         self.pressed_control = None;
         if let Some(surface) = &mut self.surface {
             surface.stop_animation();
@@ -321,25 +324,45 @@ impl SettingsRuntime {
         }
     }
 
-    fn pointer_moved(&mut self, x: u32, y: u32) -> Option<SettingsAction> {
+    fn pointer_moved(&mut self, x: i32, y: i32) -> Option<SettingsAction> {
         let style_started = Instant::now();
-        let style = self.scene.pointer_style(x, y);
+        let style = u32::try_from(x).ok().zip(u32::try_from(y).ok()).map_or(
+            lotus_settings::scene::SettingsPointerStyle::Default,
+            |(x, y)| self.scene.pointer_style(x, y),
+        );
         METRICS.record_layout(LayoutOperation::SettingsPointer, style_started.elapsed());
-        let cursor = if self.dragging_slider.is_some() {
+        let cursor = if self.dragging_scrollbar.is_some() {
+            PointerCursor::Arrow
+        } else if self.dragging_slider.is_some() {
             PointerCursor::HorizontalResize
         } else {
             settings_pointer_cursor(style)
         };
         self.window.set_pointer_cursor(cursor);
 
+        if let Some(grab_offset) = self.dragging_scrollbar {
+            if self.scene.set_scrollbar_from_pointer(y, grab_offset) {
+                self.invalidate();
+            }
+            return None;
+        }
+
         if let Some(slider) = self.dragging_slider {
             let started = Instant::now();
+            let Some((x, y)) = u32::try_from(x).ok().zip(u32::try_from(y).ok()) else {
+                METRICS.record_layout(LayoutOperation::SettingsPointer, started.elapsed());
+                return None;
+            };
             self.scene.pointer_move(x, y);
             let action = self.scene.set_slider_from_pointer(slider, x);
             METRICS.record_layout(LayoutOperation::SettingsPointer, started.elapsed());
             return Some(action);
         }
         let started = Instant::now();
+        let Some((x, y)) = u32::try_from(x).ok().zip(u32::try_from(y).ok()) else {
+            METRICS.record_layout(LayoutOperation::SettingsPointer, started.elapsed());
+            return None;
+        };
         if self.scene.pointer_move(x, y) {
             self.invalidate();
         }
@@ -357,6 +380,14 @@ impl SettingsRuntime {
     fn pointer_pressed(&mut self, x: u32, y: u32) -> Option<SettingsAction> {
         let started = Instant::now();
         self.scene.pointer_move(x, y);
+        self.dragging_scrollbar = self.scene.scrollbar_press(x, y);
+        if self.dragging_scrollbar.is_some() {
+            self.dragging_slider = None;
+            self.pressed_control = None;
+            self.invalidate();
+            METRICS.record_layout(LayoutOperation::SettingsPointer, started.elapsed());
+            return None;
+        }
         self.dragging_slider = self.scene.slider_at(x, y);
         self.pressed_control = self
             .dragging_slider
@@ -371,6 +402,12 @@ impl SettingsRuntime {
     }
 
     fn pointer_released(&mut self, x: i32, y: i32) -> Option<SettingsAction> {
+        if self.dragging_scrollbar.take().is_some() {
+            self.dragging_slider = None;
+            self.pressed_control = None;
+            self.window.set_pointer_cursor(PointerCursor::Arrow);
+            return None;
+        }
         if self.dragging_slider.take().is_some() {
             self.pressed_control = None;
             let cursor = u32::try_from(x).ok().zip(u32::try_from(y).ok()).map_or(
@@ -399,6 +436,7 @@ impl SettingsRuntime {
 
     fn pointer_cancelled(&mut self) {
         self.dragging_slider = None;
+        self.dragging_scrollbar = None;
         self.pressed_control = None;
         self.window.set_pointer_cursor(PointerCursor::Arrow);
     }
