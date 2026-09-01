@@ -28,7 +28,7 @@ impl ModuleHost {
         self.monitors.mark_topology_dirty();
         self.sync_status(dock, dock_model, graphics)?;
         if self.launcher.is_visible() {
-            self.launcher.sync_size(dock, graphics)?;
+            self.launcher.refresh_placement(dock, graphics)?;
         }
         Ok(())
     }

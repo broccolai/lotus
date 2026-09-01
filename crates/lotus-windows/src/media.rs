@@ -3,7 +3,7 @@ mod session;
 mod worker;
 
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread::{self, JoinHandle};
+use std::thread;
 
 use lotus_media::MediaSnapshot;
 use thiserror::Error;
@@ -11,6 +11,7 @@ use thiserror::Error;
 pub use self::artwork::{MediaArtworkError, decode_artwork};
 pub use self::worker::is_media_wake;
 use self::worker::{WorkerCommand, current_thread_id, run_worker};
+use crate::background_worker::{BackgroundWorker, WorkerJoinPolicy};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MediaCommand {
@@ -37,7 +38,7 @@ pub enum MediaControllerError {
 pub struct MediaController {
     commands: Sender<WorkerCommand>,
     events: Receiver<MediaEvent>,
-    worker: Option<JoinHandle<()>>,
+    worker: BackgroundWorker,
 }
 
 impl MediaController {
@@ -57,10 +58,13 @@ impl MediaController {
                 );
             })?;
 
+        let stop_sender = command_sender.clone();
         Ok(Self {
             commands: command_sender,
             events: event_receiver,
-            worker: Some(worker),
+            worker: BackgroundWorker::new(worker, WorkerJoinPolicy::Always, move || {
+                let _ = stop_sender.send(WorkerCommand::Shutdown);
+            }),
         })
     }
 
@@ -77,9 +81,6 @@ impl MediaController {
 
 impl Drop for MediaController {
     fn drop(&mut self) {
-        let _ = self.commands.send(WorkerCommand::Shutdown);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        self.worker.shutdown();
     }
 }

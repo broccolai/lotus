@@ -2,8 +2,6 @@ use std::time::Instant;
 
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
-use lotus_windows::activation::launch_target;
-use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
 use lotus_windows::window::{
     DockContextRequest, DockEvent, DockWindow, PointerEvent, PopupAlignment, SignedPoint,
@@ -12,6 +10,7 @@ use lotus_windows::window::{
 use super::presentation::{present_dock_change, resize_dock, resize_surface};
 use crate::app::modules::ModuleHost;
 use crate::app::monitors::DockAction;
+use crate::app::system_actions::{SystemAction, execute_system_action};
 use crate::app::visuals::{DockHitTarget, SystemStatusKind};
 use crate::app::{AppError, DockRuntime};
 
@@ -154,60 +153,8 @@ pub(super) fn activate_system_status(
     owner: WindowHandle,
     anchor: Option<SignedPoint>,
 ) -> bool {
-    let result = match kind {
-        SystemStatusKind::Volume => native_panel_or_fallback(
-            anchor.map_or_else(
-                || lotus_windows::tray::open_quick_settings(owner),
-                |point| lotus_windows::tray::open_quick_settings_at(owner, point.x),
-            ),
-            "sndvol.exe",
-        ),
-        SystemStatusKind::AdvancedColor => lotus_windows::advanced_color::toggle(owner)
-            .map(|_| ())
-            .map_err(|error| error.to_string()),
-        SystemStatusKind::Network => native_panel_or_fallback(
-            anchor.map_or_else(
-                || lotus_windows::tray::open_quick_settings(owner),
-                |point| lotus_windows::tray::open_quick_settings_at(owner, point.x),
-            ),
-            "ms-settings:network",
-        ),
-        SystemStatusKind::BackgroundApps => anchor
-            .map_or_else(
-                || lotus_windows::tray::open_overflow(owner),
-                |point| lotus_windows::tray::open_overflow_at(owner, point.x),
-            )
-            .map_err(|error| error.to_string()),
-        SystemStatusKind::DateTime => native_panel_or_fallback(
-            anchor.map_or_else(
-                || lotus_windows::tray::open_calendar(owner),
-                |point| lotus_windows::tray::open_calendar_at(owner, point.x),
-            ),
-            "ms-settings:dateandtime",
-        ),
-    };
-
-    if let Err(error) = result {
-        show_error(
-            owner,
-            "Lotus",
-            &format!("Lotus could not open that system control.\n\n{error}"),
-        );
-        return false;
-    }
-
-    kind == SystemStatusKind::AdvancedColor
-}
-
-fn native_panel_or_fallback(
-    native: Result<bool, lotus_windows::tray::TrayError>,
-    fallback: &str,
-) -> Result<(), String> {
-    match native {
-        Ok(true) => Ok(()),
-        Ok(false) => launch_target(fallback, None).map_err(|error| error.to_string()),
-        Err(error) => Err(error.to_string()),
-    }
+    execute_system_action(SystemAction::ActivateStatus { kind, anchor }, owner)
+        .advanced_color_changed
 }
 
 fn handle_context_menu(
@@ -305,13 +252,7 @@ pub(super) fn execute_dock_action(
             }
             DockHitTarget::ShowDesktop => {
                 auxiliary.dismiss_popups_for_activation();
-                if let Err(error) = lotus_windows::desktop::toggle() {
-                    show_error(
-                        owner,
-                        "Lotus",
-                        &format!("Lotus could not show the desktop.\n\n{error}"),
-                    );
-                }
+                execute_system_action(SystemAction::ShowDesktop, owner);
             }
         },
         DockAction::Context {

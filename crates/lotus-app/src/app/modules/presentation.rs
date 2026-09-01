@@ -2,27 +2,35 @@ use lotus_ui::frame::FramePass;
 use lotus_windows::graphics::DeviceState;
 
 use super::ModuleHost;
-use crate::app::AppError;
+use crate::app::{AppError, PresentationSurface};
 
 impl ModuleHost {
     pub(in crate::app) fn diagnostic_surface_masks(&self) -> (u32, u32, u32) {
-        const LAUNCHER_BIT: u32 = 1 << 1;
-        const CONTEXT_MENU_BIT: u32 = 1 << 2;
-        const SETTINGS_BIT: u32 = 1 << 3;
-        const SWITCHER_BIT: u32 = 1 << 4;
-        const STATUS_BIT: u32 = 1 << 5;
-        const MONITORS_BIT: u32 = 1 << 6;
-
         let states = [
-            (LAUNCHER_BIT, self.launcher.diagnostic_surface_state()),
             (
-                CONTEXT_MENU_BIT,
+                PresentationSurface::Launcher.bit(),
+                self.launcher.diagnostic_surface_state(),
+            ),
+            (
+                PresentationSurface::ContextMenu.bit(),
                 self.context_menu.diagnostic_surface_state(),
             ),
-            (SETTINGS_BIT, self.settings.diagnostic_surface_state()),
-            (SWITCHER_BIT, self.switcher.diagnostic_surface_state()),
-            (STATUS_BIT, self.status.diagnostic_surface_masks()),
-            (MONITORS_BIT, self.monitors.diagnostic_surface_masks()),
+            (
+                PresentationSurface::Settings.bit(),
+                self.settings.diagnostic_surface_state(),
+            ),
+            (
+                PresentationSurface::Switcher.bit(),
+                self.switcher.diagnostic_surface_state(),
+            ),
+            (
+                PresentationSurface::Status.bit(),
+                self.status.diagnostic_surface_masks(),
+            ),
+            (
+                PresentationSurface::Monitors.bit(),
+                self.monitors.diagnostic_surface_masks(),
+            ),
         ];
         states.into_iter().fold(
             (0, 0, 0),

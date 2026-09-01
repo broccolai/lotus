@@ -26,14 +26,38 @@ pub(super) struct ContextMenuRuntime {
     anchor: Option<SignedPoint>,
     alignment: PopupAlignment,
     picker_identity: Option<String>,
-    source: ContextMenuSource,
+    session: ContextMenuSession,
 }
 
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
-enum ContextMenuSource {
-    #[default]
-    Other,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PopupOwner {
+    Dock,
     Search,
+}
+
+#[derive(Default)]
+struct ContextMenuSession {
+    owner: Option<PopupOwner>,
+}
+
+impl ContextMenuSession {
+    fn open(&mut self, owner: PopupOwner) {
+        self.owner = Some(owner);
+    }
+
+    fn close(&mut self) -> Option<PopupOwner> {
+        self.owner.take()
+    }
+
+    fn owner(&self) -> Option<PopupOwner> {
+        self.owner
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ContextMenuSessionTransition {
+    Begin(PopupOwner),
+    Preserve,
 }
 
 pub(super) struct AppMenuOptions {
@@ -45,6 +69,11 @@ pub(super) struct AppMenuOptions {
 
 pub(super) struct PopupInvocation {
     pub(super) action: crate::app::visuals::PopupAction,
+}
+
+pub(super) struct ContextMenuEventOutcome {
+    pub(super) invocation: Option<PopupInvocation>,
+    pub(super) closed_owner: Option<PopupOwner>,
 }
 
 impl ContextMenuRuntime {
@@ -71,7 +100,7 @@ impl ContextMenuRuntime {
             anchor: None,
             alignment: PopupAlignment::Center,
             picker_identity: None,
-            source: ContextMenuSource::Other,
+            session: ContextMenuSession::default(),
         })
     }
 
@@ -95,9 +124,12 @@ impl ContextMenuRuntime {
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = None;
-        self.source = ContextMenuSource::Other;
         self.alignment = alignment;
-        self.open_current(anchor, graphics)
+        self.open_current(
+            anchor,
+            ContextMenuSessionTransition::Begin(PopupOwner::Dock),
+            graphics,
+        )
     }
 
     pub(super) fn open_app(
@@ -117,9 +149,12 @@ impl ContextMenuRuntime {
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = None;
-        self.source = ContextMenuSource::Other;
         self.alignment = PopupAlignment::Center;
-        self.open_current(anchor, graphics)
+        self.open_current(
+            anchor,
+            ContextMenuSessionTransition::Begin(PopupOwner::Dock),
+            graphics,
+        )
     }
 
     pub(super) fn open_file_location(
@@ -133,9 +168,12 @@ impl ContextMenuRuntime {
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = None;
-        self.source = ContextMenuSource::Search;
         self.alignment = PopupAlignment::Start;
-        self.open_current(anchor, graphics)
+        self.open_current(
+            anchor,
+            ContextMenuSessionTransition::Begin(PopupOwner::Search),
+            graphics,
+        )
     }
 
     pub(super) fn open_power(
@@ -148,8 +186,7 @@ impl ContextMenuRuntime {
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = None;
-        self.source = ContextMenuSource::Other;
-        self.open_current(anchor, graphics)
+        self.open_current(anchor, ContextMenuSessionTransition::Preserve, graphics)
     }
 
     pub(super) fn open_picker(
@@ -165,22 +202,25 @@ impl ContextMenuRuntime {
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
         self.picker_identity = Some(identity);
-        self.source = ContextMenuSource::Other;
         self.alignment = PopupAlignment::Center;
-        self.open_current(anchor, graphics)
+        self.open_current(
+            anchor,
+            ContextMenuSessionTransition::Begin(PopupOwner::Dock),
+            graphics,
+        )
     }
 
     pub(super) fn picker_identity(&self) -> Option<&str> {
         self.picker_identity.as_deref()
     }
 
-    pub(super) fn is_search_owned(&self) -> bool {
-        self.visible && self.source == ContextMenuSource::Search
+    pub(super) fn owner(&self) -> Option<PopupOwner> {
+        self.visible.then(|| self.session.owner()).flatten()
     }
 
-    pub(super) fn hide_search_owned(&mut self) {
-        if self.is_search_owned() {
-            self.hide();
+    pub(super) fn close_if_owned_by(&mut self, owner: PopupOwner) {
+        if self.owner() == Some(owner) {
+            let _ = self.hide();
         }
     }
 
@@ -191,11 +231,11 @@ impl ContextMenuRuntime {
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         if windows.is_empty() {
-            self.hide();
+            let _ = self.hide();
             return Ok(());
         }
         let Some(anchor) = self.anchor else {
-            self.hide();
+            let _ = self.hide();
             return Ok(());
         };
         let mut scene = ContextMenuScene::picker(self.window.dpi(), style, windows)
@@ -210,10 +250,14 @@ impl ContextMenuRuntime {
     fn open_current(
         &mut self,
         anchor: SignedPoint,
+        session_transition: ContextMenuSessionTransition,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         self.anchor = Some(anchor);
         self.prepare_surface(anchor, graphics)?;
+        if let ContextMenuSessionTransition::Begin(owner) = session_transition {
+            self.session.open(owner);
+        }
         self.visible = true;
         self.invalidate();
         self.window.show();
@@ -249,19 +293,19 @@ impl ContextMenuRuntime {
         Ok(())
     }
 
-    pub(super) fn hide(&mut self) {
+    pub(super) fn hide(&mut self) -> Option<PopupOwner> {
         if self.visible {
             self.window.hide();
             self.visible = false;
             self.thumbnails.clear();
             self.anchor = None;
             self.picker_identity = None;
-            self.source = ContextMenuSource::Other;
             let _ = self.scene.pointer_left();
             if let Some(surface) = &mut self.surface {
                 surface.stop_animation();
             }
         }
+        self.session.close()
     }
 
     pub(super) fn invalidate(&mut self) {
@@ -329,7 +373,9 @@ impl ContextMenuRuntime {
     pub(super) fn handle_event(
         &mut self,
         event: ContextMenuEvent,
-    ) -> Result<Option<PopupInvocation>, AppError> {
+    ) -> Result<ContextMenuEventOutcome, AppError> {
+        let owner_before_event = self.owner();
+        let mut closed_owner = None;
         let invocation = match event {
             ContextMenuEvent::PointerMoved { x, y } => {
                 if self.scene.pointer_move(x, y) {
@@ -371,7 +417,7 @@ impl ContextMenuRuntime {
                 None
             }
             ContextMenuEvent::DismissRequested => {
-                self.hide();
+                closed_owner = self.hide();
                 None
             }
             ContextMenuEvent::Resized { width, height } => {
@@ -394,7 +440,13 @@ impl ContextMenuRuntime {
                 None
             }
         };
-        Ok(invocation)
+        if !self.visible && closed_owner.is_none() {
+            closed_owner = owner_before_event;
+        }
+        Ok(ContextMenuEventOutcome {
+            invocation,
+            closed_owner,
+        })
     }
 
     fn take_action(
@@ -408,7 +460,7 @@ impl ContextMenuRuntime {
                 crate::app::visuals::ContextMenuAction::RequestShutdown
             )
         ) {
-            self.hide();
+            let _ = self.hide();
         }
         Some(PopupInvocation { action })
     }

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::Duration;
 
 use lotus_core::application::{ApplicationPresentationIcon, is_shared_host_executable};
@@ -12,6 +12,7 @@ use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 
+use crate::background_worker::{BackgroundWorker, WorkerJoinPolicy};
 use crate::custom_image::CustomImageCache;
 use crate::launch::ComApartment;
 use crate::messages::ICON_HYDRATION_WAKE;
@@ -121,7 +122,7 @@ pub struct DockIconClient {
 
 pub struct IconHydrator {
     shared: Arc<SharedState>,
-    worker: Option<JoinHandle<()>>,
+    worker: BackgroundWorker,
 }
 
 pub const fn is_icon_hydration_wake(message: u32) -> bool {
@@ -168,25 +169,33 @@ impl IconHydrator {
         let worker = thread::Builder::new()
             .name("lotus-icon-hydrator".to_owned())
             .spawn(move || hydrate_icons(&worker_shared, &ready_sender))?;
+        let stop_shared = Arc::clone(&shared);
+        let mut worker =
+            BackgroundWorker::new(worker, WorkerJoinPolicy::WhenFinished, move || {
+                stop_icon_hydrator(&stop_shared);
+            });
 
         match ready_receiver.recv_timeout(START_TIMEOUT) {
             Ok(Ok(())) => Ok(Self {
                 shared,
-                worker: Some(worker),
+                worker: {
+                    worker.set_join_policy(WorkerJoinPolicy::Always);
+                    worker
+                },
             }),
             Ok(Err(WorkerStartupError::ComUnavailable)) => {
-                let _ = worker.join();
+                worker.set_join_policy(WorkerJoinPolicy::Always);
+                worker.shutdown();
                 Err(IconHydratorError::ComUnavailable)
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = worker.join();
+                worker.set_join_policy(WorkerJoinPolicy::Always);
+                worker.shutdown();
                 Err(IconHydratorError::WorkerExitedBeforeReady)
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                shared.stopping.store(true, Ordering::Release);
-                shared.wake.notify_all();
                 drop(ready_receiver);
-                drop(worker);
+                worker.shutdown();
                 Err(IconHydratorError::StartTimeout)
             }
         }
@@ -219,15 +228,16 @@ impl IconHydrator {
 
 impl Drop for IconHydrator {
     fn drop(&mut self) {
-        {
-            let _state = lock(&self.shared.state);
-            self.shared.stopping.store(true, Ordering::Release);
-        }
-        self.shared.wake.notify_all();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        self.worker.shutdown();
     }
+}
+
+fn stop_icon_hydrator(shared: &SharedState) {
+    {
+        let _state = lock(&shared.state);
+        shared.stopping.store(true, Ordering::Release);
+    }
+    shared.wake.notify_all();
 }
 
 impl LauncherIconClient {

@@ -12,7 +12,26 @@ mod runtime;
 mod settings;
 mod status;
 mod switcher;
+mod system_actions;
 mod visuals;
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+pub(super) enum PresentationSurface {
+    Dock = 0,
+    Launcher = 1,
+    ContextMenu = 2,
+    Settings = 3,
+    Switcher = 4,
+    Status = 5,
+    Monitors = 6,
+}
+
+impl PresentationSurface {
+    pub(super) const fn bit(self) -> u32 {
+        1 << self as u32
+    }
+}
 
 use std::fs;
 use std::path::PathBuf;
@@ -33,8 +52,8 @@ use lotus_windows::graphics::{
 };
 use lotus_windows::single_instance::SingleInstance;
 use lotus_windows::startup::{
-    self as startup_registration, RestartWaitError, StartupArgsError, parse_startup_args,
-    wait_for_restart_source,
+    self as startup_registration, RestartWaitError, StartupArgsError, StartupMode,
+    parse_startup_args, wait_for_restart_source,
 };
 use lotus_windows::taskbar_badges::TaskbarBadgeController;
 use lotus_windows::window::DockWindow;
@@ -113,6 +132,38 @@ struct PreparedSettings {
     onboarding_required: bool,
 }
 
+#[derive(Clone, Copy)]
+struct StartupEnvironment {
+    manages_installed_update_state: bool,
+    cleans_requested_staging: bool,
+    syncs_startup_registration: bool,
+}
+
+impl StartupEnvironment {
+    fn detect(mode: StartupMode) -> Self {
+        let is_development = mode.is_development();
+        let installer_managed = if is_development {
+            false
+        } else {
+            match lotus_windows::update::is_installer_managed_executable() {
+                Ok(installed) => installed,
+                Err(error) => {
+                    lotus_windows::diagnostics::record_error(
+                        "update.installer_managed_detection",
+                        &error,
+                    );
+                    false
+                }
+            }
+        };
+        Self {
+            manages_installed_update_state: !is_development && installer_managed,
+            cleans_requested_staging: !is_development,
+            syncs_startup_registration: !is_development,
+        }
+    }
+}
+
 struct InitialWindows<'a> {
     dock: &'a DockWindow,
     dock_model: &'a mut DockRuntime,
@@ -180,10 +231,16 @@ pub fn run() -> Result<(), AppError> {
     enable_per_monitor_v2()?;
     let startup = parse_startup_args(std::env::args_os().skip(1))?;
     let _restart_wait = wait_for_restart_source(startup.restart_after)?;
-    let post_install_health = startup.post_install_health
-        || lotus_windows::update::post_install_health_pending().unwrap_or(true)
-        || lotus_windows::update::interrupted_install_health_pending().unwrap_or(true);
-    if let Some(directory) = startup.cleanup_update.as_deref()
+    let environment = StartupEnvironment::detect(startup.mode);
+    let post_install_health = if environment.manages_installed_update_state {
+        startup.post_install_health
+            || lotus_windows::update::post_install_health_pending().unwrap_or(true)
+            || lotus_windows::update::interrupted_install_health_pending().unwrap_or(true)
+    } else {
+        false
+    };
+    if environment.cleans_requested_staging
+        && let Some(directory) = startup.cleanup_update.as_deref()
         && let Err(error) =
             lotus_windows::update::cleanup_requested_staging_directory(directory)
     {
@@ -193,7 +250,7 @@ pub fn run() -> Result<(), AppError> {
         return Ok(());
     };
 
-    let Some(prepared) = prepare_settings(post_install_health)? else {
+    let Some(prepared) = prepare_settings(environment, post_install_health)? else {
         return Ok(());
     };
     let PreparedSettings {
@@ -290,63 +347,74 @@ pub fn run() -> Result<(), AppError> {
 }
 
 fn prepare_settings(
+    environment: StartupEnvironment,
     post_install_health: bool,
 ) -> Result<Option<PreparedSettings>, AppError> {
     let (settings, store) = load_settings()?;
-    let recovery_notice = match lotus_windows::update::recover_startup(post_install_health)
-    {
-        Ok(notice) => notice,
-        Err(error) => {
-            lotus_windows::diagnostics::record_error("update.recovery", &error);
-            Some(format!(
-                "Lotus found an incomplete update, but could not clean it safely. Please re-run the Lotus installer to repair the installation.\n\n{error}"
-            ))
+    let recovery_notice = if environment.manages_installed_update_state {
+        match lotus_windows::update::recover_startup(post_install_health) {
+            Ok(notice) => notice,
+            Err(error) => {
+                lotus_windows::diagnostics::record_error("update.recovery", &error);
+                Some(format!(
+                    "Lotus found an incomplete update, but could not clean it safely. Please re-run the Lotus installer to repair the installation.\n\n{error}"
+                ))
+            }
         }
+    } else {
+        None
     };
-    std::thread::spawn(|| {
-        for error in lotus_windows::update::cleanup_stale_staging() {
-            lotus_windows::diagnostics::record_error("update.cleanup_stale", &error);
-        }
-    });
-    if post_install_health {
-        if let Err(error) =
-            validate_post_install_health(&store, settings.start_with_windows)
-        {
-            lotus_windows::diagnostics::record_message(
-                "update.post_install_health",
-                &error,
-            );
-            let message = format!(
-                "Lotus could not complete its post-install health check. Native shell integration was not started.\n\n{error}\n\nPlease re-run the Lotus installer and choose Repair."
-            );
-            if let Err(journal_error) =
-                lotus_windows::update::complete_post_install_health(false, &message)
+    if environment.manages_installed_update_state {
+        std::thread::spawn(|| {
+            for error in lotus_windows::update::cleanup_stale_staging() {
+                lotus_windows::diagnostics::record_error("update.cleanup_stale", &error);
+            }
+        });
+        if post_install_health {
+            if let Err(error) =
+                validate_post_install_health(&store, settings.start_with_windows)
+            {
+                lotus_windows::diagnostics::record_message(
+                    "update.post_install_health",
+                    &error,
+                );
+                let message = format!(
+                    "Lotus could not complete its post-install health check. Native shell integration was not started.\n\n{error}\n\nPlease re-run the Lotus installer and choose Repair."
+                );
+                if let Err(journal_error) =
+                    lotus_windows::update::complete_post_install_health(false, &message)
+                {
+                    lotus_windows::diagnostics::record_error(
+                        "update.post_install_health_journal",
+                        &journal_error,
+                    );
+                }
+                lotus_windows::dialog::show_unowned_error(
+                    "Lotus repair required",
+                    &message,
+                );
+                return Ok(None);
+            }
+            if let Err(error) =
+                lotus_windows::update::complete_post_install_health(true, "")
             {
                 lotus_windows::diagnostics::record_error(
                     "update.post_install_health_journal",
-                    &journal_error,
+                    &error,
                 );
             }
-            lotus_windows::dialog::show_unowned_error("Lotus repair required", &message);
-            return Ok(None);
-        }
-        if let Err(error) = lotus_windows::update::complete_post_install_health(true, "") {
-            lotus_windows::diagnostics::record_error(
-                "update.post_install_health_journal",
-                &error,
+            lotus_windows::diagnostics::record_message(
+                "update.post_install_health",
+                "installed executable, bridge DLLs, settings, and startup registration are healthy",
             );
         }
-        lotus_windows::diagnostics::record_message(
-            "update.post_install_health",
-            "installed executable, bridge DLLs, settings, and startup registration are healthy",
-        );
     }
     if let Some(notice) = recovery_notice {
         lotus_windows::diagnostics::record_message("update.recovered", &notice);
         lotus_windows::dialog::show_unowned_error("Lotus Update", &notice);
     }
     let onboarding_required = settings.onboarding_version < CURRENT_ONBOARDING_VERSION;
-    if !onboarding_required {
+    if environment.syncs_startup_registration && !onboarding_required {
         let _ = sync_startup_preference(settings.start_with_windows);
     }
     Ok(Some(PreparedSettings {

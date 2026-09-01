@@ -6,6 +6,7 @@ mod search;
 mod settings;
 mod status;
 mod switcher;
+mod transient;
 
 pub use context_menu::{ContextMenuWindow, PopupAlignment};
 pub use dock::DockWindow;

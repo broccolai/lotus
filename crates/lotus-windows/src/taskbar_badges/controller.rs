@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use lotus_core::notification::NotificationSource;
@@ -30,6 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{Error as WindowsError, Ref, implement};
 
 use super::{discovery, providers};
+use crate::background_worker::{BackgroundWorker, WorkerJoinPolicy};
 use crate::messages::TASKBAR_BADGE_WAKE as BADGE_WAKE_MESSAGE;
 use crate::responsiveness::METRICS;
 
@@ -41,7 +42,7 @@ const BADGE_MIN_SCAN_INTERVAL: Duration = Duration::from_millis(500);
 
 pub struct TaskbarBadgeController {
     shared: Arc<SharedState>,
-    worker: Option<JoinHandle<()>>,
+    worker: BackgroundWorker,
 }
 
 struct SharedState {
@@ -85,9 +86,16 @@ impl TaskbarBadgeController {
             .spawn(move || run_worker(worker_shared))
             .map_err(|error| WindowsError::new(E_FAIL, error.to_string()))?;
 
+        let stop_shared = Arc::clone(&shared);
         Ok(Self {
             shared,
-            worker: Some(worker),
+            worker: BackgroundWorker::new(
+                worker,
+                WorkerJoinPolicy::WhenFinished,
+                move || {
+                    stop_taskbar_badge_worker(&stop_shared);
+                },
+            ),
         })
     }
 
@@ -103,14 +111,13 @@ impl TaskbarBadgeController {
 
 impl Drop for TaskbarBadgeController {
     fn drop(&mut self) {
-        self.shared.running.store(false, Ordering::Release);
-        request_worker_stop(&self.shared);
-        if let Some(worker) = self.worker.take()
-            && worker.is_finished()
-        {
-            let _ = worker.join();
-        }
+        self.worker.shutdown();
     }
+}
+
+fn stop_taskbar_badge_worker(shared: &SharedState) {
+    shared.running.store(false, Ordering::Release);
+    request_worker_stop(shared);
 }
 
 fn run_worker(shared: Arc<SharedState>) {

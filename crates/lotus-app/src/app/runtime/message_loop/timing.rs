@@ -2,6 +2,7 @@ use lotus_windows::interaction::NativeMessage;
 use lotus_windows::responsiveness::{METRICS, SlowUiEvent, UiMessagePhase};
 
 use super::MessageLoop;
+use crate::app::PresentationSurface;
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct MessageTiming {
@@ -50,8 +51,10 @@ impl MessageLoop<'_, '_> {
         let (phase, phase_us) = timing.slowest();
         let (aux_dirty, aux_animating, visible_features) =
             self.auxiliary.diagnostic_surface_masks();
-        let dirty_surface_mask = aux_dirty | u32::from(self.surface.is_dirty());
-        let animating_surface_mask = aux_animating | u32::from(self.surface.is_animating());
+        let dirty_surface_mask = aux_dirty
+            | (u32::from(self.surface.is_dirty()) * PresentationSurface::Dock.bit());
+        let animating_surface_mask = aux_animating
+            | (u32::from(self.surface.is_animating()) * PresentationSurface::Dock.bit());
         METRICS.record_slow_ui_event(SlowUiEvent {
             timestamp_ms: lotus_windows::interaction::monotonic_millis(),
             message_id: message.id(),
@@ -70,7 +73,8 @@ impl MessageLoop<'_, '_> {
             animating_surface_mask,
             graphics_generation: self.graphics.generation(),
             graphics_recovered: graphics_generation != self.graphics.generation(),
-            visible_feature_mask: visible_features | u32::from(self.dock.is_visible()),
+            visible_feature_mask: visible_features
+                | (u32::from(self.dock.is_visible()) * PresentationSurface::Dock.bit()),
             input_fail_open: !self.auxiliary.input_healthy(),
         });
     }

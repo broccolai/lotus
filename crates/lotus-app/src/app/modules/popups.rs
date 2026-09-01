@@ -7,7 +7,7 @@ use lotus_windows::window::{ContextMenuEvent, PopupAlignment, SignedPoint};
 
 use super::ModuleHost;
 use crate::app::AppError;
-use crate::app::context_menu::{AppMenuOptions, PopupInvocation};
+use crate::app::context_menu::{AppMenuOptions, ContextMenuEventOutcome, PopupOwner};
 use crate::app::dock::DockRuntime;
 
 impl ModuleHost {
@@ -74,24 +74,13 @@ impl ModuleHost {
     pub(in crate::app) fn handle_context_menu_event(
         &mut self,
         event: ContextMenuEvent,
-    ) -> Result<Option<PopupInvocation>, AppError> {
+    ) -> Result<ContextMenuEventOutcome, AppError> {
         self.context_menu.handle_event(event)
     }
 
     pub(in crate::app) fn hide_context_menu(&mut self) {
-        let was_search_owned = self.context_menu.is_search_owned();
-        self.context_menu.hide();
-        if was_search_owned {
-            self.resume_launcher_after_context_menu_if_visible();
-        }
-    }
-
-    pub(in crate::app) fn context_menu_is_search_owned(&self) -> bool {
-        self.context_menu.is_search_owned()
-    }
-
-    pub(in crate::app) fn hide_search_owned_context_menu(&mut self) {
-        self.context_menu.hide_search_owned();
+        let owner = self.context_menu.hide();
+        self.resume_popup_parent(owner);
     }
 
     pub(in crate::app) fn open_context_menu(
@@ -132,9 +121,9 @@ impl ModuleHost {
         path: String,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        self.launcher.pause_for_context_menu();
+        self.launcher.suspend_for_child_popup();
         if let Err(error) = self.context_menu.open_file_location(anchor, path, graphics) {
-            self.launcher.focus_if_visible();
+            self.launcher.resume_after_child_popup_if_visible();
             return Err(error);
         }
         Ok(())
@@ -179,7 +168,7 @@ impl ModuleHost {
                 "activation.picker_entries_pruned",
                 "window picker source disappeared during snapshot reconciliation",
             );
-            self.context_menu.hide();
+            self.hide_context_menu();
             return Ok(());
         };
         let foreground = lotus_windows::activation::foreground_window()
@@ -193,5 +182,12 @@ impl ModuleHost {
         }
         let style = dock_model.settings().window_picker_style;
         self.context_menu.replace_picker(style, windows, graphics)
+    }
+
+    pub(in crate::app) fn resume_popup_parent(&mut self, owner: Option<PopupOwner>) {
+        if matches!(owner, Some(PopupOwner::Search)) {
+            self.launcher.resume_after_child_popup_if_visible();
+            self.launcher.focus_if_visible();
+        }
     }
 }

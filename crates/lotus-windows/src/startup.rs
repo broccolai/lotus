@@ -124,8 +124,22 @@ fn startup_command(executable: &Path) -> String {
     format!(r#""{}""#, executable.display())
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StartupMode {
+    #[default]
+    Standard,
+    Development,
+}
+
+impl StartupMode {
+    pub const fn is_development(self) -> bool {
+        matches!(self, Self::Development)
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StartupOptions {
+    pub mode: StartupMode,
     pub restart_after: Option<u32>,
     pub open_settings: bool,
     pub cleanup_update: Option<PathBuf>,
@@ -142,6 +156,8 @@ pub enum StartupArgsError {
     ConflictingRestartProcesses { first: u32, second: u32 },
     #[error("--cleanup-update requires a staging directory")]
     MissingCleanupDirectory,
+    #[error("--development cannot be used with {argument}")]
+    DevelopmentWithInstalledUpdateArgument { argument: &'static str },
 }
 
 pub fn parse_startup_args<I, S>(arguments: I) -> Result<StartupOptions, StartupArgsError>
@@ -151,6 +167,7 @@ where
 {
     let arguments = arguments.into_iter().collect::<Vec<_>>();
     let mut restart_after = None;
+    let mut mode = StartupMode::Standard;
     let mut open_settings = false;
     let mut cleanup_update = None;
     let mut post_install_health = false;
@@ -158,7 +175,9 @@ where
 
     while index < arguments.len() {
         let argument = arguments[index].as_ref();
-        if argument_eq(argument, "--restart-after") {
+        if argument_eq(argument, "--development") {
+            mode = StartupMode::Development;
+        } else if argument_eq(argument, "--restart-after") {
             index += 1;
             let value = arguments
                 .get(index)
@@ -190,7 +209,21 @@ where
         index += 1;
     }
 
+    if mode == StartupMode::Development {
+        if cleanup_update.is_some() {
+            return Err(StartupArgsError::DevelopmentWithInstalledUpdateArgument {
+                argument: "--cleanup-update",
+            });
+        }
+        if post_install_health {
+            return Err(StartupArgsError::DevelopmentWithInstalledUpdateArgument {
+                argument: "--post-install-health",
+            });
+        }
+    }
+
     Ok(StartupOptions {
+        mode,
         restart_after,
         open_settings,
         cleanup_update,

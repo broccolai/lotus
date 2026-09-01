@@ -51,6 +51,8 @@ pub(super) struct LauncherRuntime {
     pub(super) surface: Option<ScheduledSurface<LauncherCompositionSurfaceState>>,
     pub(super) presentation: SearchPresentation,
     pub(super) visible: bool,
+    last_applied_size: Option<SurfaceSize>,
+    child_popup_open: bool,
     theme: Theme,
     use_24_hour_time: bool,
     settings: DockSettings,
@@ -93,6 +95,8 @@ impl LauncherRuntime {
             surface: None,
             presentation: SearchPresentation::default(),
             visible: false,
+            last_applied_size: None,
+            child_popup_open: false,
             theme: *theme,
             use_24_hour_time: settings.use_24_hour_time,
             settings,
@@ -130,16 +134,19 @@ impl LauncherRuntime {
         let scene = self.scene.as_ref().ok_or(AppError::InvalidLauncherScene)?;
         let desired = scene.desired_size();
         self.window
-            .show_sized(dock.handle(), desired.width(), desired.height())?;
+            .open(dock.handle(), desired.width(), desired.height())?;
         if self.window.dpi() != scene.dpi() {
             self.rebuild_scene(self.window.dpi())?;
-            let desired = self
+            let corrected = self
                 .scene
                 .as_ref()
                 .ok_or(AppError::InvalidLauncherScene)?
                 .desired_size();
-            self.window
-                .show_sized(dock.handle(), desired.width(), desired.height())?;
+            self.window.apply_geometry(
+                dock.handle(),
+                corrected.width(),
+                corrected.height(),
+            )?;
         }
 
         let desired = self
@@ -162,7 +169,7 @@ impl LauncherRuntime {
             ));
         }
         self.visible = true;
-        self.window.focus();
+        self.last_applied_size = Some(size);
         Ok(())
     }
 
@@ -184,8 +191,11 @@ impl LauncherRuntime {
             return Ok(true);
         }
 
+        let size_before = self.desired_size();
         self.rebuild_scene(self.window.dpi())?;
-        self.sync_size(dock, graphics)?;
+        if self.desired_size() != size_before {
+            self.apply_geometry_if_changed(dock, graphics, false)?;
+        }
 
         Ok(true)
     }
@@ -246,25 +256,28 @@ impl LauncherRuntime {
     pub(super) fn hide(&mut self) {
         self.window.hide();
         self.visible = false;
+        self.last_applied_size = None;
+        self.child_popup_open = false;
         self.presentation.finish();
         if let Some(surface) = &mut self.surface {
             surface.stop_animation();
         }
     }
 
-    pub(super) fn pause_for_context_menu(&mut self) {
-        self.window.pause_for_context_menu();
+    pub(super) fn suspend_for_child_popup(&mut self) {
+        self.child_popup_open = true;
+        self.window.suspend_for_child_popup();
     }
 
-    pub(super) fn resume_after_context_menu_if_visible(&mut self) {
+    pub(super) fn resume_after_child_popup_if_visible(&mut self) {
+        self.child_popup_open = false;
         if self.visible {
-            self.window.resume_after_context_menu();
+            self.window.resume_after_child_popup();
         }
     }
 
     pub(super) fn focus_if_visible(&mut self) {
-        if self.visible {
-            self.resume_after_context_menu_if_visible();
+        if self.visible && !self.child_popup_open {
             let _ = self.window.focus();
         }
     }
@@ -437,21 +450,19 @@ impl LauncherRuntime {
             });
         }
 
+        let size_before = self.desired_size();
         let mut presentation_changed = false;
-        let mut window_size_changed = false;
         let mut submission = None;
         match event {
             SearchEvent::TextInput(character) => {
                 self.controller.push_character(character);
                 self.rebuild_scene(self.window.dpi())?;
                 presentation_changed = true;
-                window_size_changed = true;
             }
             SearchEvent::Edit(edit) => {
                 if self.controller.edit_query(model_query_edit(edit)) {
                     self.rebuild_scene(self.window.dpi())?;
                     presentation_changed = true;
-                    window_size_changed = true;
                 }
             }
             SearchEvent::PasteRequested => {
@@ -460,7 +471,6 @@ impl LauncherRuntime {
                 {
                     self.rebuild_scene(self.window.dpi())?;
                     presentation_changed = true;
-                    window_size_changed = true;
                 }
             }
             SearchEvent::MoveSelection(direction) => {
@@ -472,15 +482,16 @@ impl LauncherRuntime {
             SearchEvent::Resized { width, height } => {
                 if let (Some(size), Some(surface)) =
                     (SurfaceSize::new(width, height), self.surface.as_mut())
+                    && self.last_applied_size != Some(size)
                 {
                     resize_launcher_surface(graphics, surface.value_mut(), size)?;
+                    self.last_applied_size = Some(size);
                     presentation_changed = true;
                 }
             }
             SearchEvent::DpiChanged { dpi } => {
                 self.rebuild_scene(dpi)?;
                 presentation_changed = true;
-                window_size_changed = true;
             }
             SearchEvent::ClockRefreshRequested => {
                 presentation_changed = self.scene.as_mut().is_some_and(|scene| {
@@ -489,7 +500,9 @@ impl LauncherRuntime {
                 });
             }
             SearchEvent::FocusRefreshRequested => {
-                let _ = self.window.focus();
+                if !self.child_popup_open {
+                    let _ = self.window.focus();
+                }
             }
             SearchEvent::RenderRequested => presentation_changed = true,
             SearchEvent::PointerMoved { x, y } => {
@@ -511,8 +524,8 @@ impl LauncherRuntime {
         }
 
         if presentation_changed && self.is_visible() {
-            if window_size_changed {
-                self.sync_size(dock, graphics)?;
+            if self.desired_size() != size_before {
+                self.apply_geometry_if_changed(dock, graphics, false)?;
             }
             self.invalidate();
         }
@@ -633,27 +646,41 @@ impl LauncherRuntime {
         Ok(())
     }
 
-    pub(super) fn sync_size(
+    pub(super) fn refresh_placement(
         &mut self,
         dock: &DockWindow,
         graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        self.apply_geometry_if_changed(dock, graphics, true)
+    }
+
+    fn apply_geometry_if_changed(
+        &mut self,
+        dock: &DockWindow,
+        graphics: &mut DeviceState,
+        reposition: bool,
     ) -> Result<(), AppError> {
         let desired = self
             .scene
             .as_ref()
             .ok_or(AppError::InvalidLauncherScene)?
             .desired_size();
-        self.window
-            .resize_sized(dock.handle(), desired.width(), desired.height())?;
-        if let Some(surface) = &mut self.surface {
-            resize_launcher_surface(
-                graphics,
-                surface.value_mut(),
-                SurfaceSize::new(desired.width(), desired.height())
-                    .ok_or(AppError::ZeroSizedSurface)?,
-            )?;
+        let size = SurfaceSize::new(desired.width(), desired.height())
+            .ok_or(AppError::ZeroSizedSurface)?;
+        let size_changed = self.last_applied_size != Some(size);
+        if size_changed || reposition {
+            self.window
+                .apply_geometry(dock.handle(), desired.width(), desired.height())?;
         }
+        if size_changed && let Some(surface) = &mut self.surface {
+            resize_launcher_surface(graphics, surface.value_mut(), size)?;
+        }
+        self.last_applied_size = Some(size);
         Ok(())
+    }
+
+    fn desired_size(&self) -> Option<lotus_search::scene::LauncherSize> {
+        self.scene.as_ref().map(LauncherScene::desired_size)
     }
 
     pub(super) fn render_frame(
@@ -721,11 +748,13 @@ impl LauncherRuntime {
         let time_format_changed = self.use_24_hour_time != settings.use_24_hour_time;
         self.use_24_hour_time = settings.use_24_hour_time;
         let limit = usize::try_from(settings.search_result_limit).unwrap_or(8);
-        if (self.controller.set_result_limit(limit) || theme_changed || time_format_changed)
-            && self.visible
-        {
+        let result_limit_changed = self.controller.set_result_limit(limit);
+        if (result_limit_changed || theme_changed || time_format_changed) && self.visible {
+            let size_before = self.desired_size();
             self.rebuild_scene(self.window.dpi())?;
-            self.sync_size(dock, graphics)?;
+            if result_limit_changed && self.desired_size() != size_before {
+                self.apply_geometry_if_changed(dock, graphics, false)?;
+            }
             if let Some(surface) = &mut self.surface {
                 surface.invalidate();
             }

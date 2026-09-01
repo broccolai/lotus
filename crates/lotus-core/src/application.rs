@@ -406,7 +406,12 @@ pub fn is_shared_host_executable(value: &str) -> bool {
     normalized_executable_name(value).is_some_and(|executable| {
         matches!(
             executable.as_str(),
-            "chrome.exe" | "msedge.exe" | "brave.exe" | "applicationframehost.exe"
+            "chrome.exe"
+                | "msedge.exe"
+                | "brave.exe"
+                | "applicationframehost.exe"
+                | "java.exe"
+                | "javaw.exe"
         )
     })
 }

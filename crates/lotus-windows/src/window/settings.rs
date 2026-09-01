@@ -10,7 +10,7 @@ use crate::NativeError;
 type Result<T> = std::result::Result<T, NativeError>;
 
 use crate::platform::windows::backdrop;
-use crate::platform::windows::display::nearest_display;
+use crate::platform::windows::display::{fit_aspect_ratio, nearest_display};
 use crate::platform::windows::interaction::{PointerCursor, claim_keyboard_focus};
 use crate::platform::windows::native_window::{
     Activation, NativeWindow, WindowCreation, WindowHandle,
@@ -111,30 +111,14 @@ fn initial_bounds(anchor: HWND) -> Result<(i32, i32, i32, i32)> {
     let display = nearest_display(anchor)?;
     let dpi = display.dpi()?;
     let margin = dpi.physical_i32(SETTINGS_WORK_AREA_MARGIN_DIPS);
-    let work_width = display
-        .work_area
-        .right
-        .saturating_sub(display.work_area.left);
-    let work_height = display
-        .work_area
-        .bottom
-        .saturating_sub(display.work_area.top);
-    let maximum_width = work_width.saturating_sub(margin.saturating_mul(2)).max(1);
-    let maximum_height = work_height.saturating_sub(margin.saturating_mul(2)).max(1);
-    let (width, height) = fit_size_within(
+    let available_area = display.work_area.inset(margin);
+    let (width, height) = fit_aspect_ratio(
         dpi.physical_i32(DEFAULT_WIDTH_DIPS),
         dpi.physical_i32(DEFAULT_HEIGHT_DIPS),
-        maximum_width,
-        maximum_height,
+        available_area.width(),
+        available_area.height(),
     );
-    let x = display
-        .work_area
-        .left
-        .saturating_add(work_width.saturating_sub(width) / 2);
-    let y = display
-        .work_area
-        .top
-        .saturating_add(work_height.saturating_sub(height) / 2);
+    let (x, y) = display.work_area.centered_origin(width, height);
     Ok((x, y, width, height))
 }
 
@@ -144,31 +128,5 @@ pub(super) fn fit_size_within(
     maximum_width: i32,
     maximum_height: i32,
 ) -> (i32, i32) {
-    let width = width.max(1);
-    let height = height.max(1);
-    let maximum_width = maximum_width.max(1);
-    let maximum_height = maximum_height.max(1);
-    if width <= maximum_width && height <= maximum_height {
-        return (width, height);
-    }
-
-    let width_limited = i64::from(maximum_width) * i64::from(height)
-        <= i64::from(maximum_height) * i64::from(width);
-    if width_limited {
-        let height = i64::from(height) * i64::from(maximum_width) / i64::from(width);
-        (
-            maximum_width,
-            i32::try_from(height)
-                .unwrap_or(maximum_height)
-                .clamp(1, maximum_height),
-        )
-    } else {
-        let width = i64::from(width) * i64::from(maximum_height) / i64::from(height);
-        (
-            i32::try_from(width)
-                .unwrap_or(maximum_width)
-                .clamp(1, maximum_width),
-            maximum_height,
-        )
-    }
+    fit_aspect_ratio(width, height, maximum_width, maximum_height)
 }

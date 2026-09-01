@@ -132,6 +132,15 @@ pub fn is_installed() -> Result<bool, UpdateInstallError> {
         .is_some_and(|directory| directory.join("unins000.exe").is_file()))
 }
 
+pub fn is_installer_managed_executable() -> Result<bool, UpdateInstallError> {
+    let current = std::env::current_exe().map_err(UpdateInstallError::CurrentExecutable)?;
+    let installed = local_app_data()?
+        .join("Programs")
+        .join("Lotus")
+        .join("lotus.exe");
+    Ok(paths_equal(&current, &installed))
+}
+
 pub fn post_install_health_pending() -> Result<bool, UpdateInstallError> {
     Ok(post_install_health_marker()?.is_file())
 }
@@ -200,6 +209,9 @@ pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
     let Some(installer) = helper_target(&arguments, INSTALL_UPDATE_ARGUMENT)? else {
         return Ok(false);
     };
+    if development_mode_requested(&arguments) {
+        return Err(UpdateInstallError::DevelopmentUpdateHelper);
+    }
     let startup =
         parse_startup_args(&arguments).map_err(UpdateInstallError::StartupArguments)?;
     let mut journal = read_journal()?.ok_or(UpdateInstallError::MissingJournal)?;
@@ -221,6 +233,12 @@ pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
             Ok(true)
         }
     }
+}
+
+fn development_mode_requested(arguments: &[OsString]) -> bool {
+    arguments
+        .iter()
+        .any(|argument| argument_eq(argument, "--development"))
 }
 
 pub fn recover_startup(
@@ -617,6 +635,8 @@ pub enum UpdateInstallError {
     CurrentExecutable(#[source] std::io::Error),
     #[error("the update helper is missing its installer target")]
     MissingTarget,
+    #[error("--development cannot be used with --install-update")]
+    DevelopmentUpdateHelper,
     #[error("the update journal is unavailable")]
     MissingJournal,
     #[error("the update journal records a failed installation")]

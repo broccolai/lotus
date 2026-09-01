@@ -1,3 +1,4 @@
+mod background_worker;
 mod bridge_cache;
 mod error;
 mod platform;

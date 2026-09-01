@@ -13,14 +13,12 @@ type Result<T> = std::result::Result<T, NativeError>;
 
 use crate::platform::windows::backdrop;
 use crate::platform::windows::display::nearest_display_to_point;
-use crate::platform::windows::interaction::claim_keyboard_focus;
-use crate::platform::windows::native_window::{
-    Activation, NativeWindow, WindowCreation, WindowHandle,
-};
+use crate::platform::windows::native_window::{NativeWindow, WindowCreation, WindowHandle};
 use crate::window::procedure::{ContextMenuEvent, SignedPoint, WindowClass, WindowState};
+use crate::window::transient::TransientWindow;
 
 pub struct ContextMenuWindow {
-    window: NativeWindow<WindowState>,
+    window: TransientWindow,
     _class: Rc<WindowClass>,
 }
 
@@ -52,13 +50,9 @@ impl ContextMenuWindow {
         )?;
         backdrop::apply_context_menu(window.hwnd());
         Ok(Self {
-            window,
+            window: TransientWindow::new(window),
             _class: class,
         })
-    }
-
-    pub(crate) fn hwnd(&self) -> HWND {
-        self.window.hwnd()
     }
 
     pub fn handle(&self) -> WindowHandle {
@@ -66,7 +60,7 @@ impl ContextMenuWindow {
     }
 
     pub fn dpi(&self) -> u32 {
-        self.window.dpi().dpi()
+        self.window.dpi()
     }
 
     pub fn prepare_at(
@@ -78,37 +72,29 @@ impl ContextMenuWindow {
         let display = nearest_display_to_point(anchor.x, anchor.y)?;
         let width = i32::try_from(size.width()).unwrap_or(i32::MAX);
         let height = i32::try_from(size.height()).unwrap_or(i32::MAX);
-        let maximum_x = display.work_area.right.saturating_sub(width);
-        let maximum_y = display.work_area.bottom.saturating_sub(height);
-        let x = match alignment {
+        let preferred_x = match alignment {
             PopupAlignment::Start => anchor.x,
             PopupAlignment::Center => anchor.x.saturating_sub(width / 2),
             PopupAlignment::End => anchor.x.saturating_sub(width),
-        }
-        .clamp(
-            display.work_area.left,
-            maximum_x.max(display.work_area.left),
+        };
+        let preferred_y = anchor.y.saturating_sub(height);
+        let (x, y) = display.work_area.clamp_origin_for_size(
+            preferred_x,
+            preferred_y,
+            width,
+            height,
         );
-        let y = anchor
-            .y
-            .saturating_sub(height)
-            .clamp(display.work_area.top, maximum_y.max(display.work_area.top));
 
-        self.window.state_mut().clear_events();
-        self.window
-            .place_topmost(x, y, width, height, Activation::KeepInactive, false)?;
+        self.window.prepare_topmost(x, y, width, height)?;
         Ok(display.dpi()?.dpi())
     }
 
     pub fn show(&mut self) {
-        self.window.state_mut().clear_events();
-        self.window.reveal(Activation::Activate);
-        let _ = claim_keyboard_focus(self.hwnd());
+        self.window.show_and_focus();
     }
 
     pub fn hide(&mut self) {
         self.window.hide();
-        self.window.state_mut().clear_events();
     }
 
     pub fn drain_events(&mut self) -> impl Iterator<Item = ContextMenuEvent> + '_ {

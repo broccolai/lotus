@@ -33,6 +33,81 @@ impl From<RECT> for ScreenArea {
     }
 }
 
+impl ScreenArea {
+    pub const fn width(self) -> i32 {
+        self.right.saturating_sub(self.left)
+    }
+
+    pub const fn height(self) -> i32 {
+        self.bottom.saturating_sub(self.top)
+    }
+
+    pub const fn inset(self, amount: i32) -> Self {
+        Self {
+            left: self.left.saturating_add(amount),
+            top: self.top.saturating_add(amount),
+            right: self.right.saturating_sub(amount),
+            bottom: self.bottom.saturating_sub(amount),
+        }
+    }
+
+    pub const fn centered_origin(self, width: i32, height: i32) -> (i32, i32) {
+        (
+            self.left
+                .saturating_add(self.width().saturating_sub(width) / 2),
+            self.top
+                .saturating_add(self.height().saturating_sub(height) / 2),
+        )
+    }
+
+    pub fn clamp_origin_for_size(
+        self,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> (i32, i32) {
+        let maximum_x = self.right.saturating_sub(width).max(self.left);
+        let maximum_y = self.bottom.saturating_sub(height).max(self.top);
+        (x.clamp(self.left, maximum_x), y.clamp(self.top, maximum_y))
+    }
+}
+
+pub fn fit_aspect_ratio(
+    width: i32,
+    height: i32,
+    maximum_width: i32,
+    maximum_height: i32,
+) -> (i32, i32) {
+    let width = width.max(1);
+    let height = height.max(1);
+    let maximum_width = maximum_width.max(1);
+    let maximum_height = maximum_height.max(1);
+    if width <= maximum_width && height <= maximum_height {
+        return (width, height);
+    }
+
+    let width_limited = i64::from(maximum_width) * i64::from(height)
+        <= i64::from(maximum_height) * i64::from(width);
+    if width_limited {
+        let height = i64::from(height) * i64::from(maximum_width) / i64::from(width);
+        (
+            maximum_width,
+            i32::try_from(height)
+                .unwrap_or(maximum_height)
+                .clamp(1, maximum_height),
+        )
+    } else {
+        let width = i64::from(width) * i64::from(maximum_height) / i64::from(height);
+        (
+            i32::try_from(width)
+                .unwrap_or(maximum_width)
+                .clamp(1, maximum_width),
+            maximum_height,
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Display {
     handle: HMONITOR,

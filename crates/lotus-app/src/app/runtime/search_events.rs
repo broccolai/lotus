@@ -1,16 +1,15 @@
 use lotus_core::window::WindowInfo;
 use lotus_search::command::CommandId;
 use lotus_ui::frame::ScheduledSurface;
-use lotus_windows::activation::launch_target;
 use lotus_windows::clipboard::write_text;
-use lotus_windows::dialog::{confirm_restart, confirm_shutdown, show_error};
+use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, GraphicsDeviceHealth};
-use lotus_windows::interaction::request_exit;
 use lotus_windows::window::DockWindow;
 
 use super::presentation::present_dock_change;
 use crate::app::launcher::{LauncherEventOutcome, LauncherSubmission};
 use crate::app::modules::ModuleHost;
+use crate::app::system_actions::{Confirmation, SystemAction, execute_system_action};
 use crate::app::{AppError, DockRuntime};
 
 pub(super) fn refresh_catalog(
@@ -51,20 +50,7 @@ pub(super) fn drain_search_events(
 ) -> Result<bool, AppError> {
     let events = auxiliary.drain_launcher_events();
     let had_events = !events.is_empty();
-    let context_menu_request = events.iter().position(|event| {
-        matches!(
-            event,
-            lotus_windows::window::SearchEvent::ContextMenuRequested(_)
-        )
-    });
-    for (index, event) in events.into_iter().enumerate() {
-        // The outside-click hook sees the right-button press before Windows sends the
-        // context-menu request on release. Preserve that in-Search handoff only.
-        if context_menu_request.is_some_and(|request_index| index < request_index)
-            && matches!(event, lotus_windows::window::SearchEvent::DismissRequested)
-        {
-            continue;
-        }
+    for event in events {
         let outcome =
             match auxiliary.handle_launcher_event(event, dock, graphics, dock_model) {
                 Ok(outcome) => outcome,
@@ -125,66 +111,39 @@ fn execute_search_command(
     match command {
         CommandId::OpenSettings => auxiliary.open_settings(dock_model, graphics)?,
         CommandId::OpenVolumeMixer => {
-            if let Err(error) = launch_target("sndvol.exe", None) {
-                show_error(
-                    dock.handle(),
-                    "Lotus",
-                    &format!("Lotus could not open the Windows volume mixer.\n\n{error}"),
-                );
-            }
+            execute_system_action(SystemAction::OpenVolumeMixer, dock.handle());
         }
         CommandId::OpenNotificationArea => {
-            if let Err(error) = lotus_windows::tray::open_overflow(dock.handle()) {
-                show_error(
-                    dock.handle(),
-                    "Lotus",
-                    &format!(
-                        "Lotus could not open the Windows notification area.\n\n{error}"
-                    ),
-                );
-            }
+            execute_system_action(
+                SystemAction::OpenNotificationArea { anchor: None },
+                dock.handle(),
+            );
         }
         CommandId::ShowDesktop => {
-            if let Err(error) = lotus_windows::desktop::toggle() {
-                show_error(
-                    dock.handle(),
-                    "Lotus",
-                    &format!("Lotus could not show the desktop.\n\n{error}"),
-                );
-            }
+            execute_system_action(SystemAction::ShowDesktop, dock.handle());
         }
         CommandId::LockComputer => {
-            if let Err(error) = lotus_windows::desktop::lock() {
-                show_error(
-                    dock.handle(),
-                    "Lotus",
-                    &format!("Lotus could not lock Windows.\n\n{error}"),
-                );
-            }
+            execute_system_action(SystemAction::LockComputer, dock.handle());
         }
         CommandId::RestartComputer => {
-            if confirm_restart(dock.handle())
-                && let Err(error) = launch_target("shutdown.exe", Some("/r /t 0"))
-            {
-                show_error(
-                    dock.handle(),
-                    "Lotus",
-                    &format!("Lotus could not restart Windows.\n\n{error}"),
-                );
-            }
+            execute_system_action(
+                SystemAction::RestartComputer {
+                    confirmation: Confirmation::Required,
+                },
+                dock.handle(),
+            );
         }
         CommandId::ShutDownComputer => {
-            if confirm_shutdown(dock.handle())
-                && let Err(error) = launch_target("shutdown.exe", Some("/s /t 0"))
-            {
-                show_error(
-                    dock.handle(),
-                    "Lotus",
-                    &format!("Lotus could not shut down Windows.\n\n{error}"),
-                );
-            }
+            execute_system_action(
+                SystemAction::ShutDownComputer {
+                    confirmation: Confirmation::Required,
+                },
+                dock.handle(),
+            );
         }
-        CommandId::QuitLotus => request_exit(0),
+        CommandId::QuitLotus => {
+            execute_system_action(SystemAction::QuitLotus, dock.handle());
+        }
     }
     Ok(())
 }

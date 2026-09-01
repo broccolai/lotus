@@ -98,6 +98,10 @@ impl WindowState {
         self.pending.push(event);
     }
 
+    pub(super) fn push_search_context_request(&self, request: DockContextRequest) {
+        self.pending.push_search_context_request(request);
+    }
+
     pub(super) fn drain_events<E: QueuedEvent>(&self) -> std::collections::VecDeque<E> {
         self.pending.drain()
     }
@@ -337,7 +341,7 @@ pub(super) fn push_context_request(hwnd: HWND, request: DockContextRequest) {
         WindowKind::Dock | WindowKind::DockReplica => {
             state.push_event(DockEvent::ContextMenuRequested(request));
         }
-        WindowKind::Search => state.push_event(SearchEvent::ContextMenuRequested(request)),
+        WindowKind::Search => state.push_search_context_request(request),
         WindowKind::Status
         | WindowKind::Settings
         | WindowKind::ContextMenu

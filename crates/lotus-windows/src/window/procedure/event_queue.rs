@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use super::{
-    ContextMenuEvent, DockEvent, PointerEvent, SearchEvent, SettingsEvent, StatusEvent,
-    SwitcherEvent, WindowKind,
+    ContextMenuEvent, DockContextRequest, DockEvent, PointerEvent, SearchEvent,
+    SettingsEvent, StatusEvent, SwitcherEvent, WindowKind,
 };
 
 pub(in crate::window) trait QueuedEvent: Copy + private::Sealed {
@@ -62,6 +62,19 @@ impl EventQueue {
 
     pub(super) fn drain<E: QueuedEvent>(&self) -> VecDeque<E> {
         std::mem::take(E::events(&mut self.0.borrow_mut()))
+    }
+
+    pub(super) fn push_search_context_request(&self, request: DockContextRequest) {
+        let mut queue = self.0.borrow_mut();
+        let PendingEvents::Search(events) = &mut *queue else {
+            unreachable!("search context requests require a search window queue");
+        };
+
+        // WM_CONTEXTMENU confirms that Windows completed an in-Search right-click. A
+        // dismissal queued earlier by the low-level outside-click observer belongs to the
+        // same handoff and must not close the parent before its child popup opens.
+        events.retain(|event| !matches!(event, SearchEvent::DismissRequested));
+        events.push_back(SearchEvent::ContextMenuRequested(request));
     }
 
     pub(super) fn is_empty(&self) -> bool {

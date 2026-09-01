@@ -12,15 +12,14 @@ use crate::NativeError;
 use crate::platform::windows::backdrop;
 use crate::platform::windows::display::primary_display;
 use crate::platform::windows::interaction::PointerCursor;
-use crate::platform::windows::native_window::{
-    Activation, NativeWindow, WindowCreation, WindowHandle,
-};
+use crate::platform::windows::native_window::{NativeWindow, WindowCreation, WindowHandle};
 use crate::window::procedure::WindowState;
+use crate::window::transient::TransientWindow;
 
 type Result<T> = std::result::Result<T, NativeError>;
 
 pub struct SwitcherWindow {
-    window: NativeWindow<WindowState>,
+    window: TransientWindow,
     _class: Rc<WindowClass>,
 }
 
@@ -45,7 +44,7 @@ impl SwitcherWindow {
         )?;
         backdrop::apply_context_menu(window.hwnd());
         Ok(Self {
-            window,
+            window: TransientWindow::new(window),
             _class: class,
         })
     }
@@ -55,7 +54,7 @@ impl SwitcherWindow {
     }
 
     pub fn dpi(&self) -> u32 {
-        self.window.dpi().dpi()
+        self.window.dpi()
     }
 
     pub fn show_centered(
@@ -66,32 +65,15 @@ impl SwitcherWindow {
         let display = primary_display()?;
         let width = i32::try_from(size.width()).unwrap_or(i32::MAX);
         let height = i32::try_from(size.height()).unwrap_or(i32::MAX);
-        let x = display.work_area.left.saturating_add(
-            display
-                .work_area
-                .right
-                .saturating_sub(display.work_area.left)
-                .saturating_sub(width)
-                / 2,
-        );
-        let y = display.work_area.top.saturating_add(
-            display
-                .work_area
-                .bottom
-                .saturating_sub(display.work_area.top)
-                .saturating_sub(height)
-                / 2,
-        );
-        self.window.state_mut().clear_events();
+        let (x, y) = display.work_area.centered_origin(width, height);
         self.window
-            .place_topmost(x, y, width, height, Activation::KeepInactive, true)?;
+            .prepare_and_show_topmost_inactive(x, y, width, height)?;
         super::procedure::apply_rounded_region(self.window.hwnd(), 0);
         Ok(display.dpi()?.dpi())
     }
 
     pub fn hide(&mut self) {
         self.window.hide();
-        self.window.state_mut().clear_events();
     }
 
     pub fn set_pointer_cursor(&self, cursor: PointerCursor) {

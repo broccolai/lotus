@@ -3,14 +3,13 @@ use std::path::Path;
 use lotus_core::window::WindowInfo;
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
-use lotus_windows::activation::launch_target;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
-use lotus_windows::interaction::request_exit;
 use lotus_windows::window::{ContextMenuEvent, DockWindow};
 
 use super::presentation::present_dock_change;
 use crate::app::modules::ModuleHost;
+use crate::app::system_actions::{Confirmation, SystemAction, execute_system_action};
 use crate::app::visuals::{AppMenuAction, ContextMenuAction, PopupAction, PowerAction};
 use crate::app::{AppError, DockRuntime, activation};
 
@@ -23,10 +22,9 @@ pub(super) fn handle_context_menu_event(
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
-    let refocus_launcher = matches!(event, ContextMenuEvent::DismissRequested)
-        && auxiliary.context_menu_is_search_owned()
-        && auxiliary.launcher_is_visible();
-    if let Some(invocation) = auxiliary.handle_context_menu_event(event)? {
+    let outcome = auxiliary.handle_context_menu_event(event)?;
+    let closed_owner = outcome.closed_owner;
+    if let Some(invocation) = outcome.invocation {
         let mut context = PopupActionContext {
             dock,
             graphics,
@@ -36,9 +34,8 @@ pub(super) fn handle_context_menu_event(
             auxiliary,
         };
         execute_popup_action(invocation.action, &mut context)?;
-    } else if refocus_launcher {
-        auxiliary.focus_launcher_if_visible();
     }
+    auxiliary.resume_popup_parent(closed_owner);
     Ok(())
 }
 
@@ -59,6 +56,7 @@ fn execute_popup_action(
         PopupAction::System(action) => {
             execute_context_menu_action(
                 action,
+                context.dock.handle(),
                 context.graphics,
                 context.dock_model,
                 context.auxiliary,
@@ -126,7 +124,6 @@ fn execute_popup_action(
                             "Lotus could not open that application's location.\n\n{error}"
                         ),
                     );
-                    context.auxiliary.focus_launcher_if_visible();
                 }
             }
         }
@@ -135,23 +132,17 @@ fn execute_popup_action(
 }
 
 fn execute_power_action(action: PowerAction, owner: WindowHandle) {
-    let result = match action {
-        PowerAction::Lock => {
-            lotus_windows::desktop::lock().map_err(|error| error.to_string())
-        }
-        PowerAction::Restart => launch_target("shutdown.exe", Some("/r /t 0"))
-            .map_err(|error| error.to_string()),
-        PowerAction::ShutDown => launch_target("shutdown.exe", Some("/s /t 0"))
-            .map_err(|error| error.to_string()),
+    let action = match action {
+        PowerAction::Lock => SystemAction::LockComputer,
+        PowerAction::Restart => SystemAction::RestartComputer {
+            confirmation: Confirmation::AlreadyConfirmed,
+        },
+        PowerAction::ShutDown => SystemAction::ShutDownComputer {
+            confirmation: Confirmation::AlreadyConfirmed,
+        },
         PowerAction::Cancel => return,
     };
-    if let Err(error) = result {
-        show_error(
-            owner,
-            "Lotus",
-            &format!("Lotus could not complete that power action.\n\n{error}"),
-        );
-    }
+    execute_system_action(action, owner);
 }
 
 fn execute_app_menu_action(
@@ -253,6 +244,7 @@ fn execute_app_menu_action(
 
 fn execute_context_menu_action(
     action: ContextMenuAction,
+    owner: WindowHandle,
     graphics: &mut DeviceState,
     dock_model: &DockRuntime,
     auxiliary: &mut ModuleHost,
@@ -260,7 +252,9 @@ fn execute_context_menu_action(
     match action {
         ContextMenuAction::OpenSettings => auxiliary.open_settings(dock_model, graphics)?,
         ContextMenuAction::RequestShutdown => auxiliary.open_power_menu(graphics)?,
-        ContextMenuAction::QuitLotus => request_exit(0),
+        ContextMenuAction::QuitLotus => {
+            execute_system_action(SystemAction::QuitLotus, owner);
+        }
     }
     Ok(())
 }
