@@ -7,10 +7,11 @@ use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::UI::Shell::{
-    BHID_EnumItems, FOLDERID_AppsFolder, FOLDERID_CommonPrograms, FOLDERID_Desktop,
-    FOLDERID_Programs, FOLDERID_PublicDesktop, IEnumShellItems, IShellItem, IShellItem2,
-    KF_FLAG_DEFAULT, SHGetKnownFolderItem, SHGetKnownFolderPath, SIGDN_NORMALDISPLAY,
-    SIGDN_PARENTRELATIVEPARSING,
+    BHID_EnumItems, FOLDERID_AppsFolder, FOLDERID_CommonPrograms,
+    FOLDERID_ControlPanelFolder, FOLDERID_Desktop, FOLDERID_Programs,
+    FOLDERID_PublicDesktop, IEnumShellItems, IShellItem, IShellItem2, KF_FLAG_DEFAULT,
+    SHGetKnownFolderItem, SHGetKnownFolderPath, SIGDN_DESKTOPABSOLUTEPARSING,
+    SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
 };
 use windows::core::{BSTR, GUID, Interface, PWSTR};
 
@@ -34,6 +35,16 @@ pub(super) fn discover_start_menu_entries() -> Vec<ApplicationEntry> {
     let mut entries = discover_entries(roots.into_iter().flatten());
     entries.extend(discover_apps_folder_entries());
     entries.extend(discover_desktop_web_apps());
+    let control_panel =
+        discover_shell_folder_entries(&FOLDERID_ControlPanelFolder, control_panel_entry);
+    for entry in control_panel {
+        if !entries
+            .iter()
+            .any(|existing| existing.name.eq_ignore_ascii_case(&entry.name))
+        {
+            entries.push(entry);
+        }
+    }
     entries
 }
 
@@ -94,12 +105,19 @@ fn desktop_roots() -> Vec<PathBuf> {
 }
 
 fn discover_apps_folder_entries() -> Vec<ApplicationEntry> {
+    discover_shell_folder_entries(&FOLDERID_AppsFolder, apps_folder_entry)
+}
+
+fn discover_shell_folder_entries(
+    folder_id: &GUID,
+    make_entry: fn(&IShellItem, String) -> Option<ApplicationEntry>,
+) -> Vec<ApplicationEntry> {
     let Some(_apartment) = ComApartment::enter() else {
         return Vec::new();
     };
-    let Ok(folder) = (unsafe {
-        SHGetKnownFolderItem::<IShellItem>(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT, None)
-    }) else {
+    let Ok(folder) =
+        (unsafe { SHGetKnownFolderItem::<IShellItem>(folder_id, KF_FLAG_DEFAULT, None) })
+    else {
         return Vec::new();
     };
     let Ok(enumerator) =
@@ -123,21 +141,15 @@ fn discover_apps_folder_entries() -> Vec<ApplicationEntry> {
         let Some(name) = shell_item_text(&item, SIGDN_NORMALDISPLAY) else {
             continue;
         };
-        let Some(identity) = shell_item_text(&item, SIGDN_PARENTRELATIVEPARSING) else {
-            continue;
-        };
-        if let Some(entry) = apps_folder_entry(&item, name, &identity) {
+        if let Some(entry) = make_entry(&item, name) {
             entries.push(entry);
         }
     }
     entries
 }
 
-fn apps_folder_entry(
-    item: &IShellItem,
-    name: String,
-    identity: &str,
-) -> Option<ApplicationEntry> {
+fn apps_folder_entry(item: &IShellItem, name: String) -> Option<ApplicationEntry> {
+    let identity = shell_item_text(item, SIGDN_PARENTRELATIVEPARSING)?;
     if should_exclude(&name)
         || identity.starts_with("http://")
         || identity.starts_with("https://")
@@ -157,8 +169,17 @@ fn apps_folder_entry(
     Some(
         ApplicationEntry::new(name, launch_target, Some(apps_folder_target))
             .with_arguments(arguments.as_deref())
-            .with_app_user_model_id(identity),
+            .with_app_user_model_id(&identity),
     )
+}
+
+fn control_panel_entry(item: &IShellItem, name: String) -> Option<ApplicationEntry> {
+    if should_exclude(&name) {
+        return None;
+    }
+    let parsing_name = shell_item_text(item, SIGDN_DESKTOPABSOLUTEPARSING)?;
+    let target = format!("shell:{parsing_name}");
+    Some(ApplicationEntry::new(name, target.clone(), Some(target)).hidden_until_search())
 }
 
 fn shell_item_property(item: &IShellItem2, key: &PROPERTYKEY) -> Option<String> {
