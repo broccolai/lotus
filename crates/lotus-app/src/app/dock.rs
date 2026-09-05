@@ -1,66 +1,57 @@
+mod assets;
 mod interaction;
 mod pinning;
 mod projection;
+mod status_observation;
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use assets::DockAssets;
 use lotus_core::application::{
     ApplicationKey, PinnedApplicationAssignment, WindowApplicationAssignments,
 };
 use lotus_core::dock::DockItem;
 use lotus_core::notification::NotificationSource;
-use lotus_core::settings::{DockSettings, SettingsStore};
+use lotus_core::settings::DockSettings;
 use lotus_core::window::{TrackedWindowKey, WindowInfo};
 use lotus_dock::interaction::DockInteraction;
-use lotus_dock::model::{DockModel, SettingsImpact};
+use lotus_dock::model::{DockModel, DockReorderRequest, SettingsImpact};
 use lotus_dock::scene::DockPresenter;
 use lotus_media::MediaSnapshot;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_windows::WindowHandle;
-use lotus_windows::custom_image::{
-    CustomImageCache, MascotAnimation, MascotLoopCount, load_mascot_image,
-};
-use lotus_windows::icon_hydrator::{DockIconClient, DockIconRequest, HydratedDockIcon};
-use lotus_windows::media::decode_artwork;
-use lotus_windows::native_icon::NativeIconCache;
+use lotus_windows::custom_image::{MascotAnimation, MascotLoopCount, load_mascot_image};
+use lotus_windows::icon_hydrator::{DockIconClient, HydratedDockIcon};
 use lotus_windows::search_catalog::{
     ApplicationAssociations, ApplicationCatalogSnapshot, ApplicationResolver,
 };
-use projection::{
-    departure_transition, docked_status_items, media_source_matches_item, projected_items,
-};
-pub(super) use projection::{
-    dock_anchor, metrics, popup_overlap, status_items, status_popup_center,
-};
+use projection::{departure_transition, projected_items};
+pub(super) use projection::{dock_anchor, metrics, popup_overlap, status_popup_center};
+pub(super) use status_observation::{docked_status_items, status_items};
 
 use crate::app::AppError;
 use crate::app::monitors::{
     MonitorPresentationInput, MonitorReplicaInput, MonitorReplicaTarget,
 };
+use crate::app::settings_persistence::SettingsPersistence;
 use crate::app::visuals::{
-    DockIcon, DockItem as SceneDockItem, DockMetrics, DockScene, MediaItem, MediaSymbols,
+    DockIcon, DockItem as SceneDockItem, DockMetrics, DockScene, MediaItem,
 };
 
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
 const EXIT_DURATION: Duration = Duration::from_millis(80);
 
-pub(super) struct DockInteractionOutcome {
-    pub(super) changed: bool,
-    pub(super) effect: Option<crate::app::visuals::DockHitTarget>,
-}
+pub(super) use lotus_dock::interaction::{DockInteractionIntent, DockInteractionOutcome};
 
 pub(super) struct DockRuntime {
     status_owner: WindowHandle,
     model: DockModel,
     scene: DockScene,
-    native_icons: NativeIconCache,
-    icon_hydrator: Option<DockIconClient>,
-    hydrated_window_icons: HashMap<String, HydratedDockIcon>,
-    custom_images: CustomImageCache,
+    assets: DockAssets,
     notifications: Vec<NotificationSource>,
     interaction: DockInteraction,
     pending_items: Option<Vec<SceneDockItem>>,
@@ -87,7 +78,6 @@ impl DockRuntime {
     pub(super) fn new(
         status_owner: WindowHandle,
         settings: DockSettings,
-        settings_store: SettingsStore,
         windows: &[WindowInfo],
         dpi: u32,
         drag_threshold: (u32, u32),
@@ -117,12 +107,9 @@ impl DockRuntime {
         scene.replace_status_items(docked_status_items(&settings, status_owner));
         let mut runtime = Self {
             status_owner,
-            model: DockModel::new(settings, settings_store, items),
+            model: DockModel::new(settings, items),
             scene,
-            native_icons: NativeIconCache::default(),
-            icon_hydrator: None,
-            hydrated_window_icons: HashMap::new(),
-            custom_images: CustomImageCache::default(),
+            assets: DockAssets::default(),
             notifications: Vec::new(),
             interaction: DockInteraction::new(drag_threshold),
             pending_items: None,
@@ -197,6 +184,7 @@ impl DockRuntime {
     pub(in crate::app) fn adopt_catalogue_pins(
         &mut self,
         catalog: &ApplicationCatalogSnapshot,
+        persistence: &SettingsPersistence,
     ) -> Result<(), AppError> {
         if catalog.generation == 0 || self.adopted_catalog_generation == catalog.generation
         {
@@ -223,11 +211,14 @@ impl DockRuntime {
                 aliases
             })
             .collect::<Vec<_>>();
-        let _ = self.model.repair_catalogue_pins(
+        if let Some(settings) = self.model.prepared_catalogue_pin_repair(
             &assignments,
             &catalog.applications,
             &safe_aliases,
-        )?;
+        ) {
+            persistence.save(&settings)?;
+            self.model.commit_settings_only(settings);
+        }
         self.adopted_catalog_generation = catalog.generation;
         Ok(())
     }
@@ -314,6 +305,35 @@ impl DockRuntime {
         self.request_native_window_icons();
     }
 
+    pub(in crate::app) fn scene_items(&mut self) -> Vec<SceneDockItem> {
+        let pixel_size = self
+            .scene
+            .icon_size_pixels()
+            .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
+        self.scene_items_at_size(pixel_size)
+    }
+
+    pub(in crate::app) fn scene_items_at_size(
+        &mut self,
+        pixel_size: u32,
+    ) -> Vec<SceneDockItem> {
+        if !self.model.settings().show_app_dock {
+            return Vec::new();
+        }
+        let icons = self.assets.prepare_icons(
+            self.model.items(),
+            self.model.settings(),
+            pixel_size,
+        );
+        projection::scene_items(
+            self.model.items(),
+            &icons,
+            self.model.settings(),
+            &self.notifications,
+            &self.application_catalog,
+        )
+    }
+
     pub(super) fn advance_departure(&mut self, now: Instant) -> bool {
         if self.exit_deadline.is_none_or(|deadline| now < deadline) {
             return false;
@@ -376,30 +396,23 @@ impl DockRuntime {
     pub(super) const fn settings(&self) -> &DockSettings {
         self.model.settings()
     }
-    pub(super) fn settings_directory(&self) -> &Path {
-        self.model.settings_directory()
-    }
-
-    pub(super) fn export_settings(&self, destination: &Path) -> Result<(), AppError> {
-        self.model.export_settings(destination)?;
-        Ok(())
-    }
-
-    pub(super) fn validate_export_destination(
-        &self,
-        destination: &Path,
-    ) -> Result<(), AppError> {
-        self.model.validate_export_destination(destination)?;
-        Ok(())
-    }
-
-    pub(super) fn reset_settings(
-        &self,
-    ) -> Result<lotus_core::settings::SettingsReset, AppError> {
-        Ok(self.model.reset_settings()?)
-    }
     pub(super) fn items(&self) -> &[DockItem] {
         self.model.items()
+    }
+
+    pub(in crate::app) fn persist_reorder(
+        &mut self,
+        request: &DockReorderRequest,
+        persistence: &SettingsPersistence,
+    ) -> Result<bool, AppError> {
+        let Some(reorder) = self.model.prepare_reorder(request) else {
+            self.refresh_scene_items();
+            return Ok(false);
+        };
+        persistence.save(reorder.settings())?;
+        self.model.commit_reorder(reorder);
+        self.refresh_scene_items();
+        Ok(true)
     }
     pub(super) const fn scene(&self) -> &DockScene {
         &self.scene
@@ -420,17 +433,25 @@ impl DockRuntime {
         &mut self,
         next: DockSettings,
         windows: &[WindowInfo],
+        persistence: &SettingsPersistence,
     ) -> Result<SettingsImpact, AppError> {
         let next = next.normalized();
         let metrics = metrics(&next)?;
         let dpi = self.scene.dpi();
         let retained_items = self.model.items().to_vec();
-        let impact = self.model.apply_settings(next, retained_items)?;
+        let Some(change) = self.model.prepare_settings(next, retained_items) else {
+            return Ok(SettingsImpact {
+                changed: false,
+                restart_required: false,
+            });
+        };
+        persistence.save(change.settings())?;
+        let impact = self.model.commit_settings(change);
         if impact.changed {
             self.resolve_current_applications(windows);
             let next_items = self.projected_items(windows);
             self.model.rebuild(next_items);
-            self.custom_images.clear();
+            self.assets.clear_custom_images();
             if let Some(media) = &mut self.media {
                 media.show_metadata = self.model.settings().show_media_metadata;
             }
@@ -528,53 +549,19 @@ impl DockRuntime {
     }
 
     fn media_item(&mut self, snapshot: &MediaSnapshot) -> MediaItem {
-        let artwork = snapshot
-            .artwork
-            .as_deref()
-            .and_then(|artwork| decode_artwork(&snapshot.source_id, artwork).ok())
-            .map(DockIcon::Raster)
-            .or_else(|| self.media_source_icon(&snapshot.source_id))
+        let artwork = self
+            .assets
+            .media_artwork(
+                snapshot,
+                self.model.items(),
+                self.model.settings(),
+                &self.application_catalog,
+                self.scene
+                    .icon_size_pixels()
+                    .saturating_mul(NATIVE_ICON_SAMPLE_SCALE),
+            )
             .unwrap_or(DockIcon::Embedded(EmbeddedIcon::FluentMusic));
-        MediaItem {
-            source_id: snapshot.source_id.clone(),
-            title: snapshot.title.clone(),
-            artist: snapshot.artist.clone(),
-            show_metadata: self.model.settings().show_media_metadata,
-            artwork,
-            controls: snapshot.controls,
-            playback: snapshot.playback,
-            symbols: MediaSymbols {
-                previous: EmbeddedIcon::FluentPrevious,
-                play: EmbeddedIcon::FluentPlay,
-                pause: EmbeddedIcon::FluentPause,
-                next: EmbeddedIcon::FluentNext,
-            },
-        }
-    }
-
-    fn media_source_icon(&mut self, source_id: &str) -> Option<DockIcon> {
-        let item = self.model.items().iter().find(|item| {
-            media_source_matches_item(source_id, item, &self.application_catalog)
-        })?;
-        let size = self
-            .scene
-            .icon_size_pixels()
-            .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        crate::app::icon_override::resolve_application_icon(
-            self.model.settings(),
-            &mut self.custom_images,
-            item.app_user_model_id.as_deref(),
-            Some(&item.id),
-            Path::new(&item.executable_path),
-        )
-        .map(DockIcon::Raster)
-        .or_else(|| {
-            self.native_icons
-                .icon(Path::new(&item.icon_source), size)
-                .ok()
-                .flatten()
-                .map(DockIcon::Raster)
-        })
+        projection::media_item(snapshot, artwork, self.model.settings().show_media_metadata)
     }
 
     pub(in crate::app) fn drain_hydrated_window_icons(
@@ -585,31 +572,7 @@ impl DockRuntime {
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        let mut changed = false;
-
-        for result in results {
-            let current = self.model.items().iter().any(|item| {
-                item.id == result.identity
-                    && item
-                        .windows
-                        .first()
-                        .is_some_and(|window| window.key() == result.window)
-                    && result.pixel_size == icon_size
-            });
-            let duplicate = self
-                .hydrated_window_icons
-                .get(&result.identity)
-                .is_some_and(|existing| {
-                    existing.window == result.window
-                        && existing.pixel_size == result.pixel_size
-                        && existing.icon == result.icon
-                });
-            if current && result.icon.is_some() && !duplicate {
-                self.hydrated_window_icons
-                    .insert(result.identity.clone(), result);
-                changed = true;
-            }
-        }
+        let changed = self.assets.drain(self.model.items(), icon_size, results);
         if changed {
             self.refresh_scene_items();
         }
@@ -621,39 +584,8 @@ impl DockRuntime {
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        let requests = self
-            .model
-            .items()
-            .iter()
-            .filter_map(|item| {
-                let window = item.windows.first()?.key();
-                if self
-                    .hydrated_window_icons
-                    .get(&item.id)
-                    .is_some_and(|icon| {
-                        icon.window == window && icon.pixel_size == pixel_size
-                    })
-                {
-                    return None;
-                }
-                let identity = item.application_identity();
-                crate::app::icon_override::application_icon_path_for_identity(
-                    self.model.settings(),
-                    &identity,
-                )
-                .is_none()
-                .then(|| DockIconRequest {
-                    identity: item.id.clone(),
-                    window,
-                    executable_path: item.executable_path.clone().into(),
-                    presentation_icon: item.presentation_icon.clone(),
-                    pixel_size,
-                })
-            })
-            .collect();
-        if let Some(icon_hydrator) = &self.icon_hydrator {
-            icon_hydrator.request_dock(requests);
-        }
+        self.assets
+            .request(self.model.items(), self.model.settings(), pixel_size);
     }
 
     fn retain_current_window_icons(&mut self) {
@@ -661,26 +593,11 @@ impl DockRuntime {
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        let current = self
-            .model
-            .items()
-            .iter()
-            .filter_map(|item| {
-                item.windows
-                    .first()
-                    .map(|window| (item.id.clone(), window.key()))
-            })
-            .collect::<HashMap<_, _>>();
-        self.hydrated_window_icons.retain(|identity, icon| {
-            icon.pixel_size == pixel_size
-                && current
-                    .get(identity)
-                    .is_some_and(|window| *window == icon.window)
-        });
+        self.assets.retain(self.model.items(), pixel_size);
     }
 
     pub(in crate::app) fn attach_icon_hydrator(&mut self, icon_hydrator: DockIconClient) {
-        self.icon_hydrator = Some(icon_hydrator);
+        self.assets.attach(icon_hydrator);
         self.request_native_window_icons();
     }
 }

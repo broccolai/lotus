@@ -5,12 +5,12 @@ use lotus_windows::WindowHandle;
 use lotus_windows::graphics::DeviceState;
 use lotus_windows::window::SettingsEvent;
 
-use super::{ModuleHost, SettingsIntent};
+use super::ModuleHost;
 use crate::app::AppError;
 use crate::app::dock::DockRuntime;
 use crate::app::settings::{
-    ApplicationIconOutcome, ColorOutcome, ColorTarget, SettingsEventOutcome,
-    application_records,
+    ApplicationIconOutcome, ApplicationPreviewRefresh, ColorOutcome, ColorTarget,
+    SettingsCommand, application_records,
 };
 
 impl ModuleHost {
@@ -205,25 +205,22 @@ impl ModuleHost {
         event: SettingsEvent,
         graphics: &mut DeviceState,
         dock_items: &[DockItem],
-    ) -> Result<SettingsIntent, AppError> {
-        let outcome = self.settings.handle_event(event, graphics)?;
-        match outcome {
-            SettingsEventOutcome::None => Ok(SettingsIntent::None),
-            SettingsEventOutcome::RefreshApplications => {
+    ) -> Result<Option<SettingsCommand>, AppError> {
+        let interaction = self.settings.handle_event(event, graphics)?;
+        match interaction.previews {
+            ApplicationPreviewRefresh::None => {}
+            ApplicationPreviewRefresh::Reload => {
                 self.refresh_application_records(dock_items);
                 self.settings.invalidate();
-                Ok(SettingsIntent::None)
             }
-            SettingsEventOutcome::HydrateApplicationPreviews => {
+            ApplicationPreviewRefresh::Hydrate => {
                 let application_catalog = self.applications.snapshot();
                 self.settings
                     .hydrate_application_previews(&application_catalog, dock_items);
                 self.settings.invalidate();
-                Ok(SettingsIntent::None)
             }
-            SettingsEventOutcome::PasteQuery => Ok(SettingsIntent::PasteQuery),
-            SettingsEventOutcome::Action(action) => Ok(SettingsIntent::Action(action)),
         }
+        Ok(interaction.command)
     }
 
     pub(in crate::app) fn paste_settings_query(

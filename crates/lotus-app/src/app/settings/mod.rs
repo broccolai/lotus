@@ -2,48 +2,42 @@ mod applications;
 mod assets;
 mod events;
 mod pickers;
+mod surface;
+mod updates;
 
 use std::time::Instant;
 
 pub(in crate::app) use applications::application_records;
-pub(in crate::app) use events::SettingsEventOutcome;
+pub(in crate::app) use events::{ApplicationPreviewRefresh, SettingsCommand};
 use lotus_core::settings::{ApplicationIconOverride, DockSettings};
 use lotus_settings::scene::{
-    SettingsAction, SettingsControl, SettingsScene, SettingsSize, SettingsUpdateActivity,
+    SettingsAction, SettingsControl, SettingsScene, SettingsUpdateActivity,
 };
-use lotus_ui::frame::ScheduledSurface;
-use lotus_windows::WindowHandle;
 use lotus_windows::custom_image::CustomImageCache;
-use lotus_windows::graphics::settings_surface::SettingsCompositionSurfaceState;
-use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceSize};
+use lotus_windows::graphics::{DeviceState, GraphicsDevice};
 use lotus_windows::interaction::PointerCursor;
 use lotus_windows::native_icon::NativeIconCache;
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::search_catalog::ApplicationCatalogSnapshot;
-use lotus_windows::update::{Release, UpdateChecker, UpdateResult, UpdateStartError};
+use lotus_windows::update::{Release, UpdateResult, UpdateStartError};
 use lotus_windows::window::{
     SettingsEvent, SettingsKey as WindowSettingsKey, SettingsWindow,
 };
 pub(in crate::app) use pickers::{ApplicationIconOutcome, ColorOutcome, ColorTarget};
+use surface::SettingsSurface;
+use updates::SettingsUpdates;
 
 use crate::app::AppError;
 
-struct PendingUpdate {
-    release: Release,
-}
-
 pub(in crate::app) struct SettingsRuntime {
-    window: SettingsWindow,
+    surface: SettingsSurface,
     scene: SettingsScene,
-    surface: Option<ScheduledSurface<SettingsCompositionSurfaceState>>,
-    visible: bool,
     dragging_slider: Option<lotus_settings::scene::SettingsSlider>,
     dragging_scrollbar: Option<u32>,
     pressed_control: Option<SettingsControl>,
     native_icons: NativeIconCache,
     custom_images: CustomImageCache,
-    update_checker: UpdateChecker,
-    pending_update: Option<PendingUpdate>,
+    updates: SettingsUpdates,
 }
 
 impl SettingsRuntime {
@@ -57,17 +51,14 @@ impl SettingsRuntime {
             .ok_or(AppError::InvalidSettingsScene)?;
 
         Ok(Self {
-            window,
+            surface: SettingsSurface::new(window),
             scene,
-            surface: None,
-            visible: false,
             dragging_slider: None,
             dragging_scrollbar: None,
             pressed_control: None,
             native_icons: NativeIconCache::default(),
             custom_images: CustomImageCache::default(),
-            update_checker: UpdateChecker::new(updates_allowed),
-            pending_update: None,
+            updates: SettingsUpdates::new(updates_allowed),
         })
     }
 
@@ -76,11 +67,11 @@ impl SettingsRuntime {
         applied: &DockSettings,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        if self.visible {
-            self.window.focus();
+        if self.surface.is_visible() {
+            self.surface.focus();
             return Ok(());
         }
-        self.window.use_material(applied);
+        self.surface.use_material(applied);
         self.scene.end_onboarding();
         self.scene.mark_applied(applied.clone());
         self.show(graphics)
@@ -92,69 +83,34 @@ impl SettingsRuntime {
         required: bool,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        self.window.use_material(applied);
+        self.surface.use_material(applied);
         self.scene.begin_onboarding(applied.clone(), required);
         self.show(graphics)
     }
 
     fn show(&mut self, graphics: &mut DeviceState) -> Result<(), AppError> {
-        let _ = self.scene.set_dpi(self.window.dpi());
-
-        let (width, height) = self.window.client_size()?;
-        let _ = self.scene.set_available_size(width, height);
-        self.window.set_layout_dpi(self.scene.effective_dpi());
-        let size =
-            SettingsSize::new(width, height).ok_or(AppError::InvalidSettingsScene)?;
-        let surface_size = SurfaceSize::new(size.width(), size.height())
-            .ok_or(AppError::ZeroSizedSurface)?;
-
-        if let Some(surface) = &mut self.surface {
-            surface.value_mut().resize(surface_size)?;
-        } else {
-            let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            self.surface = Some(ScheduledSurface::new(
-                SettingsCompositionSurfaceState::create(
-                    device,
-                    self.window.handle(),
-                    surface_size,
-                )?,
-            ));
-        }
-
-        self.window.show()?;
-        self.visible = true;
-        self.invalidate();
-        Ok(())
+        self.surface.show(&mut self.scene, graphics)
     }
 
     pub(in crate::app) fn hide(&mut self) {
         self.cancel_update_offer();
-        self.window.hide();
-        self.window.set_pointer_cursor(PointerCursor::Arrow);
-        self.visible = false;
+        self.surface.set_pointer_cursor(PointerCursor::Arrow);
         self.dragging_slider = None;
         self.dragging_scrollbar = None;
         self.pressed_control = None;
-        if let Some(surface) = &mut self.surface {
-            surface.stop_animation();
-        }
+        self.surface.hide();
     }
 
     pub(in crate::app) const fn is_visible(&self) -> bool {
-        self.visible
+        self.surface.is_visible()
     }
 
     pub(in crate::app) fn diagnostic_surface_state(&self) -> (bool, bool, bool) {
-        let surface = self.surface.as_ref();
-        (
-            surface.is_some_and(ScheduledSurface::is_dirty),
-            surface.is_some_and(ScheduledSurface::is_animating),
-            self.visible,
-        )
+        self.surface.diagnostic_state()
     }
 
-    pub(in crate::app) fn owner(&self) -> WindowHandle {
-        self.window.handle()
+    pub(in crate::app) fn owner(&self) -> lotus_windows::WindowHandle {
+        self.surface.owner()
     }
 
     pub(in crate::app) fn draft(&self) -> &DockSettings {
@@ -180,7 +136,7 @@ impl SettingsRuntime {
 
     pub(in crate::app) fn set_dpi(&mut self, dpi: u32) {
         let _ = self.scene.set_dpi(dpi);
-        self.window.set_layout_dpi(self.scene.effective_dpi());
+        self.surface.set_layout_dpi(self.scene.effective_dpi());
     }
 
     pub(in crate::app) fn onboarding_active(&self) -> bool {
@@ -229,7 +185,7 @@ impl SettingsRuntime {
     }
 
     pub(in crate::app) fn apply_material(&mut self, applied: &DockSettings) {
-        self.window.use_material(applied);
+        self.surface.use_material(applied);
     }
 
     pub(in crate::app) fn set_update_activity(&mut self, activity: SettingsUpdateActivity) {
@@ -241,13 +197,13 @@ impl SettingsRuntime {
         release: Release,
         installed: bool,
     ) -> bool {
-        if !self.visible {
+        if !self.is_visible() {
             return false;
         }
         let changed = self
             .scene
             .show_update_prompt(release.version.clone(), installed);
-        self.pending_update = Some(PendingUpdate { release });
+        self.updates.offer(release);
         if changed {
             self.invalidate();
         }
@@ -255,14 +211,14 @@ impl SettingsRuntime {
     }
 
     pub(in crate::app) fn take_update_offer(&mut self) -> Option<Release> {
-        let offer = self.pending_update.take()?;
+        let offer = self.updates.take_offer()?;
         let _ = self.scene.dismiss_update_prompt();
         self.invalidate();
-        Some(offer.release)
+        Some(offer)
     }
 
     pub(in crate::app) fn cancel_update_offer(&mut self) {
-        if self.pending_update.take().is_none() {
+        if self.updates.take_offer().is_none() {
             return;
         }
         let _ = self.scene.dismiss_update_prompt();
@@ -271,27 +227,22 @@ impl SettingsRuntime {
     }
 
     pub(in crate::app) fn invalidate(&mut self) {
-        if let Some(surface) = &mut self.surface {
-            surface.invalidate();
-        }
+        self.surface.invalidate();
     }
 
     pub(in crate::app) fn recover_surface(
         &mut self,
         device: &GraphicsDevice,
     ) -> Result<(), AppError> {
-        if let Some(surface) = &mut self.surface {
-            surface.value_mut().recover(device)?;
-        }
-        Ok(())
+        self.surface.recover(device)
     }
 
     pub(in crate::app) fn drain_events(&mut self) -> Vec<SettingsEvent> {
-        self.window.drain_events().collect()
+        self.surface.drain_events()
     }
 
     pub(in crate::app) fn has_pending_events(&self) -> bool {
-        self.window.has_pending_events()
+        self.surface.has_pending_events()
     }
 
     fn resize(
@@ -300,29 +251,8 @@ impl SettingsRuntime {
         width: u32,
         height: u32,
     ) -> Result<(), AppError> {
-        let Some(size) = SettingsSize::new(width, height) else {
-            return Ok(());
-        };
-        let _ = self.scene.set_available_size(width, height);
-        self.window.set_layout_dpi(self.scene.effective_dpi());
-        let Some(surface) = &mut self.surface else {
-            return Ok(());
-        };
-
-        let size = SurfaceSize::new(size.width(), size.height())
-            .ok_or(AppError::ZeroSizedSurface)?;
-
-        match surface.value_mut().resize(size) {
-            Ok(()) => {
-                self.invalidate();
-                Ok(())
-            }
-            Err(lotus_windows::graphics::SurfaceError::DeviceLost(loss)) => {
-                graphics.mark_lost(loss);
-                Ok(())
-            }
-            Err(error) => Err(error.into()),
-        }
+        self.surface
+            .resize(&mut self.scene, graphics, width, height)
     }
 
     fn pointer_moved(&mut self, x: i32, y: i32) -> Option<SettingsAction> {
@@ -339,7 +269,7 @@ impl SettingsRuntime {
         } else {
             settings_pointer_cursor(style)
         };
-        self.window.set_pointer_cursor(cursor);
+        self.surface.set_pointer_cursor(cursor);
 
         if let Some(grab_offset) = self.dragging_scrollbar {
             if self.scene.set_scrollbar_from_pointer(y, grab_offset) {
@@ -372,7 +302,7 @@ impl SettingsRuntime {
     }
 
     fn pointer_left(&mut self) {
-        self.window.set_pointer_cursor(PointerCursor::Arrow);
+        self.surface.set_pointer_cursor(PointerCursor::Arrow);
         if self.scene.set_hovered(None) {
             self.invalidate();
         }
@@ -406,7 +336,7 @@ impl SettingsRuntime {
         if self.dragging_scrollbar.take().is_some() {
             self.dragging_slider = None;
             self.pressed_control = None;
-            self.window.set_pointer_cursor(PointerCursor::Arrow);
+            self.surface.set_pointer_cursor(PointerCursor::Arrow);
             return None;
         }
         if self.dragging_slider.take().is_some() {
@@ -421,7 +351,7 @@ impl SettingsRuntime {
                     settings_pointer_cursor(style)
                 },
             );
-            self.window.set_pointer_cursor(cursor);
+            self.surface.set_pointer_cursor(cursor);
             return None;
         }
         let released_control = u32::try_from(x)
@@ -439,7 +369,7 @@ impl SettingsRuntime {
         self.dragging_slider = None;
         self.dragging_scrollbar = None;
         self.pressed_control = None;
-        self.window.set_pointer_cursor(PointerCursor::Arrow);
+        self.surface.set_pointer_cursor(PointerCursor::Arrow);
     }
 
     fn activation_at(&mut self, x: i32, y: i32) -> SettingsAction {
@@ -529,8 +459,8 @@ impl SettingsRuntime {
 
     pub(in crate::app) fn start_update_check(&mut self) -> Result<bool, UpdateStartError> {
         let started = self
-            .update_checker
-            .start_check(env!("CARGO_PKG_VERSION"), self.scene.draft().update_channel)?;
+            .updates
+            .start_check(self.scene.draft().update_channel)?;
         if started {
             self.set_update_activity(SettingsUpdateActivity::Checking);
         }
@@ -541,7 +471,7 @@ impl SettingsRuntime {
         &mut self,
         release: Release,
     ) -> Result<bool, UpdateStartError> {
-        let started = self.update_checker.start_download(release)?;
+        let started = self.updates.start_download(release)?;
         if started {
             self.set_update_activity(SettingsUpdateActivity::Installing);
         }
@@ -549,7 +479,7 @@ impl SettingsRuntime {
     }
 
     pub(in crate::app) fn drain_update_results(&self) -> Vec<UpdateResult> {
-        self.update_checker.drain().collect()
+        self.updates.drain_results()
     }
 
     pub(in crate::app) fn hydrate_application_previews(

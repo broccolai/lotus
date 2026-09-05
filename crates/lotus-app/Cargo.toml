@@ -12,6 +12,7 @@ name = "lotus"
 path = "src/main.rs"
 
 [dependencies]
+atomic-write-file.workspace = true
 lotus-core.workspace = true
 lotus-dock.workspace = true
 lotus-media.workspace = true

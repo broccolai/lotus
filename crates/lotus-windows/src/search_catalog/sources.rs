@@ -141,6 +141,9 @@ fn discover_shell_folder_entries(
         let Some(name) = shell_item_text(&item, SIGDN_NORMALDISPLAY) else {
             continue;
         };
+        if name.starts_with("::{") {
+            continue;
+        }
         if let Some(entry) = make_entry(&item, name) {
             entries.push(entry);
         }

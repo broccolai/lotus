@@ -2,10 +2,9 @@ use std::error::Error;
 
 use lotus_core::settings::DockSettings;
 use lotus_dock::scene::DockPresenter;
-use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
+use lotus_ui::frame::{FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_windows::WindowHandle;
-use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{
     CompositionSurfaceState, DeviceState, GraphicsDevice, SurfaceSize,
 };
@@ -19,6 +18,7 @@ use lotus_windows::window_tracker::WindowTracker;
 use crate::app::AppError;
 use crate::app::dock::{popup_overlap, status_popup_center};
 use crate::app::runtime::resize_surface;
+use crate::app::surface_render::frame_outcome;
 use crate::app::visuals::{DockAnchor, DockHitTarget, DockScene, surface_size};
 
 #[derive(Clone, Copy)]
@@ -569,19 +569,9 @@ impl MonitorDock {
         let (presentation, animating) =
             self.presenter
                 .present(&self.scene, size.width(), size.height());
-        let render = |surface: &mut CompositionSurfaceState| {
-            surface.render_scene(&presentation, animating)
-        };
-        pass.render(&mut self.surface, |surface| match render(surface) {
-            Ok(FrameResult::Presented { needs_animation }) => {
-                Ok(FrameOutcome::complete(needs_animation && animation_allowed))
-            }
-            Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-            Err(lotus_windows::graphics::SurfaceError::DeviceLost(loss)) => {
-                graphics.mark_lost(loss);
-                Ok(FrameOutcome::complete(false))
-            }
-            Err(error) => Err(error.into()),
+        pass.render(&mut self.surface, |surface| {
+            frame_outcome(graphics, surface.render_scene(&presentation, animating))
+                .map(|frame| frame.with_animation_allowed(animation_allowed))
         })
     }
 }

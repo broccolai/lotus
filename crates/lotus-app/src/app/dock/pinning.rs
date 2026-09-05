@@ -5,6 +5,7 @@ use lotus_dock::model::PinLaunch;
 
 use super::DockRuntime;
 use crate::app::AppError;
+use crate::app::settings_persistence::SettingsPersistence;
 
 impl DockRuntime {
     pub(in crate::app) fn set_pinned(
@@ -13,6 +14,7 @@ impl DockRuntime {
         pinned: bool,
         windows: &[WindowInfo],
         registered: Option<lotus_core::application::RegisteredApplication>,
+        persistence: &SettingsPersistence,
     ) -> Result<bool, AppError> {
         let previous = self
             .model
@@ -46,9 +48,11 @@ impl DockRuntime {
                 match_executables,
             }
         });
-        if !self.model.set_pinned(source_index, pinned, launch)? {
+        let Some(settings) = self.model.prepare_pinned(source_index, pinned, launch) else {
             return Ok(false);
-        }
+        };
+        persistence.save(&settings)?;
+        self.model.commit_settings_only(settings);
         self.resolve_current_applications(windows);
         if let Some((index, item)) = previous {
             if pinned {

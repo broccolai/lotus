@@ -1,9 +1,7 @@
-use std::path::Path;
 use std::time::Instant;
 
 use lotus_core::dock::DockItem;
 use lotus_core::window::{TrackedWindowKey, WindowId, WindowInfo};
-use lotus_dock::interaction::map_visual_insertion_slot;
 use lotus_dock::popup::order_picker_windows;
 use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_windows::WindowHandle;
@@ -16,8 +14,8 @@ use lotus_windows::window::{
 
 use super::projection::{media_source_matches_item, popup_overlap, status_popup_center};
 use super::{DockRuntime, NATIVE_ICON_SAMPLE_SCALE};
+use crate::app::activation;
 use crate::app::visuals::{DockAnchor, DockHitTarget, DockIcon, NativePickerWindow};
-use crate::app::{AppError, activation};
 
 impl DockRuntime {
     pub(in crate::app) fn hit_test(&self, x: i32, y: i32) -> Option<DockHitTarget> {
@@ -143,7 +141,6 @@ impl DockRuntime {
         };
         let identity = item.id.clone();
         let display_name = item.display_name.clone();
-        let icon_source = item.icon_source.clone();
         let windows = item.windows.clone();
         let recent = self
             .recent_windows
@@ -156,25 +153,13 @@ impl DockRuntime {
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        let icon = crate::app::icon_override::resolve_application_icon(
-            self.model.settings(),
-            &mut self.custom_images,
-            windows
-                .first()
-                .and_then(|window| window.application_facts.reliable_id()),
-            Some(&identity),
-            Path::new(&icon_source),
-        )
-        .or_else(|| {
-            self.native_icons
-                .icon(Path::new(&icon_source), size)
-                .ok()
-                .flatten()
-        })
-        .map_or(
-            DockIcon::Embedded(EmbeddedIcon::FluentOpen),
-            DockIcon::Raster,
-        );
+        let icon = self
+            .assets
+            .picker_icon(self.model.settings(), item, size)
+            .map_or(
+                DockIcon::Embedded(EmbeddedIcon::FluentOpen),
+                DockIcon::Raster,
+            );
         ordered
             .into_iter()
             .map(|window| {
@@ -198,27 +183,11 @@ impl DockRuntime {
         source_index: usize,
     ) -> Option<lotus_ui::icon::RasterIcon> {
         let item = self.model.items().get(source_index)?;
-        let app_user_model_id = item.app_user_model_id.clone();
-        let id = item.id.clone();
-        let executable_path = item.executable_path.clone();
-        let icon_source = item.icon_source.clone();
         let size = self
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        crate::app::icon_override::resolve_application_icon(
-            self.model.settings(),
-            &mut self.custom_images,
-            app_user_model_id.as_deref(),
-            Some(&id),
-            Path::new(&executable_path),
-        )
-        .or_else(|| {
-            self.native_icons
-                .icon(Path::new(&icon_source), size)
-                .ok()
-                .flatten()
-        })
+        self.assets.preview_icon(self.model.settings(), item, size)
     }
 
     pub(in crate::app) fn record_window_activation(
@@ -291,15 +260,20 @@ impl DockRuntime {
     pub(in crate::app) fn handle_pointer_event(
         &mut self,
         event: PointerEvent,
-    ) -> Result<super::DockInteractionOutcome, AppError> {
-        let (changed, effect) = match event {
-            PointerEvent::Moved { x, y } => (self.pointer_moved(x, y), None),
-            PointerEvent::Left => (self.pointer_left(), None),
-            PointerEvent::LeftButtonPressed { x, y } => (self.pointer_pressed(x, y), None),
-            PointerEvent::LeftButtonReleased { x, y } => self.pointer_released(x, y)?,
-            PointerEvent::Cancelled => (self.pointer_cancelled(), None),
+    ) -> super::DockInteractionOutcome {
+        let changed = match event {
+            PointerEvent::Moved { x, y } => self.pointer_moved(x, y),
+            PointerEvent::Left => self.pointer_left(),
+            PointerEvent::LeftButtonPressed { x, y } => self.pointer_pressed(x, y),
+            PointerEvent::LeftButtonReleased { x, y } => {
+                return self.pointer_released(x, y);
+            }
+            PointerEvent::Cancelled => self.pointer_cancelled(),
         };
-        Ok(super::DockInteractionOutcome { changed, effect })
+        super::DockInteractionOutcome {
+            changed,
+            intent: None,
+        }
     }
 
     pub(in crate::app) fn pointer_left(&mut self) -> bool {
@@ -316,41 +290,21 @@ impl DockRuntime {
         &mut self,
         x: i32,
         y: i32,
-    ) -> Result<(bool, Option<DockHitTarget>), AppError> {
+    ) -> super::DockInteractionOutcome {
+        let had_drag = self.scene.drag().is_some();
+        let started = Instant::now();
         let released_over = self.hit_test(x, y);
-        let pressed = self.scene.interaction().pressed;
-        let mut changed =
-            self.scene.set_pressed(None) | self.scene.set_hovered(released_over);
-        self.interaction.release();
-
-        if let Some(drag) = self.scene.drag() {
-            changed |= self.scene.update_drag(x, y);
-            let size = self.scene.desired_size();
-            let started = Instant::now();
-            let insertion_slot =
-                self.scene.drag_insertion_slot(size.width(), size.height());
-            let source_index = drag.source_index;
-            let layout = self.scene.layout(size.width(), size.height());
+        let result = self.interaction.pointer_released(
+            &mut self.scene,
+            released_over,
+            x,
+            y,
+            self.model.items(),
+        );
+        if had_drag {
             METRICS.record_layout(LayoutOperation::DockDrag, started.elapsed());
-            let visible_sources = layout
-                .items
-                .iter()
-                .map(|item| item.source_index)
-                .collect::<Vec<_>>();
-            changed |= self.scene.cancel_drag();
-            let Some(insertion_slot) = insertion_slot.and_then(|slot| {
-                map_visual_insertion_slot(self.model.items().len(), &visible_sources, slot)
-            }) else {
-                return Ok((changed, None));
-            };
-            changed |= self.model.persist_reorder(source_index, insertion_slot)?;
-            self.refresh_scene_items();
-            return Ok((changed, None));
         }
-        Ok((
-            changed,
-            (pressed == released_over).then_some(pressed).flatten(),
-        ))
+        result
     }
 
     pub(in crate::app) fn pointer_cancelled(&mut self) -> bool {

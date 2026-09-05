@@ -16,6 +16,16 @@ impl FrameOutcome {
             continues_animation,
         }
     }
+
+    #[must_use]
+    pub const fn with_animation_allowed(self, allowed: bool) -> Self {
+        match self {
+            Self::Complete {
+                continues_animation,
+            } => Self::complete(continues_animation && allowed),
+            Self::Retry => Self::Retry,
+        }
+    }
 }
 
 pub struct ScheduledSurface<T> {

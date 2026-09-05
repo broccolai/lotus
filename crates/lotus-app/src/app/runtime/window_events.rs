@@ -1,16 +1,17 @@
 use std::time::Instant;
 
 use lotus_core::window::WindowInfo;
-use lotus_ui::frame::ScheduledSurface;
-use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, GraphicsDeviceHealth};
+use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth};
 use lotus_windows::interaction::NativeMessage;
 use lotus_windows::responsiveness::{METRICS, TrackerUiPhase};
-use lotus_windows::window::{DockEvent, DockWindow};
+use lotus_windows::window::DockEvent;
 use lotus_windows::window_tracker::{WindowTracker, WindowTrackerEvent};
 
 use super::presentation::present_dock_change;
 use super::{dock_events, popup_events, search_events};
 use crate::app::modules::ModuleHost;
+use crate::app::primary_dock::PrimaryDock;
+use crate::app::settings_persistence::SettingsPersistence;
 use crate::app::{AppError, DockRuntime};
 
 pub(super) struct WindowDrainOutcome {
@@ -19,14 +20,14 @@ pub(super) struct WindowDrainOutcome {
 }
 
 pub(super) fn drain_window_events(
-    dock: &mut DockWindow,
+    primary_dock: &mut PrimaryDock,
     graphics: &mut DeviceState,
-    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
+    settings_persistence: &SettingsPersistence,
 ) -> Result<WindowDrainOutcome, AppError> {
-    let events = dock.drain_events().collect::<Vec<_>>();
+    let events = primary_dock.drain_events();
     let mut had_events = !events.is_empty();
     let animation_tick = events
         .iter()
@@ -34,13 +35,23 @@ pub(super) fn drain_window_events(
     for event in events {
         complete_after_graphics_loss(
             dock_events::handle_window_event(
-                event, dock, graphics, surface, dock_model, auxiliary,
+                event,
+                primary_dock,
+                graphics,
+                dock_model,
+                auxiliary,
+                settings_persistence,
             ),
             graphics,
         )?;
     }
     had_events |= complete_after_graphics_loss(
-        search_events::drain_search_events(dock, graphics, dock_model, auxiliary),
+        search_events::drain_search_events(
+            primary_dock.window(),
+            graphics,
+            dock_model,
+            auxiliary,
+        ),
         graphics,
     )?
     .unwrap_or(false);
@@ -48,7 +59,13 @@ pub(super) fn drain_window_events(
         had_events = true;
         complete_after_graphics_loss(
             popup_events::handle_context_menu_event(
-                event, dock, graphics, surface, windows, dock_model, auxiliary,
+                event,
+                primary_dock,
+                graphics,
+                windows,
+                dock_model,
+                auxiliary,
+                settings_persistence,
             ),
             graphics,
         )?;
@@ -101,9 +118,8 @@ fn complete_after_graphics_loss<T>(
 }
 
 pub(super) struct TrackerEventContext<'a> {
-    pub(super) dock: &'a DockWindow,
+    pub(super) primary_dock: &'a mut PrimaryDock,
     pub(super) graphics: &'a mut DeviceState,
-    pub(super) surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     pub(super) window_tracker: &'a mut WindowTracker,
     pub(super) dock_model: &'a mut DockRuntime,
     pub(super) auxiliary: &'a mut ModuleHost,
@@ -181,9 +197,8 @@ pub(super) fn handle_tracker_message(
                 || {
                     complete_after_graphics_loss(
                         present_dock_change(
-                            context.dock,
+                            context.primary_dock,
                             context.graphics,
-                            context.surface,
                             context.auxiliary,
                             context.dock_model,
                         ),
@@ -192,7 +207,7 @@ pub(super) fn handle_tracker_message(
                 },
             )?;
         }
-        context.surface.invalidate();
+        context.primary_dock.invalidate();
     }
     Ok(TrackerMessageOutcome {
         monitor_sync: true,

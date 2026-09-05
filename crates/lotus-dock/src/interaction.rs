@@ -1,4 +1,19 @@
+use lotus_core::dock::DockItem;
+
+use crate::model::DockReorderRequest;
 use crate::scene::{DockHitTarget, DockScene};
+
+#[derive(Debug)]
+pub struct DockInteractionOutcome {
+    pub changed: bool,
+    pub intent: Option<DockInteractionIntent>,
+}
+
+#[derive(Debug)]
+pub enum DockInteractionIntent {
+    Activate(DockHitTarget),
+    Reorder(DockReorderRequest),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DragThreshold {
@@ -94,6 +109,75 @@ impl DockInteraction {
         self.candidate = None;
         scene.cancel_drag() | scene.set_pressed(None) | scene.set_hovered(None)
     }
+
+    pub fn pointer_released<Asset: Clone>(
+        &mut self,
+        scene: &mut DockScene<Asset>,
+        released_over: Option<DockHitTarget>,
+        x: i32,
+        y: i32,
+        items: &[DockItem],
+    ) -> DockInteractionOutcome {
+        let pressed = scene.interaction().pressed;
+        let mut changed = scene.set_pressed(None) | scene.set_hovered(released_over);
+        self.candidate = None;
+
+        if let Some(drag) = scene.drag() {
+            changed |= scene.update_drag(x, y);
+            let size = scene.desired_size();
+            let insertion_slot = scene.drag_insertion_slot(size.width(), size.height());
+            let source_index = drag.source_index;
+            let visible_sources = scene
+                .layout(size.width(), size.height())
+                .items
+                .iter()
+                .map(|item| item.source_index)
+                .collect::<Vec<_>>();
+            changed |= scene.cancel_drag();
+            let Some(insertion_slot) = insertion_slot.and_then(|slot| {
+                map_visual_insertion_slot(items.len(), &visible_sources, slot)
+            }) else {
+                return DockInteractionOutcome {
+                    changed,
+                    intent: None,
+                };
+            };
+            let Some(request) = reorder_request(items, source_index, insertion_slot) else {
+                return DockInteractionOutcome {
+                    changed,
+                    intent: None,
+                };
+            };
+            return DockInteractionOutcome {
+                changed,
+                intent: Some(DockInteractionIntent::Reorder(request)),
+            };
+        }
+        let intent = if pressed == released_over {
+            pressed.map(DockInteractionIntent::Activate)
+        } else {
+            None
+        };
+        DockInteractionOutcome { changed, intent }
+    }
+}
+
+fn reorder_request(
+    items: &[DockItem],
+    source_index: usize,
+    insertion_slot: usize,
+) -> Option<DockReorderRequest> {
+    let source_id = items.get(source_index)?.id.clone();
+    let (target_index, insert_after) = if insertion_slot == items.len() {
+        (items.len().checked_sub(1)?, true)
+    } else {
+        (insertion_slot, false)
+    };
+    Some(DockReorderRequest {
+        source_id,
+        target_id: items.get(target_index)?.id.clone(),
+        insert_after,
+    })
 }
 
 pub fn map_visual_insertion_slot(

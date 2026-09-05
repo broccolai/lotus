@@ -1,7 +1,6 @@
 use lotus_core::module::{ModuleId, ModuleSet};
 use lotus_core::search::SearchUsage;
 use lotus_core::settings::DockSettings;
-use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
 use lotus_windows::graphics::DeviceState;
 use lotus_windows::input::{InputConfig, InputController};
@@ -16,6 +15,7 @@ use crate::app::dock::DockRuntime;
 use crate::app::launcher::LauncherRuntime;
 use crate::app::media::MediaRuntime;
 use crate::app::monitors::MonitorDocks;
+use crate::app::search_usage::SearchUsageStore;
 use crate::app::settings::SettingsRuntime;
 use crate::app::status::StatusRuntime;
 use crate::app::switcher::SwitcherRuntime;

@@ -11,12 +11,11 @@ use lotus_core::window::{TrackedWindowKey, WindowInfo};
 use lotus_settings::appearance::theme_for;
 use lotus_switcher::model::{RecentOrder, ReconcileOutcome, SwitcherSession};
 use lotus_ui::embedded_icon::EmbeddedIcon;
-use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
+use lotus_ui::frame::{FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::icon::RasterIcon;
 use lotus_ui::theme::Theme;
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::switcher_surface::SwitcherCompositionSurfaceState;
 use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError};
 use lotus_windows::icon_hydrator::{SwitcherIconClient, SwitcherIconRequest};
@@ -24,6 +23,7 @@ use lotus_windows::interaction::PointerCursor;
 use lotus_windows::search_catalog::ApplicationCatalogSnapshot;
 use lotus_windows::window::{SwitcherEvent, SwitcherWindow};
 
+use crate::app::surface_render::frame_outcome;
 use crate::app::visuals::{DockIcon, SwitcherHitTarget, SwitcherItem, SwitcherScene};
 use crate::app::{AppError, activation};
 
@@ -539,17 +539,7 @@ impl SwitcherRuntime {
         };
         let presentation = scene.presentation(EmbeddedIcon::FluentDismiss);
         pass.render(surface, |surface| {
-            match surface.render_scene(&presentation) {
-                Ok(FrameResult::Presented { needs_animation }) => {
-                    Ok(FrameOutcome::complete(needs_animation))
-                }
-                Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-                Err(SurfaceError::DeviceLost(loss)) => {
-                    graphics.mark_lost(loss);
-                    Ok(FrameOutcome::complete(false))
-                }
-                Err(error) => Err(error.into()),
-            }
+            frame_outcome(graphics, surface.render_scene(&presentation))
         })
     }
 }

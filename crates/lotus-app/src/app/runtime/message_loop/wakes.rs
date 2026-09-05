@@ -55,9 +55,8 @@ impl MessageLoop<'_, '_> {
         }
         if wakes.media && self.auxiliary.drain_media(self.dock_model) {
             present_dock_change(
-                self.dock,
+                self.primary_dock,
                 self.graphics,
-                self.surface,
                 self.auxiliary,
                 self.dock_model,
             )?;
@@ -67,12 +66,12 @@ impl MessageLoop<'_, '_> {
         }
         if wakes.search_catalog {
             let catalog_changed = search_events::refresh_catalog(
-                self.dock,
+                self.primary_dock,
                 self.graphics,
-                self.surface,
                 self.window_tracker.current_windows(),
                 self.dock_model,
                 self.auxiliary,
+                &self.runtime.settings_persistence,
             )?;
             if catalog_changed {
                 presented_size = self.dock_model.scene().desired_size();
@@ -89,9 +88,8 @@ impl MessageLoop<'_, '_> {
 
         if self.dock_model.scene().desired_size() != presented_size {
             present_dock_change(
-                self.dock,
+                self.primary_dock,
                 self.graphics,
-                self.surface,
                 self.auxiliary,
                 self.dock_model,
             )?;
@@ -104,7 +102,7 @@ impl MessageLoop<'_, '_> {
     pub(super) fn handle_input_wake(&mut self) -> bool {
         self.auxiliary
             .handle_input_actions(
-                self.dock,
+                self.primary_dock.window(),
                 self.window_tracker,
                 self.dock_model,
                 self.graphics,
@@ -113,7 +111,7 @@ impl MessageLoop<'_, '_> {
     }
 
     fn render_dock(&mut self) {
-        self.surface.invalidate();
+        self.primary_dock.invalidate();
     }
 }
 

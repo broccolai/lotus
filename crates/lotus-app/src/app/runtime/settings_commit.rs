@@ -1,14 +1,17 @@
 use lotus_core::settings::DockSettings;
+use lotus_dock::model::SettingsImpact;
 use lotus_windows::activation::launch_target;
 use lotus_windows::dialog::show_error;
+use lotus_windows::graphics::DeviceState;
 use lotus_windows::interaction::request_exit;
-use lotus_windows::startup as startup_registration;
+use lotus_windows::startup::StartupMode;
+use lotus_windows::{WindowHandle, startup as startup_registration};
 
 use super::presentation::{apply_fullscreen_visibility, present_dock_change};
-use super::settings_actions::refresh_application_manager;
 use super::settings_events::SettingsEventContext;
+use crate::app::modules::ModuleHost;
 use crate::app::settings::{ColorOutcome, ColorTarget};
-use crate::app::{AppError, RestartError};
+use crate::app::{AppError, DockRuntime, RestartError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SettingsApplyMode {
@@ -17,18 +20,23 @@ pub(super) enum SettingsApplyMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SettingsApplyResult {
-    persistence: SettingsPersistence,
+struct SettingsEffects {
+    change: SettingsChangeKind,
     restart: RestartDisposition,
     applications: ApplicationManagerRefresh,
     presentation: PresentationRefresh,
     integration: IntegrationRefresh,
 }
 
+struct SettingsChange {
+    settings: DockSettings,
+    effects: SettingsEffects,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SettingsPersistence {
+enum SettingsChangeKind {
     Unchanged,
-    Persisted,
+    Changed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,55 +65,56 @@ enum IntegrationRefresh {
     FullRuntime { start_with_windows: bool },
 }
 
-pub(super) fn apply_color_outcome(
-    target: ColorTarget,
-    context: &mut SettingsEventContext<'_>,
-) {
-    if let ColorOutcome::Changed = context.auxiliary.choose_settings_color(target) {
-        context.auxiliary.invalidate_settings();
+pub(super) fn apply_color_outcome(target: ColorTarget, auxiliary: &mut ModuleHost) {
+    if let ColorOutcome::Changed = auxiliary.choose_settings_color(target) {
+        auxiliary.invalidate_settings();
     }
 }
 
 pub(super) fn apply_changed_settings(
-    next: DockSettings,
-    context: &mut SettingsEventContext<'_>,
-    mode: SettingsApplyMode,
-) -> Result<(), AppError> {
-    let result = commit_settings(next, context, mode)?;
-    apply_settings_result(result, context)
-}
-
-fn commit_settings(
     mut next: DockSettings,
     context: &mut SettingsEventContext<'_>,
     mode: SettingsApplyMode,
-) -> Result<SettingsApplyResult, AppError> {
+) -> Result<(), AppError> {
     next.application_icon_overrides = context
         .auxiliary
         .merge_application_icon_overrides(context.dock_model.settings());
-    let next = next.retaining_externally_managed(context.dock_model.settings());
+    let change = prepare_settings_change(next, context.dock_model.settings(), mode);
 
+    context.dock_model.apply_settings(
+        change.settings,
+        context.window_tracker.current_windows(),
+        context.settings_persistence,
+    )?;
+
+    apply_committed_settings(change.effects, context)
+}
+
+fn prepare_settings_change(
+    next: DockSettings,
+    current: &DockSettings,
+    mode: SettingsApplyMode,
+) -> SettingsChange {
+    let next = next.retaining_externally_managed(current).normalized();
+    let impact = SettingsImpact::between(current, &next);
     let start_with_windows = next.start_with_windows;
-    let impact = context
-        .dock_model
-        .apply_settings(next, context.window_tracker.current_windows())?;
 
-    let persistence = if impact.changed {
-        SettingsPersistence::Persisted
+    let change = if impact.changed {
+        SettingsChangeKind::Changed
     } else {
-        SettingsPersistence::Unchanged
+        SettingsChangeKind::Unchanged
     };
 
-    let result = match mode {
-        SettingsApplyMode::OnboardingRestart => SettingsApplyResult {
-            persistence,
+    let effects = match mode {
+        SettingsApplyMode::OnboardingRestart => SettingsEffects {
+            change,
             restart: RestartDisposition::Onboarding,
             applications: ApplicationManagerRefresh::None,
             presentation: PresentationRefresh::SettingsMaterialOnly,
             integration: IntegrationRefresh::None,
         },
-        SettingsApplyMode::Ordinary if impact.changed => SettingsApplyResult {
-            persistence,
+        SettingsApplyMode::Ordinary if impact.changed => SettingsEffects {
+            change,
             restart: if impact.restart_required {
                 RestartDisposition::Ordinary
             } else {
@@ -115,8 +124,8 @@ fn commit_settings(
             presentation: PresentationRefresh::FullRuntime,
             integration: IntegrationRefresh::FullRuntime { start_with_windows },
         },
-        SettingsApplyMode::Ordinary => SettingsApplyResult {
-            persistence,
+        SettingsApplyMode::Ordinary => SettingsEffects {
+            change,
             restart: RestartDisposition::None,
             applications: ApplicationManagerRefresh::None,
             presentation: PresentationRefresh::SettingsMaterialOnly,
@@ -124,27 +133,39 @@ fn commit_settings(
         },
     };
 
-    Ok(result)
+    SettingsChange {
+        settings: next,
+        effects,
+    }
 }
 
-fn apply_settings_result(
-    result: SettingsApplyResult,
+fn apply_committed_settings(
+    result: SettingsEffects,
     context: &mut SettingsEventContext<'_>,
 ) -> Result<(), AppError> {
     apply_settings_material(result.presentation, context);
 
     if result.restart == RestartDisposition::Onboarding {
-        return restart_after_onboarding(context);
+        return restart_after_onboarding(
+            context.auxiliary,
+            context.dock_model.settings(),
+            context.graphics,
+            context.startup_mode,
+        );
     }
 
-    synchronize_startup(result.integration, context);
-    if result.persistence == SettingsPersistence::Unchanged {
+    synchronize_startup(
+        result.integration,
+        context.auxiliary.settings_owner(),
+        context.startup_registration_allowed,
+    );
+    if result.change == SettingsChangeKind::Unchanged {
         return Ok(());
     }
 
     let runtime_result = apply_runtime_integration(context, result.integration)
         .and_then(|()| apply_runtime_presentation(result.presentation, context));
-    finish_runtime_refresh(result.applications, context);
+    finish_runtime_refresh(result.applications, context.auxiliary, context.dock_model);
     if let Err(error) = runtime_result {
         lotus_windows::diagnostics::record_error("settings.runtime_refresh_failed", &error);
         show_error(
@@ -156,23 +177,25 @@ fn apply_settings_result(
         );
         return Ok(());
     }
-    restart_if_required(result.restart, context);
+    restart_if_required(
+        result.restart,
+        context.auxiliary.settings_owner(),
+        context.startup_mode,
+    );
     Ok(())
 }
 
 fn restart_after_onboarding(
-    context: &mut SettingsEventContext<'_>,
+    auxiliary: &mut ModuleHost,
+    settings: &DockSettings,
+    graphics: &mut DeviceState,
+    startup_mode: StartupMode,
 ) -> Result<(), AppError> {
-    context
-        .auxiliary
-        .mark_settings_applied(context.dock_model.settings().clone());
-    context.auxiliary.hide_settings();
-    if let Err(error) = restart_current_process(context.startup_mode) {
-        context.auxiliary.open_settings_without_refresh(
-            context.dock_model.settings(),
-            context.graphics,
-        )?;
-        show_restart_error(context, &error);
+    auxiliary.mark_settings_applied(settings.clone());
+    auxiliary.hide_settings();
+    if let Err(error) = restart_current_process(startup_mode) {
+        auxiliary.open_settings_without_refresh(settings, graphics)?;
+        show_restart_error(auxiliary.settings_owner(), &error);
     } else {
         request_exit(0);
     }
@@ -194,7 +217,8 @@ fn apply_settings_material(
 
 fn synchronize_startup(
     integration: IntegrationRefresh,
-    context: &SettingsEventContext<'_>,
+    owner: WindowHandle,
+    startup_registration_allowed: bool,
 ) {
     let start_with_windows = match integration {
         IntegrationRefresh::None => return,
@@ -202,11 +226,11 @@ fn synchronize_startup(
         | IntegrationRefresh::FullRuntime { start_with_windows } => start_with_windows,
     };
 
-    if context.startup_registration_allowed
+    if startup_registration_allowed
         && let Err(error) = startup_registration::sync(start_with_windows)
     {
         show_error(
-            context.auxiliary.settings_owner(),
+            owner,
             "Lotus Settings",
             &format!(
                 "Lotus saved your preference but could not update Windows startup.\n\n{error}"
@@ -223,7 +247,7 @@ fn apply_runtime_integration(
         return Ok(());
     };
     context.auxiliary.reconcile(
-        context.dock,
+        context.primary_dock.window(),
         context.dock_model.settings(),
         true,
         context.startup_mode.allows_shell_integration(),
@@ -242,25 +266,23 @@ fn apply_runtime_presentation(
     }
 
     lotus_windows::backdrop::apply_dock_settings(
-        context.dock.handle(),
+        context.primary_dock.window().handle(),
         context.dock_model.settings(),
     );
     context.auxiliary.propagate_settings(
         context.dock_model.settings(),
-        context.dock,
+        context.primary_dock.window(),
         context.graphics,
     )?;
     present_dock_change(
-        context.dock,
+        context.primary_dock,
         context.graphics,
-        context.dock_surface,
         context.auxiliary,
         context.dock_model,
     )?;
     if context.startup_mode.allows_shell_integration() {
         apply_fullscreen_visibility(
-            context.dock,
-            context.dock_surface,
+            context.primary_dock,
             context.window_tracker,
             context.dock_model,
             context.auxiliary,
@@ -272,41 +294,42 @@ fn apply_runtime_presentation(
 
 fn finish_runtime_refresh(
     application_manager: ApplicationManagerRefresh,
-    context: &mut SettingsEventContext<'_>,
+    auxiliary: &mut ModuleHost,
+    dock_model: &DockRuntime,
 ) {
-    context
-        .auxiliary
-        .mark_settings_applied(context.dock_model.settings().clone());
-    context.auxiliary.clear_icon_caches();
+    auxiliary.mark_settings_applied(dock_model.settings().clone());
+    auxiliary.clear_icon_caches();
     if application_manager == ApplicationManagerRefresh::IfApplicationsPageIsOpen
-        && context.auxiliary.settings_on_apps_page()
+        && auxiliary.settings_on_apps_page()
     {
-        refresh_application_manager(context);
+        auxiliary.refresh_application_manager(dock_model.items());
     }
-    context.auxiliary.invalidate_settings();
+    auxiliary.invalidate_settings();
 }
 
-fn restart_if_required(restart: RestartDisposition, context: &SettingsEventContext<'_>) {
+fn restart_if_required(
+    restart: RestartDisposition,
+    owner: WindowHandle,
+    startup_mode: StartupMode,
+) {
     if restart == RestartDisposition::Ordinary {
-        if let Err(error) = restart_current_process(context.startup_mode) {
-            show_restart_error(context, &error);
+        if let Err(error) = restart_current_process(startup_mode) {
+            show_restart_error(owner, &error);
         } else {
             request_exit(0);
         }
     }
 }
 
-fn show_restart_error(context: &SettingsEventContext<'_>, error: &RestartError) {
+fn show_restart_error(owner: WindowHandle, error: &RestartError) {
     show_error(
-        context.auxiliary.settings_owner(),
+        owner,
         "Lotus Settings",
         &format!("Lotus saved your settings but could not restart.\n\n{error}"),
     );
 }
 
-pub(super) fn restart_current_process(
-    mode: lotus_windows::startup::StartupMode,
-) -> Result<(), RestartError> {
+pub(super) fn restart_current_process(mode: StartupMode) -> Result<(), RestartError> {
     let executable = std::env::current_exe()?;
     let mut arguments = format!("--restart-after {} --open-settings", std::process::id());
     arguments.push(' ');

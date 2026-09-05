@@ -56,7 +56,7 @@ impl MessageLoop<'_, '_> {
             Ok(()) => match self.recover_surfaces() {
                 Ok(()) => {
                     self.graphics_recovery.reset();
-                    self.surface.invalidate();
+                    self.primary_dock.invalidate();
                     self.auxiliary.invalidate_surfaces();
                     self.last_monitor_key = None;
                     lotus_windows::diagnostics::record_diagnostic(
@@ -83,7 +83,7 @@ impl MessageLoop<'_, '_> {
 
     fn recover_surfaces(&mut self) -> Result<(), AppError> {
         let device = self.graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-        self.surface.value_mut().recover(device)?;
+        self.primary_dock.recover_surface(device)?;
         self.auxiliary.recover_surfaces(device)
     }
 }

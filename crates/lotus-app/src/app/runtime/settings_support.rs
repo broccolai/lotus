@@ -24,7 +24,10 @@ pub(super) fn export_settings(context: &mut SettingsEventContext<'_>) {
         }
     };
 
-    match context.dock_model.export_settings(&destination) {
+    match context
+        .settings_persistence
+        .export(context.dock_model.settings(), &destination)
+    {
         Ok(()) => {
             lotus_windows::diagnostics::record_diagnostic(
                 "settings.exported",
@@ -75,7 +78,10 @@ pub(super) fn export_diagnostics(context: &mut SettingsEventContext<'_>) {
             }
         };
 
-    if let Err(error) = context.dock_model.validate_export_destination(&destination) {
+    if let Err(error) = context
+        .settings_persistence
+        .validate_export_destination(&destination)
+    {
         lotus_windows::diagnostics::record_error("diagnostics.export_rejected", &error);
         show_error(
             owner,
@@ -113,7 +119,7 @@ pub(super) fn reset_lotus(context: &mut SettingsEventContext<'_>) {
         return;
     }
 
-    let reset = match context.dock_model.reset_settings() {
+    let reset = match context.settings_persistence.reset() {
         Ok(reset) => reset,
         Err(error) => {
             lotus_windows::diagnostics::record_error("settings.reset_failed", &error);
@@ -130,8 +136,8 @@ pub(super) fn reset_lotus(context: &mut SettingsEventContext<'_>) {
         &format!(
             "settings_path={} backup_path={}",
             context
-                .dock_model
-                .settings_directory()
+                .settings_persistence
+                .directory()
                 .join("settings.json")
                 .display(),
             reset.backup_path.display(),

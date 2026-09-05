@@ -9,7 +9,7 @@ use super::update_events;
 use crate::app::AppError;
 use crate::app::integration::{IntegrationRecoveryContext, IntegrationRecoverySource};
 use crate::app::modules::ModuleHost;
-use crate::app::settings::ApplicationIconOutcome;
+use crate::app::settings::{ApplicationIconOutcome, ColorTarget};
 
 pub(super) fn execute_settings_action(
     action: SettingsAction,
@@ -32,19 +32,19 @@ pub(super) fn execute_settings_action(
             Ok(())
         }
         SettingsAction::ChooseBackgroundColor => {
-            apply_color_outcome(crate::app::settings::ColorTarget::Background, context);
+            apply_color_outcome(ColorTarget::Background, context.auxiliary);
             Ok(())
         }
         SettingsAction::ChooseAccentColor => {
-            apply_color_outcome(crate::app::settings::ColorTarget::Accent, context);
+            apply_color_outcome(ColorTarget::Accent, context.auxiliary);
             Ok(())
         }
         SettingsAction::ChooseForegroundColor => {
-            apply_color_outcome(crate::app::settings::ColorTarget::Foreground, context);
+            apply_color_outcome(ColorTarget::Foreground, context.auxiliary);
             Ok(())
         }
         SettingsAction::ChooseMascotImage => {
-            let settings_directory = context.dock_model.settings_directory();
+            let settings_directory = context.settings_persistence.directory();
             context
                 .auxiliary
                 .choose_settings_mascot_image(settings_directory);
@@ -52,7 +52,7 @@ pub(super) fn execute_settings_action(
             Ok(())
         }
         SettingsAction::ChooseApplicationIcon(id) => {
-            let settings_directory = context.dock_model.settings_directory();
+            let settings_directory = context.settings_persistence.directory();
             let outcome = context
                 .auxiliary
                 .choose_settings_application_icon(&id, settings_directory);
@@ -80,9 +80,8 @@ pub(super) fn execute_settings_action(
             context.integration.recover(
                 IntegrationRecoverySource::Settings,
                 &mut IntegrationRecoveryContext {
-                    dock: context.dock,
+                    primary_dock: context.primary_dock,
                     graphics: context.graphics,
-                    dock_surface: context.dock_surface,
                     window_tracker: context.window_tracker,
                     dock_model: context.dock_model,
                     auxiliary: context.auxiliary,

@@ -5,12 +5,43 @@ use lotus_windows::window::{SettingsEvent, SettingsKey};
 use super::SettingsRuntime;
 use crate::app::AppError;
 
-pub(in crate::app) enum SettingsEventOutcome {
+#[derive(Default)]
+pub(in crate::app) struct SettingsInteraction {
+    pub(in crate::app) previews: ApplicationPreviewRefresh,
+    pub(in crate::app) command: Option<SettingsCommand>,
+}
+
+#[derive(Default)]
+pub(in crate::app) enum ApplicationPreviewRefresh {
+    #[default]
     None,
-    RefreshApplications,
-    HydrateApplicationPreviews,
+    Reload,
+    Hydrate,
+}
+
+pub(in crate::app) enum SettingsCommand {
     PasteQuery,
     Action(SettingsAction),
+}
+
+impl SettingsInteraction {
+    fn action(action: SettingsAction) -> Self {
+        let command = match action {
+            SettingsAction::None => None,
+            action => Some(SettingsCommand::Action(action)),
+        };
+        Self {
+            command,
+            ..Self::default()
+        }
+    }
+
+    fn refresh(previews: ApplicationPreviewRefresh) -> Self {
+        Self {
+            previews,
+            ..Self::default()
+        }
+    }
 }
 
 impl SettingsRuntime {
@@ -18,77 +49,89 @@ impl SettingsRuntime {
         &mut self,
         event: SettingsEvent,
         graphics: &mut DeviceState,
-    ) -> Result<SettingsEventOutcome, AppError> {
+    ) -> Result<SettingsInteraction, AppError> {
         let action = match event {
             SettingsEvent::Resized { width, height } => {
                 self.resize(graphics, width, height)?;
-                return Ok(SettingsEventOutcome::None);
+                return Ok(SettingsInteraction::default());
             }
             SettingsEvent::DpiChanged { dpi } => {
                 self.set_dpi(dpi);
                 self.invalidate();
-                return Ok(SettingsEventOutcome::None);
+                return Ok(SettingsInteraction::default());
             }
             SettingsEvent::RenderRequested => {
                 self.invalidate();
-                return Ok(SettingsEventOutcome::None);
+                return Ok(SettingsInteraction::default());
             }
             SettingsEvent::PointerMoved { x, y } => {
-                return Ok(self
-                    .pointer_moved(x, y)
-                    .map_or(SettingsEventOutcome::None, SettingsEventOutcome::Action));
+                return Ok(self.pointer_moved(x, y).map_or_else(
+                    SettingsInteraction::default,
+                    SettingsInteraction::action,
+                ));
             }
             SettingsEvent::PointerLeft => {
                 self.pointer_left();
-                return Ok(SettingsEventOutcome::None);
+                return Ok(SettingsInteraction::default());
             }
             SettingsEvent::PointerPressed { x, y } => {
                 return Ok(u32::try_from(x)
                     .ok()
                     .zip(u32::try_from(y).ok())
                     .and_then(|(x, y)| self.pointer_pressed(x, y))
-                    .map_or(SettingsEventOutcome::None, SettingsEventOutcome::Action));
+                    .map_or_else(
+                        SettingsInteraction::default,
+                        SettingsInteraction::action,
+                    ));
             }
             SettingsEvent::PointerReleased { x, y } => {
-                return Ok(self
-                    .pointer_released(x, y)
-                    .map_or(SettingsEventOutcome::None, SettingsEventOutcome::Action));
+                return Ok(self.pointer_released(x, y).map_or_else(
+                    SettingsInteraction::default,
+                    SettingsInteraction::action,
+                ));
             }
             SettingsEvent::PointerCancelled => {
                 self.pointer_cancelled();
-                return Ok(SettingsEventOutcome::None);
+                return Ok(SettingsInteraction::default());
             }
             SettingsEvent::Scroll { direction } => {
                 return Ok(if self.scrolled(direction) {
-                    SettingsEventOutcome::HydrateApplicationPreviews
+                    SettingsInteraction::refresh(ApplicationPreviewRefresh::Hydrate)
                 } else {
-                    SettingsEventOutcome::None
+                    SettingsInteraction::default()
                 });
             }
             SettingsEvent::TextInput(character) => {
                 if self.scene.update_prompt().is_some() {
-                    return Ok(SettingsEventOutcome::None);
+                    return Ok(SettingsInteraction::default());
                 }
                 if self.append_query(character) {
-                    return Ok(SettingsEventOutcome::HydrateApplicationPreviews);
+                    return Ok(SettingsInteraction::refresh(
+                        ApplicationPreviewRefresh::Hydrate,
+                    ));
                 }
-                return Ok(SettingsEventOutcome::None);
+                return Ok(SettingsInteraction::default());
             }
             SettingsEvent::KeyPressed(SettingsKey::Backspace) => {
                 if self.scene.update_prompt().is_some() {
-                    return Ok(SettingsEventOutcome::None);
+                    return Ok(SettingsInteraction::default());
                 }
                 if self.remove_query() {
-                    return Ok(SettingsEventOutcome::HydrateApplicationPreviews);
+                    return Ok(SettingsInteraction::refresh(
+                        ApplicationPreviewRefresh::Hydrate,
+                    ));
                 }
-                return Ok(SettingsEventOutcome::None);
+                return Ok(SettingsInteraction::default());
             }
             SettingsEvent::KeyPressed(SettingsKey::Paste) => {
                 return Ok(
                     if self.scene.update_prompt().is_none() && self.page_is_apps() {
-                        SettingsEventOutcome::PasteQuery
+                        SettingsInteraction {
+                            command: Some(SettingsCommand::PasteQuery),
+                            ..SettingsInteraction::default()
+                        }
                     } else {
-                        SettingsEventOutcome::None
+                        SettingsInteraction::default()
                     },
                 );
             }
@@ -99,15 +142,15 @@ impl SettingsRuntime {
             SettingsAction::Changed
                 if self.page_is_apps() && self.applications_are_empty() =>
             {
-                SettingsEventOutcome::RefreshApplications
+                SettingsInteraction::refresh(ApplicationPreviewRefresh::Reload)
             }
             SettingsAction::Changed if self.page_is_apps() => {
-                SettingsEventOutcome::HydrateApplicationPreviews
+                SettingsInteraction::refresh(ApplicationPreviewRefresh::Hydrate)
             }
             SettingsAction::Reverted | SettingsAction::OpenApplications => {
-                SettingsEventOutcome::RefreshApplications
+                SettingsInteraction::refresh(ApplicationPreviewRefresh::Reload)
             }
-            action => SettingsEventOutcome::Action(action),
+            action => SettingsInteraction::action(action),
         })
     }
 

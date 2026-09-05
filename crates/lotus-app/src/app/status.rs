@@ -3,9 +3,8 @@ use lotus_dock::scene::DockPresenter;
 use lotus_media::MediaHitTarget;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::embedded_icon::EmbeddedIcon;
-use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
+use lotus_ui::frame::{FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
-use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{
     CompositionSurfaceState, DeviceState, GraphicsDevice, SurfaceSize,
 };
@@ -19,6 +18,7 @@ use crate::app::dock::{
     dock_anchor, metrics, popup_overlap, status_items, status_popup_center,
 };
 use crate::app::runtime::resize_surface;
+use crate::app::surface_render::frame_outcome;
 use crate::app::visuals::{
     DockHitTarget, DockIcon, DockScene, MediaItem, SystemStatusItem, SystemStatusKind,
     surface_size,
@@ -252,19 +252,9 @@ impl StatusRuntime {
             let (presentation, animating) =
                 zone.presenter
                     .present(&zone.scene, size.width(), size.height());
-            let render = |surface: &mut CompositionSurfaceState| {
-                surface.render_scene(&presentation, animating)
-            };
-            pass.render(surface, |surface| match render(surface) {
-                Ok(FrameResult::Presented { needs_animation }) => Ok::<_, AppError>(
-                    FrameOutcome::complete(needs_animation && animation_allowed),
-                ),
-                Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-                Err(lotus_windows::graphics::SurfaceError::DeviceLost(loss)) => {
-                    graphics.mark_lost(loss);
-                    Ok(FrameOutcome::complete(false))
-                }
-                Err(error) => Err(error.into()),
+            pass.render(surface, |surface| {
+                frame_outcome(graphics, surface.render_scene(&presentation, animating))
+                    .map(|frame| frame.with_animation_allowed(animation_allowed))
             })?;
         }
         Ok(())

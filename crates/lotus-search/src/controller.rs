@@ -1,4 +1,3 @@
-use std::io;
 use std::time::Instant;
 
 use lotus_core::launcher_model::{LauncherModel, QueryEdit, SelectionMove};
@@ -6,7 +5,6 @@ use lotus_core::search::{ApplicationEntry, SearchCatalog, SearchUsage};
 
 use crate::calculator::{Calculation, calculate};
 use crate::command::{CommandEntry, CommandId, command_query, matching_commands};
-use crate::usage::SearchUsageStore;
 
 const ANIMATION_MILLISECONDS: u128 = 140;
 const COMPLETE_PROGRESS: u16 = 1_000;
@@ -20,7 +18,6 @@ pub enum SearchMode {
 
 pub struct SearchController {
     model: LauncherModel,
-    usage_store: SearchUsageStore,
     catalog_generation: u64,
     command_results: Vec<CommandEntry>,
     command_selected: Option<usize>,
@@ -30,14 +27,9 @@ pub struct SearchController {
 }
 
 impl SearchController {
-    pub fn new(
-        result_limit: usize,
-        usage: SearchUsage,
-        usage_store: SearchUsageStore,
-    ) -> Self {
+    pub fn new(result_limit: usize, usage: SearchUsage) -> Self {
         Self {
             model: LauncherModel::with_usage(result_limit, usage),
-            usage_store,
             catalog_generation: 0,
             command_results: Vec::new(),
             command_selected: None,
@@ -218,11 +210,12 @@ impl SearchController {
             .flatten()
     }
 
-    pub fn record_launch(&mut self, launch_target: &str) -> io::Result<()> {
-        if self.model.record_launch(launch_target) {
-            self.usage_store.save(self.model.usage())?;
-        }
-        Ok(())
+    pub fn record_launch(&mut self, launch_target: &str) -> bool {
+        self.model.record_launch(launch_target)
+    }
+
+    pub fn usage(&self) -> &SearchUsage {
+        self.model.usage()
     }
 
     fn refresh_commands(&mut self) {

@@ -7,10 +7,9 @@ use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit, Selec
 use lotus_core::settings::DockSettings;
 use lotus_search::command::CommandId;
 use lotus_search::controller::{SearchController, SearchPresentation};
-use lotus_search::usage::SearchUsageStore;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::embedded_icon::EmbeddedIcon;
-use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
+use lotus_ui::frame::{FramePass, ScheduledSurface};
 use lotus_ui::theme::Theme;
 use lotus_windows::WindowHandle;
 use lotus_windows::activation::launch_target;
@@ -18,8 +17,7 @@ use lotus_windows::clipboard::read_text;
 use lotus_windows::clock::local_time;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
-use lotus_windows::graphics::surface::FrameResult;
-use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError, SurfaceSize};
+use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceSize};
 use lotus_windows::icon_hydrator::{LauncherIconClient, LauncherIconRequest};
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::window::{
@@ -31,6 +29,8 @@ use crate::app::AppError;
 use crate::app::applications::PreparedLauncherCatalog;
 use crate::app::dock::DockRuntime;
 use crate::app::runtime::resize_launcher_surface;
+use crate::app::search_usage::SearchUsageStore;
+use crate::app::surface_render::frame_outcome;
 
 const MAX_HYDRATED_ICONS: usize = 64;
 
@@ -41,6 +41,7 @@ type LauncherScene = lotus_search::scene::LauncherScene<EmbeddedIcon>;
 pub(super) struct LauncherRuntime {
     pub(super) window: SearchWindow,
     pub(super) controller: SearchController,
+    usage_store: SearchUsageStore,
     icon_hydrator: LauncherIconClient,
     hydrated_icons: BTreeMap<LauncherIconKey, lotus_ui::icon::RasterIcon>,
     icon_generation: u64,
@@ -83,8 +84,8 @@ impl LauncherRuntime {
             controller: SearchController::new(
                 usize::try_from(settings.search_result_limit).unwrap_or(8),
                 usage,
-                usage_store,
             ),
+            usage_store,
             icon_hydrator,
             hydrated_icons: BTreeMap::new(),
             icon_generation: 0,
@@ -608,7 +609,9 @@ impl LauncherRuntime {
         {
             match launch_target(&entry.launch_target, entry.invocation_arguments()) {
                 Ok(()) => {
-                    let _ = self.controller.record_launch(&entry.launch_target);
+                    if self.controller.record_launch(&entry.launch_target) {
+                        let _ = self.usage_store.save(self.controller.usage());
+                    }
                 }
                 Err(error) => {
                     show_error(
@@ -706,26 +709,16 @@ impl LauncherRuntime {
             .surface
             .as_mut()
             .ok_or(AppError::InvalidLauncherScene)?;
-        let render = |surface: &mut LauncherCompositionSurfaceState| {
+        pass.render(surface, |surface| {
             let content = scene.render_presentation(EmbeddedIcon::FluentSearch);
             let motion = scene.presentation();
-            surface.render_scene(
+            let result = surface.render_scene(
                 &content,
                 motion.scale,
                 motion.opacity,
                 scene.needs_animation(),
-            )
-        };
-        pass.render(surface, |surface| match render(surface) {
-            Ok(FrameResult::Presented { needs_animation }) => {
-                Ok(FrameOutcome::complete(needs_animation))
-            }
-            Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-            Err(SurfaceError::DeviceLost(loss)) => {
-                graphics.mark_lost(loss);
-                Ok(FrameOutcome::complete(false))
-            }
-            Err(error) => Err(error.into()),
+            );
+            frame_outcome(graphics, result)
         })
     }
 

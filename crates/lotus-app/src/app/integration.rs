@@ -1,10 +1,9 @@
 use std::time::{Duration, Instant};
 
-use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::appbar::{
     ShellIntegration, ShellIntegrationHealth, ShellRecoverySource,
 };
-use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
+use lotus_windows::graphics::DeviceState;
 use lotus_windows::interaction::NativeMessage;
 use lotus_windows::system_lifecycle::{
     SystemLifecycleEvent, SystemLifecycleHealth, SystemLifecycleObserver,
@@ -14,6 +13,7 @@ use lotus_windows::window_tracker::WindowTracker;
 
 use super::DockRuntime;
 use super::modules::ModuleHost;
+use super::primary_dock::PrimaryDock;
 use super::runtime::apply_fullscreen_visibility;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,9 +58,8 @@ pub(super) struct IntegrationRecovery {
 }
 
 pub(super) struct IntegrationRecoveryContext<'a> {
-    pub(super) dock: &'a DockWindow,
+    pub(super) primary_dock: &'a mut PrimaryDock,
     pub(super) graphics: &'a mut DeviceState,
-    pub(super) dock_surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     pub(super) window_tracker: &'a mut WindowTracker,
     pub(super) dock_model: &'a mut DockRuntime,
     pub(super) auxiliary: &'a mut ModuleHost,
@@ -194,10 +193,10 @@ impl IntegrationRecovery {
         if source == IntegrationRecoverySource::AppBarPositionChanged {
             self.shell.recover(
                 context.dock_model.settings(),
-                context.dock,
+                context.primary_dock.window(),
                 source.shell_source(),
             );
-            context.dock_surface.invalidate();
+            context.primary_dock.invalidate();
             lotus_windows::diagnostics::record_diagnostic(
                 "integration.appbar_position_reconciled",
                 &format!("shell={:?}", self.shell.health()),
@@ -207,7 +206,8 @@ impl IntegrationRecovery {
         self.lifecycle.recover_registration();
         let mut degraded = false;
         if let Err(error) = context
-            .dock
+            .primary_dock
+            .window()
             .refresh_placement(context.dock_model.settings())
         {
             degraded = true;
@@ -218,7 +218,7 @@ impl IntegrationRecovery {
         }
         self.shell.recover(
             context.dock_model.settings(),
-            context.dock,
+            context.primary_dock.window(),
             source.shell_source(),
         );
         degraded |= self.shell.health() == ShellIntegrationHealth::Degraded;
@@ -238,7 +238,7 @@ impl IntegrationRecovery {
 
         context.window_tracker.refresh_fullscreen();
         if let Err(error) = context.auxiliary.refresh_placement(
-            context.dock,
+            context.primary_dock.window(),
             context.dock_model,
             context.graphics,
         ) {
@@ -250,7 +250,7 @@ impl IntegrationRecovery {
             );
         }
         if let Err(error) = context.auxiliary.sync_monitor_docks(
-            context.dock,
+            context.primary_dock.window(),
             context.dock_model,
             context.graphics,
             context.window_tracker,
@@ -263,8 +263,7 @@ impl IntegrationRecovery {
             );
         }
         if let Err(error) = apply_fullscreen_visibility(
-            context.dock,
-            context.dock_surface,
+            context.primary_dock,
             context.window_tracker,
             context.dock_model,
             context.auxiliary,
@@ -276,7 +275,7 @@ impl IntegrationRecovery {
             );
         }
 
-        context.dock_surface.invalidate();
+        context.primary_dock.invalidate();
         context.auxiliary.invalidate_surfaces();
         self.record_recovery_outcome(source, context, degraded, tray_health);
     }

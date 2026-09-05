@@ -1,32 +1,34 @@
 use lotus_core::window::WindowInfo;
 use lotus_search::command::CommandId;
-use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::clipboard::write_text;
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, GraphicsDeviceHealth};
+use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth};
 use lotus_windows::window::DockWindow;
 
 use super::presentation::present_dock_change;
 use crate::app::launcher::{LauncherEventOutcome, LauncherSubmission};
 use crate::app::modules::ModuleHost;
+use crate::app::primary_dock::PrimaryDock;
+use crate::app::settings_persistence::SettingsPersistence;
 use crate::app::system_actions::{Confirmation, SystemAction, execute_system_action};
 use crate::app::{AppError, DockRuntime};
 
 pub(super) fn refresh_catalog(
-    dock: &DockWindow,
+    primary_dock: &mut PrimaryDock,
     graphics: &mut DeviceState,
-    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
+    settings_persistence: &SettingsPersistence,
 ) -> Result<bool, AppError> {
     if !auxiliary.launcher_catalog_refresh_pending() {
         return Ok(false);
     }
     let application_catalog = auxiliary.application_snapshot();
-    dock_model.adopt_catalogue_pins(&application_catalog)?;
+    dock_model.adopt_catalogue_pins(&application_catalog, settings_persistence)?;
     dock_model.rebuild(windows, application_catalog.clone());
-    let catalog_changed = auxiliary.refresh_catalog(dock, dock_model, graphics)?;
+    let catalog_changed =
+        auxiliary.refresh_catalog(primary_dock.window(), dock_model, graphics)?;
     if !catalog_changed {
         return Ok(false);
     }
@@ -36,7 +38,7 @@ pub(super) fn refresh_catalog(
         dock_model.application_assignments(),
         graphics,
     )?;
-    present_dock_change(dock, graphics, surface, auxiliary, dock_model)?;
+    present_dock_change(primary_dock, graphics, auxiliary, dock_model)?;
     auxiliary.refresh_open_application_manager(dock_model.items());
     auxiliary.invalidate_launcher_surface();
     Ok(true)

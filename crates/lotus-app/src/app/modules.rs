@@ -8,7 +8,6 @@ mod presentation;
 mod settings;
 mod status;
 
-use lotus_settings::scene::SettingsAction;
 use lotus_windows::WindowHandle;
 use lotus_windows::window::SignedPoint;
 
@@ -31,12 +30,6 @@ pub(super) struct ModuleHost {
     status: StatusRuntime,
     monitors: MonitorDocks,
     switcher: SwitcherRuntime,
-}
-
-pub(super) enum SettingsIntent {
-    None,
-    PasteQuery,
-    Action(SettingsAction),
 }
 
 pub(super) struct StatusZoneActivation {

@@ -1,18 +1,16 @@
-use lotus_ui::frame::{FrameTrigger, ScheduledSurface};
+use lotus_ui::frame::FrameTrigger;
 use lotus_windows::appbar::fullscreen_notification;
-use lotus_windows::graphics::{
-    CompositionSurfaceState, DeviceState, GraphicsDeviceHealth, SurfaceError,
-};
+use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth, SurfaceError};
 use lotus_windows::input::UiHeartbeatTimer;
 use lotus_windows::interaction::{NativeMessage, next_message};
 use lotus_windows::responsiveness::{METRICS, UiMessagePhase};
-use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
 
 use super::work::RuntimeWork;
 use super::{dock_events, presentation, settings_events, window_events};
 use crate::app::integration::IntegrationRecoveryContext;
 use crate::app::modules::ModuleHost;
+use crate::app::primary_dock::PrimaryDock;
 use crate::app::{AppError, DockRuntime, RuntimeServices};
 
 mod frame;
@@ -26,9 +24,8 @@ use wakes::{WakeEvents, is_input_wake};
 
 pub(crate) fn run_message_loop(
     runtime: &mut RuntimeServices<'_>,
-    dock: &mut DockWindow,
+    primary_dock: &mut PrimaryDock,
     graphics: &mut DeviceState,
-    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     window_tracker: &mut WindowTracker,
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
@@ -40,9 +37,8 @@ pub(crate) fn run_message_loop(
     MessageLoop {
         heartbeat,
         runtime,
-        dock,
+        primary_dock,
         graphics,
-        surface,
         window_tracker,
         dock_model,
         auxiliary,
@@ -53,22 +49,20 @@ pub(crate) fn run_message_loop(
 }
 
 pub(crate) fn flush_frame(
-    dock: &mut DockWindow,
+    primary_dock: &mut PrimaryDock,
     graphics: &mut DeviceState,
-    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
     trigger: FrameTrigger,
 ) -> Result<(), AppError> {
-    frame::flush_frame(dock, graphics, surface, dock_model, auxiliary, trigger)
+    frame::flush_frame(primary_dock, graphics, dock_model, auxiliary, trigger)
 }
 
 struct MessageLoop<'a, 'runtime> {
     heartbeat: UiHeartbeatTimer,
     runtime: &'a mut RuntimeServices<'runtime>,
-    dock: &'a mut DockWindow,
+    primary_dock: &'a mut PrimaryDock,
     graphics: &'a mut DeviceState,
-    surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     window_tracker: &'a mut WindowTracker,
     dock_model: &'a mut DockRuntime,
     auxiliary: &'a mut ModuleHost,
@@ -96,13 +90,13 @@ impl MessageLoop<'_, '_> {
                 Ok(()) => {}
                 Err(AppError::Surface(SurfaceError::DeviceLost(loss))) => {
                     self.graphics.mark_lost(loss);
-                    self.dock.set_animation_active(false)?;
+                    self.primary_dock.window().set_animation_active(false)?;
                     self.schedule_graphics_recovery();
                 }
                 Err(AppError::GraphicsUnavailable)
                     if self.graphics.health() == GraphicsDeviceHealth::Lost =>
                 {
-                    self.dock.set_animation_active(false)?;
+                    self.primary_dock.window().set_animation_active(false)?;
                     self.schedule_graphics_recovery();
                 }
                 Err(error) => return Err(error),
@@ -158,9 +152,8 @@ impl MessageLoop<'_, '_> {
         let tracker = window_events::handle_tracker_message(
             message,
             &mut window_events::TrackerEventContext {
-                dock: self.dock,
+                primary_dock: self.primary_dock,
                 graphics: self.graphics,
-                surface: self.surface,
                 window_tracker: self.window_tracker,
                 dock_model: self.dock_model,
                 auxiliary: self.auxiliary,
@@ -181,8 +174,10 @@ impl MessageLoop<'_, '_> {
         let started = std::time::Instant::now();
         message.dispatch();
         timing.record(UiMessagePhase::Dispatch, started.elapsed());
-        let integration_recovery =
-            self.runtime.integration.recovery_source(message, self.dock);
+        let integration_recovery = self
+            .runtime
+            .integration
+            .recovery_source(message, self.primary_dock.window());
         self.include_pending_event_work(&mut work);
         let drained = self.drain_events_until_idle(work, timing)?;
         if drained.changed {
@@ -225,7 +220,7 @@ impl MessageLoop<'_, '_> {
         let integration_changed = self
             .runtime
             .integration
-            .maintain(self.dock_model.settings(), self.dock);
+            .maintain(self.dock_model.settings(), self.primary_dock.window());
         if integration_changed {
             self.heartbeat.set_modes(
                 self.auxiliary.input_enabled(),
@@ -245,7 +240,9 @@ impl MessageLoop<'_, '_> {
     }
 
     fn include_pending_event_work(&self, work: &mut RuntimeWork) {
-        if self.dock.has_pending_events() || self.auxiliary.has_pending_window_events() {
+        if self.primary_dock.window().has_pending_events()
+            || self.auxiliary.has_pending_window_events()
+        {
             work.insert(RuntimeWork::WINDOW_EVENTS);
         }
         if self.auxiliary.has_pending_settings_events() {
@@ -299,12 +296,12 @@ impl MessageLoop<'_, '_> {
         if work.contains(RuntimeWork::WINDOW_EVENTS) {
             let started = std::time::Instant::now();
             let outcome = window_events::drain_window_events(
-                self.dock,
+                self.primary_dock,
                 self.graphics,
-                self.surface,
                 self.window_tracker.current_windows(),
                 self.dock_model,
                 self.auxiliary,
+                &self.runtime.settings_persistence,
             )?;
             animation_tick = outcome.animation_tick;
             changed |= outcome.had_events;
@@ -327,7 +324,7 @@ impl MessageLoop<'_, '_> {
             for action in outcome.actions {
                 dock_events::execute_dock_action(
                     action,
-                    self.dock,
+                    self.primary_dock.window(),
                     self.graphics,
                     self.dock_model,
                     self.auxiliary,
@@ -358,8 +355,7 @@ impl MessageLoop<'_, '_> {
         let started = std::time::Instant::now();
         presentation::sync_monitor_presentation(
             self.runtime,
-            self.dock,
-            self.surface,
+            self.primary_dock,
             self.graphics,
             self.window_tracker,
             self.dock_model,
@@ -373,13 +369,13 @@ impl MessageLoop<'_, '_> {
     fn drain_settings_events(&mut self) -> Result<bool, AppError> {
         let had_events = settings_events::drain_settings_events(
             &mut settings_events::SettingsEventContext {
-                dock: self.dock,
+                primary_dock: self.primary_dock,
                 graphics: self.graphics,
-                dock_surface: self.surface,
                 window_tracker: self.window_tracker,
                 dock_model: self.dock_model,
                 auxiliary: self.auxiliary,
                 integration: self.runtime.integration,
+                settings_persistence: &self.runtime.settings_persistence,
                 startup_mode: self.runtime.startup_mode,
                 startup_registration_allowed: self.runtime.startup_registration_allowed,
             },
@@ -393,9 +389,8 @@ impl MessageLoop<'_, '_> {
 
     fn flush_frame(&mut self, trigger: FrameTrigger) -> Result<(), AppError> {
         flush_frame(
-            self.dock,
+            self.primary_dock,
             self.graphics,
-            self.surface,
             self.dock_model,
             self.auxiliary,
             trigger,
@@ -419,9 +414,8 @@ impl MessageLoop<'_, '_> {
         self.runtime.integration.recover(
             source,
             &mut IntegrationRecoveryContext {
-                dock: self.dock,
+                primary_dock: self.primary_dock,
                 graphics: self.graphics,
-                dock_surface: self.surface,
                 window_tracker: self.window_tracker,
                 dock_model: self.dock_model,
                 auxiliary: self.auxiliary,

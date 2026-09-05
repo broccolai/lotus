@@ -1,39 +1,39 @@
 use std::path::Path;
 
 use lotus_core::window::WindowInfo;
-use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
 use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
-use lotus_windows::window::DockWindow;
+use lotus_windows::graphics::DeviceState;
 
 use super::presentation::present_dock_change;
 use crate::app::context_menu::PopupEvent;
 use crate::app::modules::ModuleHost;
+use crate::app::primary_dock::PrimaryDock;
+use crate::app::settings_persistence::SettingsPersistence;
 use crate::app::system_actions::{Confirmation, SystemAction, execute_system_action};
 use crate::app::visuals::{AppMenuAction, ContextMenuAction, PopupAction, PowerAction};
 use crate::app::{AppError, DockRuntime, activation};
 
 pub(super) fn handle_context_menu_event(
     event: PopupEvent,
-    dock: &DockWindow,
+    primary_dock: &mut PrimaryDock,
     graphics: &mut DeviceState,
-    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
+    settings_persistence: &SettingsPersistence,
 ) -> Result<(), AppError> {
     let outcome = auxiliary.handle_context_menu_event(event)?;
     let closed_owner = outcome.closed_owner;
     let action_invoked = outcome.invocation.is_some();
     let action_result = if let Some(invocation) = outcome.invocation {
         let mut context = PopupActionContext {
-            dock,
+            primary_dock,
             graphics,
-            surface,
             windows,
             dock_model,
             auxiliary,
+            settings_persistence,
         };
         execute_popup_action(invocation.action, &mut context)
     } else {
@@ -48,12 +48,12 @@ pub(super) fn handle_context_menu_event(
 }
 
 struct PopupActionContext<'a> {
-    dock: &'a DockWindow,
+    primary_dock: &'a mut PrimaryDock,
     graphics: &'a mut DeviceState,
-    surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     windows: &'a [WindowInfo],
     dock_model: &'a mut DockRuntime,
     auxiliary: &'a mut ModuleHost,
+    settings_persistence: &'a SettingsPersistence,
 }
 
 fn execute_popup_action(
@@ -64,13 +64,15 @@ fn execute_popup_action(
         PopupAction::System(action) => {
             execute_context_menu_action(
                 action,
-                context.dock.handle(),
+                context.primary_dock.window().handle(),
                 context.graphics,
                 context.dock_model,
                 context.auxiliary,
             )?;
         }
-        PopupAction::Power(action) => execute_power_action(action, context.dock.handle()),
+        PopupAction::Power(action) => {
+            execute_power_action(action, context.primary_dock.window().handle());
+        }
         PopupAction::App { action, identity } => {
             let Some(source_index) = context.dock_model.source_index(&identity) else {
                 lotus_windows::diagnostics::record_diagnostic(
@@ -101,7 +103,7 @@ fn execute_popup_action(
             Err(error) => {
                 lotus_windows::diagnostics::record_error("activation.popup_window", &error);
                 show_error(
-                    context.dock.handle(),
+                    context.primary_dock.window().handle(),
                     "Lotus",
                     &format!("Lotus could not activate that window.\n\n{error}"),
                 );
@@ -111,7 +113,7 @@ fn execute_popup_action(
             if let Err(error) = activation::request_close(key, false) {
                 lotus_windows::diagnostics::record_error("activation.popup_close", &error);
                 show_error(
-                    context.dock.handle(),
+                    context.primary_dock.window().handle(),
                     "Lotus",
                     &format!("Lotus could not close that window.\n\n{error}"),
                 );
@@ -126,7 +128,7 @@ fn execute_popup_action(
                         &error,
                     );
                     show_error(
-                        context.dock.handle(),
+                        context.primary_dock.window().handle(),
                         "Lotus Search",
                         &format!(
                             "Lotus could not open that application's location.\n\n{error}"
@@ -161,7 +163,7 @@ fn execute_app_menu_action(
     match action {
         AppMenuAction::Open => context
             .dock_model
-            .open_new(source_index, context.dock.handle()),
+            .open_new(source_index, context.primary_dock.window().handle()),
         AppMenuAction::CustomizeIcon => {
             context.auxiliary.open_application_icon_manager(
                 context.dock_model,
@@ -183,11 +185,12 @@ fn execute_app_menu_action(
                 !pinned,
                 context.windows,
                 registered,
+                context.settings_persistence,
             ) {
                 Ok(changed) => changed,
                 Err(error) => {
                     show_error(
-                        context.dock.handle(),
+                        context.primary_dock.window().handle(),
                         "Lotus",
                         &format!("Lotus could not save that pin.\n\n{error}"),
                     );
@@ -196,9 +199,8 @@ fn execute_app_menu_action(
             };
             if changed {
                 present_dock_change(
-                    context.dock,
+                    context.primary_dock,
                     context.graphics,
-                    context.surface,
                     context.auxiliary,
                     context.dock_model,
                 )?;
@@ -217,7 +219,7 @@ fn execute_app_menu_action(
                         &error,
                     );
                     show_error(
-                        context.dock.handle(),
+                        context.primary_dock.window().handle(),
                         "Lotus",
                         &format!("Lotus could not close that window.\n\n{error}"),
                     );
@@ -238,7 +240,7 @@ fn execute_app_menu_action(
                         &error,
                     );
                     show_error(
-                        context.dock.handle(),
+                        context.primary_dock.window().handle(),
                         "Lotus",
                         &format!("Lotus could not force close that window.\n\n{error}"),
                     );

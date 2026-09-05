@@ -2,19 +2,20 @@ use lotus_core::settings::{DockSettings, WindowPickerStyle};
 use lotus_dock::popup::PopupSymbol;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::embedded_icon::EmbeddedIcon;
-use lotus_ui::frame::{FrameOutcome, FramePass, ScheduledSurface};
+use lotus_ui::frame::{FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::theme::Theme;
 use lotus_windows::dwm_thumbnail::DwmThumbnailHost;
 use lotus_windows::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
 use lotus_windows::graphics::surface::FrameResult;
-use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError};
+use lotus_windows::graphics::{DeviceState, GraphicsDevice};
 use lotus_windows::window::{
     ContextMenuEvent, ContextMenuWindow, DismissReason, PopupAlignment, SelectionDirection,
     SignedPoint,
 };
 
 use crate::app::AppError;
+use crate::app::surface_render::frame_outcome;
 use crate::app::visuals::{ContextMenuScene, NativePickerWindow};
 
 pub(super) struct ContextMenuRuntime {
@@ -349,18 +350,11 @@ impl ContextMenuRuntime {
             .ok_or(AppError::InvalidContextMenuScene)?;
         pass.render(surface, |surface| {
             let presentation = self.scene.presentation(popup_asset);
-            match surface.render_scene(&presentation) {
-                Ok(FrameResult::Presented { .. }) => {
-                    self.thumbnails.reconcile(&self.scene.picker_previews());
-                    Ok(FrameOutcome::complete(false))
-                }
-                Ok(FrameResult::TargetRecreated) => Ok(FrameOutcome::Retry),
-                Err(SurfaceError::DeviceLost(loss)) => {
-                    graphics.mark_lost(loss);
-                    Ok(FrameOutcome::complete(false))
-                }
-                Err(error) => Err(error.into()),
+            let result = surface.render_scene(&presentation);
+            if matches!(&result, Ok(FrameResult::Presented { .. })) {
+                self.thumbnails.reconcile(&self.scene.picker_previews());
             }
+            frame_outcome(graphics, result).map(|frame| frame.with_animation_allowed(false))
         })
     }
 

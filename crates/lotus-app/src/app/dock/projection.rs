@@ -1,120 +1,94 @@
 use std::collections::HashMap;
-use std::path::Path;
 
-use lotus_core::application::WindowApplicationAssignments;
+use lotus_core::application::{
+    PinnedApplicationAssignment, RegisteredApplication, WindowApplicationAssignments,
+};
 use lotus_core::dock::DockItem;
-use lotus_core::notification::count_for_item;
+use lotus_core::notification::{NotificationSource, count_for_item};
 use lotus_core::settings::{DockSettings, DockZone, NotificationBadgeStyle};
 use lotus_core::window::WindowInfo;
 use lotus_dock::model::project_snapshot;
+use lotus_media::MediaSnapshot;
 use lotus_ui::embedded_icon::EmbeddedIcon;
-use lotus_windows::WindowHandle;
-use lotus_windows::clock::{local_date, local_time};
+use lotus_ui::icon::RasterIcon;
+use lotus_windows::search_catalog::ApplicationCatalogSnapshot;
 
-use super::{DockRuntime, NATIVE_ICON_SAMPLE_SCALE, SceneDockItem};
+use super::SceneDockItem;
 use crate::app::AppError;
 use crate::app::visuals::{
-    DockAnchor, DockBadge, DockIcon, DockMetrics, SystemStatusItem, SystemStatusKind,
+    DockAnchor, DockBadge, DockIcon, DockMetrics, MediaItem, MediaSymbols,
+    SystemStatusItem, SystemStatusKind,
 };
 
-fn adapt_dock_items_with_native<F>(
-    items: &[DockItem],
-    mut native_icon: F,
-) -> Vec<SceneDockItem>
-where
-    F: FnMut(usize, &DockItem) -> Option<lotus_ui::icon::RasterIcon>,
-{
-    items
-        .iter()
-        .enumerate()
-        .filter_map(|(source_index, item)| {
-            native_icon(source_index, item).map(|icon| {
-                SceneDockItem::with_source_index(source_index, DockIcon::Raster(icon))
-            })
-        })
-        .collect()
+pub(in crate::app) struct StatusSnapshot {
+    pub(super) advanced_color_label: String,
+    pub(super) ethernet: bool,
+    pub(super) date: String,
+    pub(super) time: String,
 }
 
-impl DockRuntime {
-    pub(in crate::app) fn scene_items(&mut self) -> Vec<SceneDockItem> {
-        let icon_size = self
-            .scene
-            .icon_size_pixels()
-            .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        self.scene_items_at_size(icon_size)
+pub(in crate::app) fn scene_items(
+    items: &[DockItem],
+    icons: &[Option<RasterIcon>],
+    settings: &DockSettings,
+    notifications: &[NotificationSource],
+    catalog: &ApplicationCatalogSnapshot,
+) -> Vec<SceneDockItem> {
+    if !settings.show_app_dock {
+        return Vec::new();
     }
-
-    pub(in crate::app) fn scene_items_at_size(
-        &mut self,
-        icon_size: u32,
-    ) -> Vec<SceneDockItem> {
-        if !self.model.settings().show_app_dock {
-            return Vec::new();
-        }
-
-        let settings = self.model.settings().clone();
-        let mut scene_items =
-            adapt_dock_items_with_native(self.model.items(), |_, item| {
-                crate::app::icon_override::resolve_application_icon(
-                    &settings,
-                    &mut self.custom_images,
-                    item.app_user_model_id.as_deref(),
-                    Some(&item.id),
-                    Path::new(&item.executable_path),
-                )
-                .or_else(|| {
-                    item.is_running()
-                        .then(|| {
-                            self.hydrated_window_icons
-                                .get(&item.id)
-                                .filter(|icon| {
-                                    icon.pixel_size == icon_size
-                                        && item.windows.first().is_some_and(|window| {
-                                            window.key() == icon.window
-                                        })
-                                })
-                                .and_then(|icon| icon.icon.clone())
-                        })
-                        .flatten()
-                })
-                .or_else(|| {
-                    self.native_icons
-                        .icon(Path::new(&item.icon_source), icon_size)
-                        .ok()
-                        .flatten()
-                })
-            });
-        for item in &mut scene_items {
-            let Some(source) = self.model.items().get(item.source_index()) else {
-                continue;
-            };
+    items
+        .iter()
+        .zip(icons)
+        .enumerate()
+        .filter_map(|(source_index, (source, icon))| {
+            let mut item = SceneDockItem::with_source_index(
+                source_index,
+                DockIcon::Raster(icon.clone()?),
+            );
             let notification_count = count_for_item(
                 source,
-                &self.notifications,
-                &self.model.settings().notification_disabled_apps,
-                |identifier| {
-                    self.application_catalog
-                        .key_for_external_identifier(identifier)
-                },
+                notifications,
+                &settings.notification_disabled_apps,
+                |identifier| catalog.key_for_external_identifier(identifier),
             );
             let count = notification_count.value;
-            let badge = match (self.model.settings().notification_badge_style, count) {
+            let badge = match (settings.notification_badge_style, count) {
                 (_, 0) | (NotificationBadgeStyle::Off, _) => None,
                 (NotificationBadgeStyle::Dot, _) => Some(DockBadge::Dot),
                 (NotificationBadgeStyle::Count, count)
-                    if notification_count.is_lower_bound
-                        && count == notification_count.value =>
+                    if notification_count.is_lower_bound =>
                 {
                     Some(DockBadge::AtLeast(count))
                 }
                 (NotificationBadgeStyle::Count, count) => Some(DockBadge::Count(count)),
             };
             item.set_badge(badge);
-            item.set_running(
-                source.is_running() && self.model.settings().show_running_indicators,
-            );
-        }
-        scene_items
+            item.set_running(source.is_running() && settings.show_running_indicators);
+            Some(item)
+        })
+        .collect()
+}
+
+pub(in crate::app) fn media_item(
+    snapshot: &MediaSnapshot,
+    artwork: DockIcon,
+    show_metadata: bool,
+) -> MediaItem {
+    MediaItem {
+        source_id: snapshot.source_id.clone(),
+        title: snapshot.title.clone(),
+        artist: snapshot.artist.clone(),
+        show_metadata,
+        artwork,
+        controls: snapshot.controls,
+        playback: snapshot.playback,
+        symbols: MediaSymbols {
+            previous: EmbeddedIcon::FluentPrevious,
+            play: EmbeddedIcon::FluentPlay,
+            pause: EmbeddedIcon::FluentPause,
+            next: EmbeddedIcon::FluentNext,
+        },
     }
 }
 
@@ -177,7 +151,7 @@ pub(in crate::app) fn departure_transition(
 
 pub(in crate::app) fn status_items(
     settings: &DockSettings,
-    owner: WindowHandle,
+    snapshot: &StatusSnapshot,
 ) -> Vec<SystemStatusItem> {
     if !settings.show_system_status {
         return Vec::new();
@@ -191,26 +165,16 @@ pub(in crate::app) fn status_items(
         ));
     }
     if settings.show_hdr_status {
-        let label = lotus_windows::advanced_color::state(owner)
-            .unwrap_or(lotus_windows::advanced_color::AdvancedColorState::Sdr)
-            .label();
         items.push(SystemStatusItem::text(
             SystemStatusKind::AdvancedColor,
-            label,
+            &snapshot.advanced_color_label,
         ));
     }
     if settings.show_network_status {
-        let item = match lotus_windows::network::connection_kind() {
-            lotus_windows::network::NetworkConnectionKind::Ethernet => {
-                SystemStatusItem::symbol(SystemStatusKind::Network, '\u{E839}')
-            }
-            lotus_windows::network::NetworkConnectionKind::Wifi
-            | lotus_windows::network::NetworkConnectionKind::Other => {
-                SystemStatusItem::icon(
-                    SystemStatusKind::Network,
-                    EmbeddedIcon::FluentNetwork,
-                )
-            }
+        let item = if snapshot.ethernet {
+            SystemStatusItem::symbol(SystemStatusKind::Network, '\u{E839}')
+        } else {
+            SystemStatusItem::icon(SystemStatusKind::Network, EmbeddedIcon::FluentNetwork)
         };
         items.push(item);
     }
@@ -221,36 +185,20 @@ pub(in crate::app) fn status_items(
         ));
     }
     if settings.show_date_time_status {
-        let date = if settings.show_date_in_status {
-            local_date()
-        } else {
-            String::new()
-        };
         items.push(SystemStatusItem::date_time(
-            local_time(settings.use_24_hour_time),
-            date,
+            snapshot.time.clone(),
+            snapshot.date.clone(),
         ));
     }
     items
-}
-
-pub(in crate::app) fn docked_status_items(
-    settings: &DockSettings,
-    owner: WindowHandle,
-) -> Vec<SystemStatusItem> {
-    if settings.system_status_zone == settings.dock_zone {
-        status_items(settings, owner)
-    } else {
-        Vec::new()
-    }
 }
 
 pub(in crate::app) fn projected_items(
     settings: &DockSettings,
     windows: &[WindowInfo],
     assignments: &WindowApplicationAssignments,
-    applications: &[lotus_core::application::RegisteredApplication],
-    pinned_applications: &[lotus_core::application::PinnedApplicationAssignment],
+    applications: &[RegisteredApplication],
+    pinned_applications: &[PinnedApplicationAssignment],
 ) -> Vec<DockItem> {
     project_snapshot(
         settings,
@@ -264,7 +212,7 @@ pub(in crate::app) fn projected_items(
 pub(in crate::app) fn media_source_matches_item(
     source_id: &str,
     item: &DockItem,
-    catalog: &lotus_windows::search_catalog::ApplicationCatalogSnapshot,
+    catalog: &ApplicationCatalogSnapshot,
 ) -> bool {
     catalog.key_for_external_identifier(source_id).as_ref() == Some(&item.application_key)
 }

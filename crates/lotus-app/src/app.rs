@@ -8,9 +8,13 @@ mod launcher;
 mod media;
 mod modules;
 mod monitors;
+mod primary_dock;
 mod runtime;
+mod search_usage;
 mod settings;
+mod settings_persistence;
 mod status;
+mod surface_render;
 mod switcher;
 mod system_actions;
 mod visuals;
@@ -43,23 +47,21 @@ use lotus_core::settings::{
     CURRENT_ONBOARDING_VERSION, DockSettings, NotificationBadgeStyle, SettingsDecodeError,
     SettingsLoadSource, SettingsStore, SettingsStoreError, decode_settings,
 };
-use lotus_search::usage::SearchUsageStore;
-use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::activation::ActivationError;
 use lotus_windows::dpi::enable_per_monitor_v2;
-use lotus_windows::graphics::{
-    CompositionSurfaceState, DeviceState, SurfaceError, SurfaceSize,
-};
+use lotus_windows::graphics::{DeviceState, SurfaceError};
 use lotus_windows::single_instance::SingleInstance;
 use lotus_windows::startup::{
     self as startup_registration, RestartWaitError, StartupArgsError, StartupMode,
     parse_startup_args, wait_for_restart_source,
 };
 use lotus_windows::taskbar_badges::TaskbarBadgeController;
-use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
 use modules::ModuleHost;
-use runtime::{apply_fullscreen_visibility, flush_frame, resize_dock, run_message_loop};
+use primary_dock::PrimaryDock;
+use runtime::{flush_frame, run_message_loop};
+use search_usage::SearchUsageStore;
+use settings_persistence::SettingsPersistence;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -121,6 +123,7 @@ enum RestartError {
 }
 
 struct RuntimeServices<'a> {
+    settings_persistence: SettingsPersistence,
     taskbar_badges: Option<&'a TaskbarBadgeController>,
     onboarding_required: bool,
     startup_mode: StartupMode,
@@ -174,10 +177,9 @@ impl StartupEnvironment {
 }
 
 struct InitialWindows<'a> {
-    dock: &'a DockWindow,
+    primary_dock: &'a mut PrimaryDock,
     dock_model: &'a mut DockRuntime,
     graphics: &'a mut DeviceState,
-    surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     window_tracker: &'a WindowTracker,
     auxiliary: &'a mut ModuleHost,
 }
@@ -251,31 +253,21 @@ pub fn run() -> Result<(), AppError> {
         store: settings_store,
         onboarding_required,
     } = prepared;
-    let usage_store = SearchUsageStore::new(settings_store.directory());
+    let settings_persistence = SettingsPersistence::new(settings_store);
+    let usage_store = SearchUsageStore::new(settings_persistence.directory());
     let usage = usage_store.load().unwrap_or_default();
     startup_phases.settings = startup_phases.complete();
     let mut graphics = DeviceState::create()?;
-    let mut dock = DockWindow::create()?;
-    lotus_windows::backdrop::apply_dock_settings(dock.handle(), &settings);
-    dock.prepare(&settings)?;
-    let (width, height) = dock.client_size()?;
-    let surface_size = SurfaceSize::new(width, height).ok_or(AppError::ZeroSizedSurface)?;
-    let graphics_device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-    let mut surface = ScheduledSurface::new(CompositionSurfaceState::create(
-        graphics_device,
-        dock.handle(),
-        surface_size,
-    )?);
+    let mut primary_dock = PrimaryDock::create(&graphics, &settings)?;
     startup_phases.graphics_window = startup_phases.complete();
     let mut window_tracker = WindowTracker::start(startup.mode)?;
     startup_phases.initial_window_tracking = startup_phases.complete();
     let mut dock_model = DockRuntime::new(
-        dock.handle(),
+        primary_dock.window().handle(),
         settings,
-        settings_store,
         window_tracker.current_windows(),
-        dock.dpi(),
-        dock.drag_threshold(),
+        primary_dock.window().dpi(),
+        primary_dock.window().drag_threshold(),
     )?;
     startup_phases.dock_model = startup_phases.complete();
     let shell_effects_allowed = environment.allows_shell_integration();
@@ -284,7 +276,7 @@ pub fn run() -> Result<(), AppError> {
         .flatten();
     startup_phases.badge_worker_dispatch = startup_phases.complete();
     let mut auxiliary = create_auxiliary_windows(
-        &dock,
+        primary_dock.window(),
         &mut dock_model,
         usage,
         usage_store,
@@ -293,19 +285,18 @@ pub fn run() -> Result<(), AppError> {
         environment.mode.allows_update_operations(),
     )?;
     startup_phases.auxiliary_windows = startup_phases.complete();
-    resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
+    primary_dock.resize_for_model(&mut graphics, &dock_model)?;
     let mut integration = integration::IntegrationRecovery::new(
         dock_model.settings(),
-        &dock,
+        primary_dock.window(),
         shell_effects_allowed,
         shell_effects_allowed && !onboarding_required,
     );
     window_tracker.refresh_fullscreen();
     let mut initial_windows = InitialWindows {
-        dock: &dock,
+        primary_dock: &mut primary_dock,
         dock_model: &mut dock_model,
         graphics: &mut graphics,
-        surface: &mut surface,
         window_tracker: &window_tracker,
         auxiliary: &mut auxiliary,
     };
@@ -318,15 +309,15 @@ pub fn run() -> Result<(), AppError> {
     startup_phases.shell_integration_placement = startup_phases.complete();
     let first_frame_started = Instant::now();
     flush_frame(
-        &mut dock,
+        &mut primary_dock,
         &mut graphics,
-        &mut surface,
         &mut dock_model,
         &mut auxiliary,
         lotus_ui::frame::FrameTrigger::Changes,
     )?;
     startup_phases.record_after_first_frame(first_frame_started.elapsed());
     let mut runtime = RuntimeServices {
+        settings_persistence,
         taskbar_badges: taskbar_badges.as_ref(),
         onboarding_required,
         startup_mode: environment.mode,
@@ -335,9 +326,8 @@ pub fn run() -> Result<(), AppError> {
     };
     let result = run_message_loop(
         &mut runtime,
-        &mut dock,
+        &mut primary_dock,
         &mut graphics,
-        &mut surface,
         &mut window_tracker,
         &mut dock_model,
         &mut auxiliary,
@@ -505,19 +495,19 @@ fn prepare_initial_windows(
 ) -> Result<(), AppError> {
     if !onboarding_required {
         windows.auxiliary.sync_status(
-            windows.dock,
+            windows.primary_dock.window(),
             windows.dock_model,
             windows.graphics,
         )?;
         windows.auxiliary.sync_monitor_docks(
-            windows.dock,
+            windows.primary_dock.window(),
             windows.dock_model,
             windows.graphics,
             windows.window_tracker,
         )?;
     }
     if onboarding_required {
-        let _changed = windows.dock.set_visible(false);
+        let _changed = windows.primary_dock.window().set_visible(false);
         windows.auxiliary.set_status_visible(false);
         windows.auxiliary.open_onboarding(
             windows.dock_model.settings(),
@@ -525,9 +515,8 @@ fn prepare_initial_windows(
             windows.graphics,
         )?;
     } else if shell_effects_allowed {
-        apply_fullscreen_visibility(
-            windows.dock,
-            windows.surface,
+        runtime::apply_fullscreen_visibility(
+            windows.primary_dock,
             windows.window_tracker,
             windows.dock_model,
             windows.auxiliary,
@@ -543,7 +532,7 @@ fn prepare_initial_windows(
 }
 
 fn create_auxiliary_windows(
-    dock: &DockWindow,
+    dock: &lotus_windows::window::DockWindow,
     dock_model: &mut DockRuntime,
     usage: SearchUsage,
     usage_store: SearchUsageStore,

@@ -1,22 +1,23 @@
-use lotus_ui::frame::ScheduledSurface;
-use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, GraphicsDeviceHealth};
+use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth};
 use lotus_windows::startup::StartupMode;
-use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
 
 use super::settings_actions::execute_settings_action;
 use crate::app::integration::IntegrationRecovery;
-use crate::app::modules::{ModuleHost, SettingsIntent};
+use crate::app::modules::ModuleHost;
+use crate::app::primary_dock::PrimaryDock;
+use crate::app::settings::SettingsCommand;
+use crate::app::settings_persistence::SettingsPersistence;
 use crate::app::{AppError, DockRuntime};
 
 pub(super) struct SettingsEventContext<'a> {
-    pub(super) dock: &'a DockWindow,
+    pub(super) primary_dock: &'a mut PrimaryDock,
     pub(super) graphics: &'a mut DeviceState,
-    pub(super) dock_surface: &'a mut ScheduledSurface<CompositionSurfaceState>,
     pub(super) window_tracker: &'a mut WindowTracker,
     pub(super) dock_model: &'a mut DockRuntime,
     pub(super) auxiliary: &'a mut ModuleHost,
     pub(super) integration: &'a mut IntegrationRecovery,
+    pub(super) settings_persistence: &'a SettingsPersistence,
     pub(super) startup_mode: StartupMode,
     pub(super) startup_registration_allowed: bool,
 }
@@ -35,8 +36,8 @@ pub(super) fn drain_settings_events(
                 context.dock_model.items(),
             )?;
             match intent {
-                SettingsIntent::None => Ok(()),
-                SettingsIntent::PasteQuery => {
+                None => Ok(()),
+                Some(SettingsCommand::PasteQuery) => {
                     if let Ok(clipboard) = lotus_windows::clipboard::read_text() {
                         context
                             .auxiliary
@@ -44,7 +45,9 @@ pub(super) fn drain_settings_events(
                     }
                     Ok(())
                 }
-                SettingsIntent::Action(action) => execute_settings_action(action, context),
+                Some(SettingsCommand::Action(action)) => {
+                    execute_settings_action(action, context)
+                }
             }
         })();
         match result {

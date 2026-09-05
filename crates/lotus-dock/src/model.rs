@@ -1,14 +1,11 @@
 use std::collections::HashMap;
-use std::path::Path;
 
 use lotus_core::application::{
     ApplicationIdentity, ApplicationKey, PinnedApplicationAssignment,
     RegisteredApplication, WindowApplicationAssignments, is_shared_host_executable,
 };
 use lotus_core::dock::DockItem;
-use lotus_core::settings::{
-    DockSettings, PinnedApp, SettingsReset, SettingsStore, SettingsStoreError,
-};
+use lotus_core::settings::{DockSettings, PinnedApp};
 use lotus_core::window::WindowInfo;
 
 pub fn project_snapshot(
@@ -44,10 +41,54 @@ pub struct SettingsImpact {
     pub restart_required: bool,
 }
 
+impl SettingsImpact {
+    pub fn between(previous: &DockSettings, current: &DockSettings) -> Self {
+        Self {
+            changed: previous != current,
+            restart_required: restart_required(previous, current),
+        }
+    }
+}
+
 pub struct DockModel {
     settings: DockSettings,
-    settings_store: SettingsStore,
     items: Vec<DockItem>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DockSettingsChange {
+    settings: DockSettings,
+    items: Vec<DockItem>,
+    impact: SettingsImpact,
+}
+
+impl DockSettingsChange {
+    pub const fn impact(&self) -> SettingsImpact {
+        self.impact
+    }
+
+    pub const fn settings(&self) -> &DockSettings {
+        &self.settings
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DockReorderRequest {
+    pub source_id: String,
+    pub target_id: String,
+    pub insert_after: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DockReorder {
+    settings: DockSettings,
+    items: Vec<DockItem>,
+}
+
+impl DockReorder {
+    pub const fn settings(&self) -> &DockSettings {
+        &self.settings
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,39 +103,12 @@ pub struct PinLaunch {
 }
 
 impl DockModel {
-    pub const fn new(
-        settings: DockSettings,
-        settings_store: SettingsStore,
-        items: Vec<DockItem>,
-    ) -> Self {
-        Self {
-            settings,
-            settings_store,
-            items,
-        }
+    pub const fn new(settings: DockSettings, items: Vec<DockItem>) -> Self {
+        Self { settings, items }
     }
 
     pub const fn settings(&self) -> &DockSettings {
         &self.settings
-    }
-
-    pub fn settings_directory(&self) -> &Path {
-        self.settings_store.directory()
-    }
-
-    pub fn export_settings(&self, destination: &Path) -> Result<(), SettingsStoreError> {
-        self.settings_store.export(&self.settings, destination)
-    }
-
-    pub fn validate_export_destination(
-        &self,
-        destination: &Path,
-    ) -> Result<(), SettingsStoreError> {
-        self.settings_store.validate_export_destination(destination)
-    }
-
-    pub fn reset_settings(&self) -> Result<SettingsReset, SettingsStoreError> {
-        self.settings_store.reset()
     }
 
     pub fn items(&self) -> &[DockItem] {
@@ -105,12 +119,12 @@ impl DockModel {
         self.items = items;
     }
 
-    pub fn repair_catalogue_pins(
-        &mut self,
+    pub fn prepared_catalogue_pin_repair(
+        &self,
         assignments: &[PinnedApplicationAssignment],
         applications: &[RegisteredApplication],
         safe_aliases: &[Vec<String>],
-    ) -> Result<bool, SettingsStoreError> {
+    ) -> Option<DockSettings> {
         let mut next = self.settings.clone();
         let mut retained = HashMap::<ApplicationKey, usize>::new();
         let mut removed = Vec::new();
@@ -192,60 +206,52 @@ impl DockModel {
             });
         let next = next.normalized();
         if next == self.settings {
-            return Ok(false);
+            return None;
         }
-        self.settings_store.save(&next)?;
-        self.settings = next;
-        Ok(true)
+        Some(next)
     }
 
-    pub fn apply_settings(
-        &mut self,
+    pub fn prepare_settings(
+        &self,
         next: DockSettings,
         items: Vec<DockItem>,
-    ) -> Result<SettingsImpact, SettingsStoreError> {
+    ) -> Option<DockSettingsChange> {
         let next = next.normalized();
         if self.settings == next {
-            return Ok(SettingsImpact {
-                changed: false,
-                restart_required: false,
-            });
+            return None;
         }
 
         let previous = self.settings.clone();
-        self.settings_store.save(&next)?;
-        self.settings = next;
-        self.items = items;
-
-        Ok(SettingsImpact {
-            changed: true,
-            restart_required: restart_required(&previous, &self.settings),
+        Some(DockSettingsChange {
+            impact: SettingsImpact::between(&previous, &next),
+            settings: next,
+            items,
         })
     }
 
-    pub fn persist_reorder(
-        &mut self,
-        source_index: usize,
-        insertion_slot: usize,
-    ) -> Result<bool, SettingsStoreError> {
-        let Some(destination) =
-            insertion_destination(self.items.len(), source_index, insertion_slot)
-        else {
-            return Ok(false);
-        };
+    pub fn commit_settings(&mut self, change: DockSettingsChange) -> SettingsImpact {
+        self.settings = change.settings;
+        self.items = change.items;
+        change.impact
+    }
+
+    pub fn prepare_reorder(&self, request: &DockReorderRequest) -> Option<DockReorder> {
+        let source_index = source_index_for_identity(&self.items, &request.source_id)?;
+        let target_index = source_index_for_identity(&self.items, &request.target_id)?;
+        let destination = lotus_core::reorder::destination_index(
+            self.items.len(),
+            source_index,
+            target_index,
+            request.insert_after,
+        )?;
         if source_index == destination {
-            return Ok(false);
+            return None;
         }
 
         let mut reordered = self.items.clone();
         let moved = reordered.remove(source_index);
         reordered.insert(destination, moved);
         let mut settings = self.settings.clone();
-        let (target_index, insert_after) = if insertion_slot == self.items.len() {
-            (self.items.len() - 1, true)
-        } else {
-            (insertion_slot, false)
-        };
         let source_id = &self.items[source_index].id;
         let target_id = &self.items[target_index].id;
         let mut full_order =
@@ -263,35 +269,29 @@ impl DockModel {
             }
         }
         full_order.retain(|id| !id.eq_ignore_ascii_case(source_id));
-        let Some(target_position) = full_order
+        let target_position = full_order
             .iter()
-            .position(|id| id.eq_ignore_ascii_case(target_id))
-        else {
-            return Ok(false);
-        };
+            .position(|id| id.eq_ignore_ascii_case(target_id))?;
         full_order.insert(
-            target_position + usize::from(insert_after),
+            target_position + usize::from(request.insert_after),
             source_id.clone(),
         );
         settings.item_order = full_order;
-        self.settings_store.save(&settings)?;
-
-        self.settings = settings;
-        self.items = reordered;
-        Ok(true)
+        Some(DockReorder {
+            settings,
+            items: reordered,
+        })
     }
 
-    pub fn set_pinned(
-        &mut self,
+    pub fn prepare_pinned(
+        &self,
         source_index: usize,
         pinned: bool,
         launch: Option<PinLaunch>,
-    ) -> Result<bool, SettingsStoreError> {
-        let Some(item) = self.items.get(source_index) else {
-            return Ok(false);
-        };
+    ) -> Option<DockSettings> {
+        let item = self.items.get(source_index)?;
         if item.is_pinned == pinned {
-            return Ok(false);
+            return None;
         }
 
         let mut settings = self.settings.clone();
@@ -314,7 +314,7 @@ impl DockModel {
                     .match_strength(&launch.identity())
                     .is_match()
             }) {
-                return Ok(false);
+                return None;
             }
             settings.pinned_apps.push(PinnedApp {
                 id: launch.id,
@@ -334,9 +334,16 @@ impl DockModel {
         }
 
         let settings = settings.normalized();
-        self.settings_store.save(&settings)?;
+        Some(settings)
+    }
+
+    pub fn commit_settings_only(&mut self, settings: DockSettings) {
         self.settings = settings;
-        Ok(true)
+    }
+
+    pub fn commit_reorder(&mut self, reorder: DockReorder) {
+        self.settings = reorder.settings;
+        self.items = reorder.items;
     }
 }
 
@@ -382,25 +389,4 @@ fn restart_required(previous: &DockSettings, current: &DockSettings) -> bool {
             && (previous.icon_size != current.icon_size
                 || previous.vertical_padding != current.vertical_padding
                 || previous.bottom_offset != current.bottom_offset))
-}
-
-fn insertion_destination(
-    item_count: usize,
-    source_index: usize,
-    insertion_slot: usize,
-) -> Option<usize> {
-    if insertion_slot > item_count || item_count == 0 {
-        return None;
-    }
-    let (target_index, insert_after) = if insertion_slot == item_count {
-        (item_count - 1, true)
-    } else {
-        (insertion_slot, false)
-    };
-    lotus_core::reorder::destination_index(
-        item_count,
-        source_index,
-        target_index,
-        insert_after,
-    )
 }

@@ -1,70 +1,81 @@
 use std::time::Instant;
 
-use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
-use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, SurfaceSize};
+use lotus_windows::graphics::{DeviceState, SurfaceSize};
 use lotus_windows::window::{
     DockContextRequest, DockEvent, DockWindow, PointerEvent, PopupAlignment, SignedPoint,
 };
 
-use super::presentation::{present_dock_change, resize_dock, resize_surface};
+use super::presentation::present_dock_change;
+use crate::app::dock::DockInteractionIntent;
 use crate::app::modules::ModuleHost;
 use crate::app::monitors::DockAction;
+use crate::app::primary_dock::PrimaryDock;
+use crate::app::settings_persistence::SettingsPersistence;
 use crate::app::system_actions::{SystemAction, execute_system_action};
 use crate::app::visuals::{DockHitTarget, SystemStatusKind};
 use crate::app::{AppError, DockRuntime};
 
 pub(super) fn handle_window_event(
     event: DockEvent,
-    dock: &DockWindow,
+    primary_dock: &mut PrimaryDock,
     graphics: &mut DeviceState,
-    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
+    settings_persistence: &SettingsPersistence,
 ) -> Result<(), AppError> {
     match event {
         DockEvent::Resized { width, height } => {
             if let Some(size) = SurfaceSize::new(width, height) {
-                resize_surface(graphics, surface.value_mut(), size)?;
+                primary_dock.resize_surface(graphics, size)?;
             }
         }
         DockEvent::DpiChanged { dpi } => {
             dock_model.set_dpi(dpi)?;
-            dock_model.set_drag_threshold(dock.drag_threshold());
-            present_dock_change(dock, graphics, surface, auxiliary, dock_model)?;
+            dock_model.set_drag_threshold(primary_dock.window().drag_threshold());
+            present_dock_change(primary_dock, graphics, auxiliary, dock_model)?;
         }
         DockEvent::PlacementRefreshRequested => {
-            dock.refresh_placement(dock_model.settings())?;
-            auxiliary.refresh_placement(dock, dock_model, graphics)?;
+            primary_dock
+                .window()
+                .refresh_placement(dock_model.settings())?;
+            auxiliary.refresh_placement(primary_dock.window(), dock_model, graphics)?;
         }
         DockEvent::Pointer(event) => {
-            handle_dock_pointer(event, dock, graphics, surface, dock_model, auxiliary)?;
+            handle_dock_pointer(
+                event,
+                primary_dock,
+                graphics,
+                dock_model,
+                auxiliary,
+                settings_persistence,
+            )?;
         }
         DockEvent::ContextMenuRequested(request) => {
-            handle_context_menu(request, dock, graphics, surface, dock_model, auxiliary)?;
+            handle_context_menu(request, primary_dock, graphics, dock_model, auxiliary)?;
         }
         DockEvent::AnimationFrame => {
             auxiliary.advance_launcher_animation();
             if dock_model.advance_departure(Instant::now()) {
-                resize_dock(dock, graphics, surface, dock_model)?;
+                primary_dock.resize_for_model(graphics, dock_model)?;
             }
         }
         DockEvent::MascotAnimationDeadline => {
             if dock_model.advance_mascot_animation()
-                && dock.is_visible()
-                && !dock.is_fullscreen_occluded()
+                && primary_dock.window().is_visible()
+                && !primary_dock.window().is_fullscreen_occluded()
             {
-                surface.invalidate();
+                primary_dock.invalidate();
             }
         }
         DockEvent::StatusRefreshRequested => {
             if dock_model.refresh_status() {
-                surface.invalidate();
+                primary_dock.invalidate();
             }
             auxiliary.refresh_status(dock_model.settings());
         }
         DockEvent::RenderRequested => {
-            surface.invalidate();
+            primary_dock.invalidate();
         }
     }
     Ok(())
@@ -72,11 +83,11 @@ pub(super) fn handle_window_event(
 
 fn handle_dock_pointer(
     event: PointerEvent,
-    dock: &DockWindow,
+    primary_dock: &mut PrimaryDock,
     graphics: &mut DeviceState,
-    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
+    settings_persistence: &SettingsPersistence,
 ) -> Result<(), AppError> {
     if matches!(event, PointerEvent::LeftButtonPressed { .. }) {
         auxiliary.hide_context_menu();
@@ -84,7 +95,9 @@ fn handle_dock_pointer(
     let release_request = match event {
         PointerEvent::LeftButtonReleased { x, y } => {
             let client = SignedPoint { x, y };
-            dock.client_to_screen(client)
+            primary_dock
+                .window()
+                .client_to_screen(client)
                 .ok()
                 .map(|screen| DockContextRequest::Pointer {
                     screen,
@@ -97,26 +110,53 @@ fn handle_dock_pointer(
         | PointerEvent::LeftButtonPressed { .. }
         | PointerEvent::Cancelled => None,
     };
-    let interaction = dock_model.handle_pointer_event(event)?;
+    let interaction = dock_model.handle_pointer_event(event);
     if interaction.changed {
-        surface.invalidate();
+        primary_dock.invalidate();
     }
-    let Some(target) = interaction.effect else {
+    let Some(intent) = interaction.intent else {
         if matches!(event, PointerEvent::LeftButtonReleased { .. }) {
             auxiliary.hide_launcher();
         }
         return Ok(());
     };
+    match intent {
+        DockInteractionIntent::Reorder(request) => {
+            if dock_model.persist_reorder(&request, settings_persistence)? {
+                primary_dock.invalidate();
+            }
+            auxiliary.hide_launcher();
+            Ok(())
+        }
+        DockInteractionIntent::Activate(target) => execute_dock_activation(
+            target,
+            release_request,
+            primary_dock,
+            graphics,
+            dock_model,
+            auxiliary,
+        ),
+    }
+}
+
+fn execute_dock_activation(
+    target: DockHitTarget,
+    release_request: Option<DockContextRequest>,
+    primary_dock: &PrimaryDock,
+    graphics: &mut DeviceState,
+    dock_model: &mut DockRuntime,
+    auxiliary: &mut ModuleHost,
+) -> Result<(), AppError> {
     let anchor = release_request
         .and_then(|request| dock_model.popup_target_anchor(request))
         .map(|(_, anchor, _)| anchor);
     execute_dock_action(
         DockAction::Activate {
             target,
-            owner: dock.handle(),
+            owner: primary_dock.window().handle(),
             anchor,
         },
-        dock,
+        primary_dock.window(),
         graphics,
         dock_model,
         auxiliary,
@@ -159,9 +199,8 @@ pub(super) fn activate_system_status(
 
 fn handle_context_menu(
     request: DockContextRequest,
-    dock: &DockWindow,
+    primary_dock: &mut PrimaryDock,
     graphics: &mut DeviceState,
-    surface: &mut ScheduledSurface<CompositionSurfaceState>,
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
@@ -169,7 +208,7 @@ fn handle_context_menu(
         return Ok(());
     };
     if dock_model.pointer_cancelled() {
-        surface.invalidate();
+        primary_dock.invalidate();
     }
     execute_dock_action(
         DockAction::Context {
@@ -178,7 +217,7 @@ fn handle_context_menu(
             alignment,
             shift_held: request.shift_held(),
         },
-        dock,
+        primary_dock.window(),
         graphics,
         dock_model,
         auxiliary,

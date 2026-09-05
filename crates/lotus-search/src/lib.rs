@@ -4,4 +4,3 @@ pub mod calculator;
 pub mod command;
 pub mod controller;
 pub mod scene;
-pub mod usage;
