@@ -1,11 +1,11 @@
 mod assets;
 mod interaction;
+mod mascot;
 mod pinning;
 mod projection;
 mod status_observation;
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,11 +24,11 @@ use lotus_media::MediaSnapshot;
 use lotus_settings::appearance::theme_for;
 use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_windows::WindowHandle;
-use lotus_windows::custom_image::{MascotAnimation, MascotLoopCount, load_mascot_image};
 use lotus_windows::icon_hydrator::{DockIconClient, HydratedDockIcon};
 use lotus_windows::search_catalog::{
     ApplicationAssociations, ApplicationCatalogSnapshot, ApplicationResolver,
 };
+use mascot::Mascot;
 use projection::{departure_transition, projected_items};
 pub(super) use projection::{dock_anchor, metrics, popup_overlap, status_popup_center};
 pub(super) use status_observation::{docked_status_items, status_items};
@@ -61,17 +61,11 @@ pub(super) struct DockRuntime {
     transient_unpinned: HashMap<ApplicationKey, (usize, DockItem)>,
     revision: u64,
     presenter: DockPresenter,
-    mascot_animation: Option<MascotPlayback>,
+    mascot: Mascot,
     application_resolver: ApplicationResolver,
     application_catalog: Arc<ApplicationCatalogSnapshot>,
     application_assignments: WindowApplicationAssignments,
     adopted_catalog_generation: u64,
-}
-
-struct MascotPlayback {
-    animation: MascotAnimation,
-    frame_index: usize,
-    completed_loops: u32,
 }
 
 impl DockRuntime {
@@ -119,7 +113,7 @@ impl DockRuntime {
             transient_unpinned: HashMap::new(),
             revision: 0,
             presenter: DockPresenter::default(),
-            mascot_animation: None,
+            mascot: Mascot::default(),
             application_resolver,
             application_catalog,
             application_assignments,
@@ -507,45 +501,21 @@ impl DockRuntime {
     }
 
     pub(super) fn mascot_animation_delay(&self) -> Option<Duration> {
-        self.mascot_animation
-            .as_ref()
-            .map(|playback| playback.animation.frames[playback.frame_index].delay)
+        self.mascot.delay()
     }
 
     pub(super) fn advance_mascot_animation(&mut self) -> bool {
-        let Some(playback) = &mut self.mascot_animation else {
+        let Some(icon) = self.mascot.next_frame() else {
             return false;
         };
-        let Some(frame_index) = advance_mascot_playback(playback) else {
-            self.mascot_animation = None;
-            return false;
-        };
-        self.scene.set_mascot(DockIcon::Raster(
-            playback.animation.frames[frame_index].icon.clone(),
-        ));
+        self.scene.set_mascot(DockIcon::Raster(icon));
         self.mark_changed();
         true
     }
 
     fn reset_mascot_animation(&mut self) {
-        let mascot = self
-            .model
-            .settings()
-            .mascot_image_path
-            .as_deref()
-            .and_then(|path| load_mascot_image(Path::new(path)).ok());
-        if let Some(mascot) = mascot {
-            self.scene.set_mascot(DockIcon::Raster(mascot.icon));
-            self.mascot_animation = mascot.animation.map(|animation| MascotPlayback {
-                animation,
-                frame_index: 0,
-                completed_loops: 0,
-            });
-        } else {
-            self.scene
-                .set_mascot(DockIcon::Embedded(EmbeddedIcon::LotusPixel));
-            self.mascot_animation = None;
-        }
+        self.mascot = Mascot::load(self.model.settings().mascot_image_path.as_deref());
+        self.scene.set_mascot(self.mascot.initial_icon());
     }
 
     fn media_item(&mut self, snapshot: &MediaSnapshot) -> MediaItem {
@@ -644,19 +614,4 @@ fn pinned_application_assignments(
             })
         })
         .collect()
-}
-
-fn advance_mascot_playback(playback: &mut MascotPlayback) -> Option<usize> {
-    let next = playback.frame_index + 1;
-    if next < playback.animation.frames.len() {
-        playback.frame_index = next;
-        return Some(next);
-    }
-    if matches!(playback.animation.loop_count, MascotLoopCount::Finite(count) if playback.completed_loops + 1 >= count)
-    {
-        return None;
-    }
-    playback.frame_index = 0;
-    playback.completed_loops = playback.completed_loops.saturating_add(1);
-    Some(0)
 }

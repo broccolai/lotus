@@ -63,14 +63,30 @@ impl ModuleHost {
         graphics: &mut DeviceState,
         dock_model: &DockRuntime,
     ) -> Result<LauncherEventOutcome, AppError> {
-        if matches!(event, lotus_windows::window::SearchEvent::DismissRequested(request) if self.launcher.window.accepts_dismiss(request))
-        {
-            self.context_menu.close_if_owned_by(PopupOwner::Search);
-        }
+        let was_visible = self.launcher.is_visible();
         let outcome = self
             .launcher
             .handle_event(event, dock, graphics, dock_model)?;
+        if was_visible && !self.launcher.is_visible() {
+            self.context_menu.close_if_owned_by(PopupOwner::Search);
+        }
         Ok(outcome)
+    }
+
+    pub(in crate::app) fn paste_into_launcher(
+        &mut self,
+        text: &str,
+        dock: &DockWindow,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        self.launcher.paste(text, dock, graphics)
+    }
+
+    pub(in crate::app) fn record_successful_launcher_launch(
+        &mut self,
+        launch_target: &str,
+    ) {
+        self.launcher.record_successful_launch(launch_target);
     }
 
     pub(in crate::app) fn dismiss_popups_for_activation(&mut self) {

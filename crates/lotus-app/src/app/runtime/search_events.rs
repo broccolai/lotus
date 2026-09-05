@@ -1,6 +1,7 @@
 use lotus_core::window::WindowInfo;
 use lotus_search::command::CommandId;
-use lotus_windows::clipboard::write_text;
+use lotus_windows::activation::launch_target;
+use lotus_windows::clipboard::{read_text, write_text};
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth};
 use lotus_windows::window::DockWindow;
@@ -66,6 +67,9 @@ pub(super) fn drain_search_events(
             };
         match outcome {
             LauncherEventOutcome::None => {}
+            LauncherEventOutcome::PasteRequested => {
+                paste_search_clipboard(dock, graphics, auxiliary)?;
+            }
             LauncherEventOutcome::Submission(submission) => {
                 execute_search_submission(
                     submission, dock, graphics, dock_model, auxiliary,
@@ -77,6 +81,27 @@ pub(super) fn drain_search_events(
         }
     }
     Ok(had_events)
+}
+
+fn paste_search_clipboard(
+    dock: &DockWindow,
+    graphics: &mut DeviceState,
+    auxiliary: &mut ModuleHost,
+) -> Result<(), AppError> {
+    let Ok(text) = read_text() else {
+        return Ok(());
+    };
+
+    match auxiliary.paste_into_launcher(&text, dock, graphics) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if error.mark_graphics_lost(graphics)
+                || graphics.health() == GraphicsDeviceHealth::Lost =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn execute_search_submission(
@@ -100,6 +125,17 @@ fn execute_search_submission(
             }
             Ok(())
         }
+        LauncherSubmission::Application(entry) => {
+            match launch_target(&entry.launch_target, entry.invocation_arguments()) {
+                Ok(()) => auxiliary.record_successful_launcher_launch(&entry.launch_target),
+                Err(error) => show_error(
+                    dock.handle(),
+                    "Lotus Search",
+                    &format!("Lotus could not open {}.\n\n{error}", entry.name),
+                ),
+            }
+            Ok(())
+        }
     }
 }
 
@@ -110,42 +146,23 @@ fn execute_search_command(
     dock_model: &DockRuntime,
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
-    match command {
-        CommandId::OpenSettings => auxiliary.open_settings(dock_model, graphics)?,
-        CommandId::OpenVolumeMixer => {
-            execute_system_action(SystemAction::OpenVolumeMixer, dock.handle());
-        }
+    let action = match command {
+        CommandId::OpenSettings => return auxiliary.open_settings(dock_model, graphics),
+        CommandId::OpenVolumeMixer => SystemAction::OpenVolumeMixer,
         CommandId::OpenNotificationArea => {
-            execute_system_action(
-                SystemAction::OpenNotificationArea { anchor: None },
-                dock.handle(),
-            );
+            SystemAction::OpenNotificationArea { anchor: None }
         }
-        CommandId::ShowDesktop => {
-            execute_system_action(SystemAction::ShowDesktop, dock.handle());
-        }
-        CommandId::LockComputer => {
-            execute_system_action(SystemAction::LockComputer, dock.handle());
-        }
-        CommandId::RestartComputer => {
-            execute_system_action(
-                SystemAction::RestartComputer {
-                    confirmation: Confirmation::Required,
-                },
-                dock.handle(),
-            );
-        }
-        CommandId::ShutDownComputer => {
-            execute_system_action(
-                SystemAction::ShutDownComputer {
-                    confirmation: Confirmation::Required,
-                },
-                dock.handle(),
-            );
-        }
-        CommandId::QuitLotus => {
-            execute_system_action(SystemAction::QuitLotus, dock.handle());
-        }
-    }
+        CommandId::ShowDesktop => SystemAction::ShowDesktop,
+        CommandId::LockComputer => SystemAction::LockComputer,
+        CommandId::RestartComputer => SystemAction::RestartComputer {
+            confirmation: Confirmation::Required,
+        },
+        CommandId::ShutDownComputer => SystemAction::ShutDownComputer {
+            confirmation: Confirmation::Required,
+        },
+        CommandId::QuitLotus => SystemAction::QuitLotus,
+    };
+
+    execute_system_action(action, dock.handle());
     Ok(())
 }

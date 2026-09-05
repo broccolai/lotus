@@ -1,36 +1,33 @@
+mod surface;
+
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::time::Instant;
 
 use lotus_core::launcher_model::{CursorMove as ModelCursorMove, QueryEdit, SelectionMove};
+use lotus_core::search::ApplicationEntry;
 use lotus_core::settings::DockSettings;
 use lotus_search::command::CommandId;
 use lotus_search::controller::{SearchController, SearchPresentation};
 use lotus_settings::appearance::theme_for;
 use lotus_ui::embedded_icon::EmbeddedIcon;
-use lotus_ui::frame::{FramePass, ScheduledSurface};
+use lotus_ui::frame::FramePass;
 use lotus_ui::theme::Theme;
-use lotus_windows::WindowHandle;
-use lotus_windows::activation::launch_target;
-use lotus_windows::clipboard::read_text;
 use lotus_windows::clock::local_time;
-use lotus_windows::dialog::show_error;
-use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
-use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceSize};
+use lotus_windows::graphics::{DeviceState, GraphicsDevice};
 use lotus_windows::icon_hydrator::{LauncherIconClient, LauncherIconRequest};
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::window::{
     CursorMove as WindowCursorMove, DockContextRequest, DockWindow, SearchEdit,
     SearchEvent, SearchWindow, SelectionDirection, SignedPoint,
 };
+use surface::LauncherSurface;
 
 use crate::app::AppError;
 use crate::app::applications::PreparedLauncherCatalog;
 use crate::app::dock::DockRuntime;
-use crate::app::runtime::resize_launcher_surface;
 use crate::app::search_usage::SearchUsageStore;
-use crate::app::surface_render::frame_outcome;
 
 const MAX_HYDRATED_ICONS: usize = 64;
 
@@ -39,8 +36,8 @@ type LauncherResult = lotus_search::scene::LauncherResult<EmbeddedIcon>;
 type LauncherScene = lotus_search::scene::LauncherScene<EmbeddedIcon>;
 
 pub(super) struct LauncherRuntime {
-    pub(super) window: SearchWindow,
-    pub(super) controller: SearchController,
+    surface: LauncherSurface,
+    controller: SearchController,
     usage_store: SearchUsageStore,
     icon_hydrator: LauncherIconClient,
     hydrated_icons: BTreeMap<LauncherIconKey, lotus_ui::icon::RasterIcon>,
@@ -48,12 +45,8 @@ pub(super) struct LauncherRuntime {
     icon_settings_revision: u64,
     icon_request_signature: Option<Vec<LauncherIconKey>>,
     catalog_projection: Option<u64>,
-    pub(super) scene: Option<LauncherScene>,
-    pub(super) surface: Option<ScheduledSurface<LauncherCompositionSurfaceState>>,
-    pub(super) presentation: SearchPresentation,
-    pub(super) visible: bool,
-    last_applied_size: Option<SurfaceSize>,
-    child_popup_open: bool,
+    scene: Option<LauncherScene>,
+    presentation: SearchPresentation,
     theme: Theme,
     use_24_hour_time: bool,
     settings: DockSettings,
@@ -62,10 +55,12 @@ pub(super) struct LauncherRuntime {
 pub(super) enum LauncherSubmission {
     Command(CommandId),
     Calculation(String),
+    Application(ApplicationEntry),
 }
 
 pub(super) enum LauncherEventOutcome {
     None,
+    PasteRequested,
     Submission(LauncherSubmission),
     OpenFileLocation { anchor: SignedPoint, path: String },
 }
@@ -80,7 +75,7 @@ impl LauncherRuntime {
         icon_hydrator: LauncherIconClient,
     ) -> Self {
         Self {
-            window,
+            surface: LauncherSurface::new(window),
             controller: SearchController::new(
                 usize::try_from(settings.search_result_limit).unwrap_or(8),
                 usage,
@@ -93,11 +88,7 @@ impl LauncherRuntime {
             icon_request_signature: None,
             catalog_projection: None,
             scene: None,
-            surface: None,
             presentation: SearchPresentation::default(),
-            visible: false,
-            last_applied_size: None,
-            child_popup_open: false,
             theme: *theme,
             use_24_hour_time: settings.use_24_hour_time,
             settings,
@@ -105,16 +96,11 @@ impl LauncherRuntime {
     }
 
     pub(super) const fn is_visible(&self) -> bool {
-        self.visible
+        self.surface.is_visible()
     }
 
     pub(super) fn diagnostic_surface_state(&self) -> (bool, bool, bool) {
-        let surface = self.surface.as_ref();
-        (
-            surface.is_some_and(ScheduledSurface::is_dirty),
-            surface.is_some_and(ScheduledSurface::is_animating),
-            self.visible,
-        )
+        self.surface.diagnostic_state()
     }
 
     pub(super) fn open(
@@ -124,7 +110,7 @@ impl LauncherRuntime {
         catalog: PreparedLauncherCatalog,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        if self.surface.is_none() && graphics.ready().is_none() {
+        if !self.surface.has_graphics_surface() && graphics.ready().is_none() {
             return Err(AppError::GraphicsUnavailable);
         }
 
@@ -134,20 +120,15 @@ impl LauncherRuntime {
 
         let scene = self.scene.as_ref().ok_or(AppError::InvalidLauncherScene)?;
         let desired = scene.desired_size();
-        self.window
-            .open(dock.handle(), desired.width(), desired.height())?;
-        if self.window.dpi() != scene.dpi() {
-            self.rebuild_scene(self.window.dpi())?;
+        self.surface.open_window(dock, desired)?;
+        if self.surface.dpi() != scene.dpi() {
+            self.rebuild_scene(self.surface.dpi())?;
             let corrected = self
                 .scene
                 .as_ref()
                 .ok_or(AppError::InvalidLauncherScene)?
                 .desired_size();
-            self.window.apply_geometry(
-                dock.handle(),
-                corrected.width(),
-                corrected.height(),
-            )?;
+            self.surface.correct_open_geometry(dock, corrected)?;
         }
 
         let desired = self
@@ -155,22 +136,7 @@ impl LauncherRuntime {
             .as_ref()
             .ok_or(AppError::InvalidLauncherScene)?
             .desired_size();
-        let size = SurfaceSize::new(desired.width(), desired.height())
-            .ok_or(AppError::ZeroSizedSurface)?;
-        if let Some(surface) = &mut self.surface {
-            resize_launcher_surface(graphics, surface.value_mut(), size)?;
-        } else {
-            let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            self.surface = Some(ScheduledSurface::new(
-                LauncherCompositionSurfaceState::create(
-                    device,
-                    self.window.handle(),
-                    size,
-                )?,
-            ));
-        }
-        self.visible = true;
-        self.last_applied_size = Some(size);
+        self.surface.commit_open(desired, graphics)?;
         Ok(())
     }
 
@@ -188,12 +154,12 @@ impl LauncherRuntime {
             return Ok(false);
         }
 
-        if !self.visible {
+        if !self.is_visible() {
             return Ok(true);
         }
 
         let size_before = self.desired_size();
-        self.rebuild_scene(self.window.dpi())?;
+        self.rebuild_scene(self.surface.dpi())?;
         if self.desired_size() != size_before {
             self.apply_geometry_if_changed(dock, graphics, false)?;
         }
@@ -255,32 +221,21 @@ impl LauncherRuntime {
     }
 
     pub(super) fn hide(&mut self) {
-        self.window.hide();
-        self.visible = false;
-        self.last_applied_size = None;
-        self.child_popup_open = false;
         self.presentation.finish();
-        if let Some(surface) = &mut self.surface {
-            surface.stop_animation();
-        }
+        self.surface.hide();
     }
 
     pub(super) fn suspend_for_child_popup(&mut self) {
-        self.child_popup_open = true;
-        self.window.suspend_for_child_popup();
+        self.surface.suspend_for_child_popup();
     }
 
     pub(super) fn resume_after_child_popup_if_visible(&mut self, restore_focus: bool) {
-        self.child_popup_open = false;
-        if self.visible {
-            self.window.resume_after_child_popup(restore_focus);
-        }
+        self.surface
+            .resume_after_child_popup_if_visible(restore_focus);
     }
 
     pub(super) fn focus_if_visible(&mut self) {
-        if self.visible && !self.child_popup_open {
-            let _ = self.window.focus();
-        }
+        self.surface.focus_if_visible();
     }
 
     pub(super) fn rebuild_scene(&mut self, dpi: u32) -> Result<(), AppError> {
@@ -431,7 +386,7 @@ impl LauncherRuntime {
             SelectionDirection::Previous => SelectionMove::Previous,
             SelectionDirection::Next => SelectionMove::Next,
         });
-        self.rebuild_scene(self.window.dpi())
+        self.rebuild_scene(self.surface.dpi())
     }
 
     pub(super) fn handle_event(
@@ -441,7 +396,7 @@ impl LauncherRuntime {
         graphics: &mut DeviceState,
         dock_model: &DockRuntime,
     ) -> Result<LauncherEventOutcome, AppError> {
-        if !self.visible {
+        if !self.is_visible() {
             return Ok(LauncherEventOutcome::None);
         }
         if let SearchEvent::ContextMenuRequested(request) = event {
@@ -460,40 +415,28 @@ impl LauncherRuntime {
         match event {
             SearchEvent::TextInput(character) => {
                 self.controller.push_character(character);
-                self.rebuild_scene(self.window.dpi())?;
+                self.rebuild_scene(self.surface.dpi())?;
                 presentation_changed = true;
             }
             SearchEvent::Edit(edit) => {
                 if self.controller.edit_query(model_query_edit(edit)) {
-                    self.rebuild_scene(self.window.dpi())?;
+                    self.rebuild_scene(self.surface.dpi())?;
                     presentation_changed = true;
                 }
             }
-            SearchEvent::PasteRequested => {
-                if let Ok(text) = read_text()
-                    && self.controller.insert_text(&text)
-                {
-                    self.rebuild_scene(self.window.dpi())?;
-                    presentation_changed = true;
-                }
-            }
+            SearchEvent::PasteRequested => return Ok(LauncherEventOutcome::PasteRequested),
             SearchEvent::MoveSelection(direction) => {
                 self.move_selection(direction)?;
                 presentation_changed = true;
             }
             SearchEvent::DismissRequested(request) => {
-                if self.window.accepts_dismiss(request) {
+                if self.surface.accepts_dismiss(request) {
                     self.hide();
                 }
             }
-            SearchEvent::SubmitRequested => submission = self.submit(dock.handle()),
+            SearchEvent::SubmitRequested => submission = self.submit(),
             SearchEvent::Resized { width, height } => {
-                if let (Some(size), Some(surface)) =
-                    (SurfaceSize::new(width, height), self.surface.as_mut())
-                    && self.last_applied_size != Some(size)
-                {
-                    resize_launcher_surface(graphics, surface.value_mut(), size)?;
-                    self.last_applied_size = Some(size);
+                if self.surface.resize(graphics, width, height)? {
                     presentation_changed = true;
                 }
             }
@@ -508,9 +451,7 @@ impl LauncherRuntime {
                 });
             }
             SearchEvent::FocusRefreshRequested => {
-                if !self.child_popup_open {
-                    let _ = self.window.focus();
-                }
+                self.surface.focus_if_visible();
             }
             SearchEvent::RenderRequested => presentation_changed = true,
             SearchEvent::PointerMoved { x, y } => {
@@ -523,7 +464,7 @@ impl LauncherRuntime {
             SearchEvent::PointerReleased { x, y } => {
                 if let Some(index) = self.result_at(x, y) {
                     let _ = self.select_result(index)?;
-                    submission = self.submit(dock.handle());
+                    submission = self.submit();
                 }
             }
             SearchEvent::ContextMenuRequested(_) => {
@@ -558,7 +499,7 @@ impl LauncherRuntime {
     pub(super) fn select_result(&mut self, index: usize) -> Result<bool, AppError> {
         let changed = self.controller.select_index(index);
         if changed {
-            self.rebuild_scene(self.window.dpi())?;
+            self.rebuild_scene(self.surface.dpi())?;
         }
         Ok(changed)
     }
@@ -592,7 +533,26 @@ impl LauncherRuntime {
         Ok(Some((screen, path)))
     }
 
-    pub(super) fn submit(&mut self, owner: WindowHandle) -> Option<LauncherSubmission> {
+    pub(super) fn paste(
+        &mut self,
+        text: &str,
+        dock: &DockWindow,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        if !self.is_visible() || !self.controller.insert_text(text) {
+            return Ok(());
+        }
+
+        let size_before = self.desired_size();
+        self.rebuild_scene(self.surface.dpi())?;
+        if self.desired_size() != size_before {
+            self.apply_geometry_if_changed(dock, graphics, false)?;
+        }
+        self.invalidate();
+        Ok(())
+    }
+
+    pub(super) fn submit(&mut self) -> Option<LauncherSubmission> {
         let submission = self
             .controller
             .selected_command()
@@ -601,36 +561,25 @@ impl LauncherRuntime {
                 self.controller.selected_calculation().map(|calculation| {
                     LauncherSubmission::Calculation(calculation.value.clone())
                 })
+            })
+            .or_else(|| {
+                self.controller
+                    .selected_entry()
+                    .cloned()
+                    .map(LauncherSubmission::Application)
             });
-        let selected = self.controller.selected_entry().cloned();
         self.hide();
-        if submission.is_none()
-            && let Some(entry) = selected
-        {
-            match launch_target(&entry.launch_target, entry.invocation_arguments()) {
-                Ok(()) => {
-                    if self.controller.record_launch(&entry.launch_target) {
-                        let _ = self.usage_store.save(self.controller.usage());
-                    }
-                }
-                Err(error) => {
-                    show_error(
-                        owner,
-                        "Lotus Search",
-                        &format!("Lotus could not open {}.\n\n{error}", entry.name),
-                    );
-                }
-            }
-        }
         submission
     }
 
+    pub(super) fn record_successful_launch(&mut self, launch_target: &str) {
+        if self.controller.record_launch(launch_target) {
+            let _ = self.usage_store.save(self.controller.usage());
+        }
+    }
+
     pub(super) fn advance_animation(&mut self) {
-        if !self
-            .surface
-            .as_ref()
-            .is_some_and(ScheduledSurface::is_animating)
-        {
+        if !self.surface.is_animating() {
             return;
         }
 
@@ -641,19 +590,14 @@ impl LauncherRuntime {
     }
 
     pub(super) fn invalidate(&mut self) {
-        if let Some(surface) = &mut self.surface {
-            surface.invalidate();
-        }
+        self.surface.invalidate();
     }
 
     pub(super) fn recover_surface(
         &mut self,
         device: &GraphicsDevice,
     ) -> Result<(), AppError> {
-        if let Some(surface) = &mut self.surface {
-            surface.value_mut().recover(device)?;
-        }
-        Ok(())
+        self.surface.recover(device)
     }
 
     pub(super) fn refresh_placement(
@@ -675,18 +619,8 @@ impl LauncherRuntime {
             .as_ref()
             .ok_or(AppError::InvalidLauncherScene)?
             .desired_size();
-        let size = SurfaceSize::new(desired.width(), desired.height())
-            .ok_or(AppError::ZeroSizedSurface)?;
-        let size_changed = self.last_applied_size != Some(size);
-        if size_changed || reposition {
-            self.window
-                .apply_geometry(dock.handle(), desired.width(), desired.height())?;
-        }
-        if size_changed && let Some(surface) = &mut self.surface {
-            resize_launcher_surface(graphics, surface.value_mut(), size)?;
-        }
-        self.last_applied_size = Some(size);
-        Ok(())
+        self.surface
+            .apply_geometry(dock, desired, graphics, reposition)
     }
 
     fn desired_size(&self) -> Option<lotus_search::scene::LauncherSize> {
@@ -698,36 +632,20 @@ impl LauncherRuntime {
         pass: &mut FramePass,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        if !self.visible {
-            if let Some(surface) = &mut self.surface {
-                surface.stop_animation();
-            }
+        if !self.is_visible() {
+            self.surface.stop_animation();
             return Ok(());
         }
         let scene = self.scene.as_ref().ok_or(AppError::InvalidLauncherScene)?;
-        let surface = self
-            .surface
-            .as_mut()
-            .ok_or(AppError::InvalidLauncherScene)?;
-        pass.render(surface, |surface| {
-            let content = scene.render_presentation(EmbeddedIcon::FluentSearch);
-            let motion = scene.presentation();
-            let result = surface.render_scene(
-                &content,
-                motion.scale,
-                motion.opacity,
-                scene.needs_animation(),
-            );
-            frame_outcome(graphics, result)
-        })
+        self.surface.render_frame(pass, graphics, scene)
     }
 
     pub(super) fn drain_events(&mut self) -> Vec<SearchEvent> {
-        self.window.drain_events().collect()
+        self.surface.drain_events()
     }
 
     pub(super) fn has_pending_events(&self) -> bool {
-        self.window.has_pending_events()
+        self.surface.has_pending_events()
     }
 
     pub(super) fn apply_settings(
@@ -736,7 +654,7 @@ impl LauncherRuntime {
         dock: &DockWindow,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        lotus_windows::backdrop::apply_search_settings(self.window.handle(), settings);
+        self.surface.use_material(settings);
         self.settings = settings.clone();
         self.hydrated_icons.clear();
         self.icon_settings_revision = self.icon_settings_revision.wrapping_add(1);
@@ -749,15 +667,15 @@ impl LauncherRuntime {
         self.use_24_hour_time = settings.use_24_hour_time;
         let limit = usize::try_from(settings.search_result_limit).unwrap_or(8);
         let result_limit_changed = self.controller.set_result_limit(limit);
-        if (result_limit_changed || theme_changed || time_format_changed) && self.visible {
+        if (result_limit_changed || theme_changed || time_format_changed)
+            && self.is_visible()
+        {
             let size_before = self.desired_size();
-            self.rebuild_scene(self.window.dpi())?;
+            self.rebuild_scene(self.surface.dpi())?;
             if result_limit_changed && self.desired_size() != size_before {
                 self.apply_geometry_if_changed(dock, graphics, false)?;
             }
-            if let Some(surface) = &mut self.surface {
-                surface.invalidate();
-            }
+            self.surface.invalidate();
         }
         Ok(())
     }
@@ -787,7 +705,7 @@ struct LauncherIconKey {
 
 impl LauncherIconKey {
     fn from_entry(
-        entry: &lotus_core::search::ApplicationEntry,
+        entry: &ApplicationEntry,
         pixel_size: u32,
         settings_revision: u64,
     ) -> Self {

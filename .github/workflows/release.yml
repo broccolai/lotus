@@ -115,7 +115,7 @@ jobs:
             release-bundle/*
             --verify-tag
             --title "lotus $GITHUB_REF_NAME"
-            --generate-notes
+            --notes-from-tag
           )
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             arguments+=(--prerelease)

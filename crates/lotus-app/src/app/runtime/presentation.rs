@@ -1,4 +1,3 @@
-use lotus_windows::graphics::launcher_surface::LauncherCompositionSurfaceState;
 use lotus_windows::graphics::{DeviceState, SurfaceError, SurfaceSize};
 use lotus_windows::window_tracker::WindowTracker;
 
@@ -107,21 +106,6 @@ pub(crate) fn apply_fullscreen_visibility(
 
 const fn dock_visible(hide_when_fullscreen: bool, fullscreen_present: bool) -> bool {
     !hide_when_fullscreen || !fullscreen_present
-}
-
-pub(crate) fn resize_launcher_surface(
-    graphics: &mut DeviceState,
-    surface: &mut LauncherCompositionSurfaceState,
-    size: SurfaceSize,
-) -> Result<(), AppError> {
-    match surface.resize(size) {
-        Ok(()) => Ok(()),
-        Err(SurfaceError::DeviceLost(loss)) => {
-            graphics.mark_lost(loss);
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
 }
 
 pub(crate) fn resize_surface(
