@@ -14,7 +14,9 @@ type Result<T> = std::result::Result<T, NativeError>;
 use crate::platform::windows::backdrop;
 use crate::platform::windows::display::nearest_display_to_point;
 use crate::platform::windows::native_window::{NativeWindow, WindowCreation, WindowHandle};
-use crate::window::procedure::{ContextMenuEvent, SignedPoint, WindowClass, WindowState};
+use crate::window::procedure::{
+    ContextMenuEvent, DismissRequest, SignedPoint, WindowClass, WindowState,
+};
 use crate::window::transient::TransientWindow;
 
 pub struct ContextMenuWindow {
@@ -103,5 +105,13 @@ impl ContextMenuWindow {
 
     pub fn has_pending_events(&self) -> bool {
         self.window.state().has_pending_events()
+    }
+
+    pub fn accepts_dismiss(&self, request: DismissRequest) -> bool {
+        self.window.state().accepts_dismiss(request)
+    }
+
+    pub fn interaction_generation(&self) -> usize {
+        self.window.state().interaction_generation()
     }
 }

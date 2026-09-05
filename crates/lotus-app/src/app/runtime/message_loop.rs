@@ -33,7 +33,10 @@ pub(crate) fn run_message_loop(
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
 ) -> Result<(), AppError> {
-    let heartbeat = UiHeartbeatTimer::start(auxiliary.input_enabled())?;
+    let heartbeat = UiHeartbeatTimer::start(
+        auxiliary.input_enabled(),
+        runtime.integration.requires_maintenance(),
+    )?;
     MessageLoop {
         heartbeat,
         runtime,
@@ -118,17 +121,7 @@ impl MessageLoop<'_, '_> {
         if message.is_thread_message()
             && self.heartbeat.matches(message.id(), message.parameter())
         {
-            self.auxiliary.heartbeat_input();
-            let started = std::time::Instant::now();
-            let frame = self.handle_input_wake();
-            timing.record(UiMessagePhase::Wake, started.elapsed());
-            if frame {
-                let frame_started = std::time::Instant::now();
-                self.flush_frame(FrameTrigger::Changes)?;
-                timing.record(UiMessagePhase::Frame, frame_started.elapsed());
-            }
-            METRICS.record_ui_work(false, false, frame);
-            return Ok(());
+            return self.handle_heartbeat(timing);
         }
         if self.auxiliary.input_enabled() && is_input_wake(message.id()) {
             let started = std::time::Instant::now();
@@ -227,6 +220,30 @@ impl MessageLoop<'_, '_> {
         Ok(())
     }
 
+    fn handle_heartbeat(&mut self, timing: &mut MessageTiming) -> Result<(), AppError> {
+        self.auxiliary.heartbeat_input();
+        let integration_changed = self
+            .runtime
+            .integration
+            .maintain(self.dock_model.settings(), self.dock);
+        if integration_changed {
+            self.heartbeat.set_modes(
+                self.auxiliary.input_enabled(),
+                self.runtime.integration.requires_maintenance(),
+            )?;
+        }
+        let started = std::time::Instant::now();
+        let frame = self.handle_input_wake() || integration_changed;
+        timing.record(UiMessagePhase::Wake, started.elapsed());
+        if frame {
+            let frame_started = std::time::Instant::now();
+            self.flush_frame(FrameTrigger::Changes)?;
+            timing.record(UiMessagePhase::Frame, frame_started.elapsed());
+        }
+        METRICS.record_ui_work(false, false, frame);
+        Ok(())
+    }
+
     fn include_pending_event_work(&self, work: &mut RuntimeWork) {
         if self.dock.has_pending_events() || self.auxiliary.has_pending_window_events() {
             work.insert(RuntimeWork::WINDOW_EVENTS);
@@ -247,7 +264,8 @@ impl MessageLoop<'_, '_> {
             message.is_thread_message(),
             message.id(),
             message.parameter(),
-        ) {
+        ) && self.runtime.integration.shell_effects_allowed()
+        {
             self.window_tracker.set_shell_fullscreen(fullscreen);
             work.insert(RuntimeWork::MONITOR_SYNC);
         }
@@ -362,9 +380,14 @@ impl MessageLoop<'_, '_> {
                 dock_model: self.dock_model,
                 auxiliary: self.auxiliary,
                 integration: self.runtime.integration,
+                startup_mode: self.runtime.startup_mode,
+                startup_registration_allowed: self.runtime.startup_registration_allowed,
             },
         )?;
-        self.heartbeat.set_enabled(self.auxiliary.input_enabled())?;
+        self.heartbeat.set_modes(
+            self.auxiliary.input_enabled(),
+            self.runtime.integration.requires_maintenance(),
+        )?;
         Ok(had_events)
     }
 

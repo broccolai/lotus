@@ -10,7 +10,8 @@ use lotus_windows::graphics::context_menu_surface::ContextMenuCompositionSurface
 use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError};
 use lotus_windows::window::{
-    ContextMenuEvent, ContextMenuWindow, PopupAlignment, SelectionDirection, SignedPoint,
+    ContextMenuEvent, ContextMenuWindow, DismissReason, PopupAlignment, SelectionDirection,
+    SignedPoint,
 };
 
 use crate::app::AppError;
@@ -74,6 +75,13 @@ pub(super) struct PopupInvocation {
 pub(super) struct ContextMenuEventOutcome {
     pub(super) invocation: Option<PopupInvocation>,
     pub(super) closed_owner: Option<PopupOwner>,
+    pub(super) dismissal_reason: Option<DismissReason>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PopupEvent {
+    event: ContextMenuEvent,
+    generation: usize,
 }
 
 impl ContextMenuRuntime {
@@ -339,8 +347,8 @@ impl ContextMenuRuntime {
             .surface
             .as_mut()
             .ok_or(AppError::InvalidContextMenuScene)?;
-        let presentation = self.scene.presentation(popup_asset);
         pass.render(surface, |surface| {
+            let presentation = self.scene.presentation(popup_asset);
             match surface.render_scene(&presentation) {
                 Ok(FrameResult::Presented { .. }) => {
                     self.thumbnails.reconcile(&self.scene.picker_previews());
@@ -366,17 +374,29 @@ impl ContextMenuRuntime {
         Ok(())
     }
 
-    pub(super) fn drain_events(&mut self) -> Vec<ContextMenuEvent> {
-        self.window.drain_events().collect()
+    pub(super) fn drain_events(&mut self) -> Vec<PopupEvent> {
+        let generation = self.window.interaction_generation();
+        self.window
+            .drain_events()
+            .map(|event| PopupEvent { event, generation })
+            .collect()
     }
 
     pub(super) fn handle_event(
         &mut self,
-        event: ContextMenuEvent,
+        event: PopupEvent,
     ) -> Result<ContextMenuEventOutcome, AppError> {
+        if !self.visible || event.generation != self.window.interaction_generation() {
+            return Ok(ContextMenuEventOutcome {
+                invocation: None,
+                closed_owner: None,
+                dismissal_reason: None,
+            });
+        }
         let owner_before_event = self.owner();
         let mut closed_owner = None;
-        let invocation = match event {
+        let mut dismissal_reason = None;
+        let invocation = match event.event {
             ContextMenuEvent::PointerMoved { x, y } => {
                 if self.scene.pointer_move(x, y) {
                     self.invalidate();
@@ -416,8 +436,11 @@ impl ContextMenuRuntime {
                 }
                 None
             }
-            ContextMenuEvent::DismissRequested => {
-                closed_owner = self.hide();
+            ContextMenuEvent::DismissRequested(request) => {
+                if self.window.accepts_dismiss(request) {
+                    dismissal_reason = Some(request.reason);
+                    closed_owner = self.hide();
+                }
                 None
             }
             ContextMenuEvent::Resized { width, height } => {
@@ -446,6 +469,7 @@ impl ContextMenuRuntime {
         Ok(ContextMenuEventOutcome {
             invocation,
             closed_owner,
+            dismissal_reason,
         })
     }
 

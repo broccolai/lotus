@@ -4,8 +4,19 @@ use lotus_windows::update::{UpdateResult, UpdateStatus, is_installed, launch_ins
 
 use crate::app::modules::ModuleHost;
 
-pub(super) fn start_update_check(auxiliary: &mut ModuleHost) {
+pub(super) fn start_update_check(
+    auxiliary: &mut ModuleHost,
+    mode: lotus_windows::startup::StartupMode,
+) {
     let owner = auxiliary.settings_owner();
+    if !mode.allows_update_operations() {
+        show_information(
+            owner,
+            "Lotus Update",
+            "Updates are available only from an installed release build.",
+        );
+        return;
+    }
     match auxiliary.start_update_check() {
         Ok(true) => {
             auxiliary.invalidate_settings();
@@ -17,14 +28,17 @@ pub(super) fn start_update_check(auxiliary: &mut ModuleHost) {
     }
 }
 
-pub(super) fn handle_update_results(auxiliary: &mut ModuleHost) {
+pub(super) fn handle_update_results(
+    auxiliary: &mut ModuleHost,
+    mode: lotus_windows::startup::StartupMode,
+) {
     for result in auxiliary.drain_update_results() {
         match result {
             UpdateResult::Checked(result) => {
-                handle_update_check(result, auxiliary);
+                handle_update_check(result, auxiliary, mode);
             }
             UpdateResult::Staged(result) => {
-                handle_staged_update(result, auxiliary);
+                handle_staged_update(result, auxiliary, mode);
             }
         }
     }
@@ -33,7 +47,12 @@ pub(super) fn handle_update_results(auxiliary: &mut ModuleHost) {
 fn handle_update_check(
     result: Result<UpdateStatus, lotus_windows::update::UpdateError>,
     auxiliary: &mut ModuleHost,
+    mode: lotus_windows::startup::StartupMode,
 ) {
+    if !mode.allows_update_operations() {
+        reset_update_activity(auxiliary);
+        return;
+    }
     let owner = auxiliary.settings_owner();
     let installed = match is_installed() {
         Ok(installed) => installed,
@@ -94,8 +113,20 @@ fn offer_update(
     }
 }
 
-pub(super) fn accept_update(auxiliary: &mut ModuleHost) {
+pub(super) fn accept_update(
+    auxiliary: &mut ModuleHost,
+    mode: lotus_windows::startup::StartupMode,
+) {
     let owner = auxiliary.settings_owner();
+    if !mode.allows_update_operations() {
+        reset_update_activity(auxiliary);
+        show_information(
+            owner,
+            "Lotus Update",
+            "Updates are available only from an installed release build.",
+        );
+        return;
+    }
     let Some(release) = auxiliary.take_update_offer() else {
         reset_update_activity(auxiliary);
         return;
@@ -119,16 +150,20 @@ pub(super) fn cancel_update(auxiliary: &mut ModuleHost) {
 fn handle_staged_update(
     result: Result<lotus_windows::update::StagedUpdate, lotus_windows::update::UpdateError>,
     auxiliary: &mut ModuleHost,
+    mode: lotus_windows::startup::StartupMode,
 ) {
     let owner = auxiliary.settings_owner();
     match result {
-        Ok(staged) => match launch_installer(&staged) {
-            Ok(()) => request_exit(0),
-            Err(error) => {
-                reset_update_activity(auxiliary);
-                show_error(owner, "Lotus Update", &error.to_string());
+        Ok(staged) if mode.allows_update_operations() => {
+            match launch_installer(&staged, mode) {
+                Ok(()) => request_exit(0),
+                Err(error) => {
+                    reset_update_activity(auxiliary);
+                    show_error(owner, "Lotus Update", &error.to_string());
+                }
             }
-        },
+        }
+        Ok(_) => reset_update_activity(auxiliary),
         Err(error) => {
             reset_update_activity(auxiliary);
             show_error(

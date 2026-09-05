@@ -135,6 +135,54 @@ impl ShellIntegration {
         self.health
     }
 
+    pub const fn requires_maintenance(&self) -> bool {
+        self.active.is_some()
+    }
+
+    /// Performs the bounded liveness check that keeps a lost exclusive guardian fail-open.
+    pub fn maintain(&mut self, settings: &DockSettings, dock: &DockWindow) -> bool {
+        let lost = self
+            .active
+            .as_mut()
+            .is_some_and(|active| !active.is_healthy());
+        if !lost {
+            let previous_health = self.health;
+            if let Some(active) = self.active.as_mut()
+                && active.taskbar_needs_refresh
+            {
+                match active
+                    .taskbar
+                    .as_mut()
+                    .map_or(Ok(false), |taskbar| taskbar.reassert(dock))
+                {
+                    Ok(true) => {
+                        active.taskbar_needs_refresh = false;
+                        self.health = if self.taskbar_created_message != 0 {
+                            ShellIntegrationHealth::Healthy
+                        } else {
+                            ShellIntegrationHealth::Degraded
+                        };
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        crate::diagnostics::record_error(
+                            "shell_integration.maintenance_reassert",
+                            &error,
+                        );
+                    }
+                }
+            }
+            return previous_health != self.health;
+        }
+        crate::diagnostics::record_state(
+            "shell_integration.maintenance",
+            &[("guardian_or_bridge_lost", 1)],
+        );
+        self.release_to_normal_placement(settings, dock, "maintenance_lost_ownership");
+        self.health = ShellIntegrationHealth::Degraded;
+        true
+    }
+
     pub fn take_recovery_request(
         &self,
         is_thread_message: bool,
@@ -260,6 +308,7 @@ impl ShellIntegration {
         reason: &str,
     ) {
         drop(self.active.take());
+        crate::exclusive_taskbar::restore_verified_taskbars();
         dock.clear_appbar_ownership();
         if let Err(error) = dock.refresh_placement(settings) {
             crate::diagnostics::record_error(
@@ -341,7 +390,7 @@ impl ActiveShellIntegration {
         settings: &DockSettings,
         dock: &DockWindow,
     ) -> Result<Self, ShellIntegrationError> {
-        let taskbar = if settings.exclusive_taskbar_replacement {
+        let mut taskbar = if settings.exclusive_taskbar_replacement {
             let bridge = ExplorerBridgeLease::attach(dock.hwnd());
             if bridge.is_none() {
                 crate::diagnostics::record_diagnostic(
@@ -366,9 +415,9 @@ impl ActiveShellIntegration {
         })
     }
 
-    fn is_healthy(&self) -> bool {
+    fn is_healthy(&mut self) -> bool {
         self.taskbar
-            .as_ref()
+            .as_mut()
             .is_some_and(TaskbarOwnership::is_healthy)
     }
 
@@ -421,10 +470,22 @@ enum TaskbarOwnership {
 }
 
 impl TaskbarOwnership {
-    const fn is_healthy(&self) -> bool {
+    fn is_healthy(&mut self) -> bool {
         match self {
-            Self::Autohide { .. } => true,
-            Self::Exclusive { bridge, .. } => bridge.is_some(),
+            Self::Autohide { guard } => match guard.ensure_autohide() {
+                Ok(_) => true,
+                Err(error) => {
+                    crate::diagnostics::record_error(
+                        "shell_integration.autohide_unavailable",
+                        &error,
+                    );
+                    false
+                }
+            },
+            Self::Exclusive { bridge, guard } => {
+                bridge.as_ref().is_some_and(ExplorerBridgeLease::is_usable)
+                    && guard.is_alive().unwrap_or(false)
+            }
         }
     }
 
@@ -435,8 +496,15 @@ impl TaskbarOwnership {
                 Ok(true)
             }
             Self::Exclusive { bridge, guard } => {
-                drop(bridge.take());
-                *bridge = ExplorerBridgeLease::attach(dock.hwnd());
+                let identity_valid =
+                    bridge.as_ref().is_some_and(ExplorerBridgeLease::is_usable);
+                let configured = if identity_valid {
+                    bridge.as_ref().is_some_and(ExplorerBridgeLease::reassert)
+                } else {
+                    drop(bridge.take());
+                    *bridge = ExplorerBridgeLease::attach(dock.hwnd());
+                    bridge.as_ref().is_some_and(ExplorerBridgeLease::is_usable)
+                };
                 guard.reassert_hidden()?;
                 if bridge.is_none() {
                     crate::diagnostics::record_diagnostic(
@@ -444,7 +512,7 @@ impl TaskbarOwnership {
                         "mode=exclusive",
                     );
                 }
-                Ok(bridge.is_some())
+                Ok(configured && guard.is_alive()?)
             }
         }
     }
@@ -457,10 +525,16 @@ impl TaskbarOwnership {
             }
             Self::Exclusive { bridge, guard } => {
                 guard.reassert_hidden()?;
-                if bridge.is_none() {
+                let identity_valid =
+                    bridge.as_ref().is_some_and(ExplorerBridgeLease::is_usable);
+                let configured = if identity_valid {
+                    bridge.as_ref().is_some_and(ExplorerBridgeLease::reassert)
+                } else {
+                    drop(bridge.take());
                     *bridge = ExplorerBridgeLease::attach(dock.hwnd());
-                }
-                Ok(bridge.is_some())
+                    bridge.as_ref().is_some_and(ExplorerBridgeLease::is_usable)
+                };
+                Ok(configured && guard.is_alive()?)
             }
         }
     }

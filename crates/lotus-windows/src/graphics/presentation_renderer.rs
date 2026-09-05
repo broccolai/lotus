@@ -146,17 +146,44 @@ impl PresentationRenderer {
             self.context.BeginDraw();
             self.context.Clear(Some(&raw const clear));
         }
-        for primitive in &presentation.primitives {
-            self.draw_primitive(primitive)?;
-        }
+        let drawing = self.draw_primitives(&presentation.primitives);
         let result = unsafe { self.context.EndDraw(None, None) };
         match result {
-            Ok(()) => Ok(PresentationDrawResult::Complete),
+            Ok(()) => drawing.map(|()| PresentationDrawResult::Complete),
             Err(error) if error.code() == D2DERR_RECREATE_TARGET => {
                 Ok(PresentationDrawResult::RecreateTarget)
             }
             Err(error) => Err(error.into()),
         }
+    }
+
+    fn draw_primitives(
+        &mut self,
+        primitives: &[PresentationPrimitive<EmbeddedIcon>],
+    ) -> Result<(), PresentationRendererError> {
+        let mut clip_depth = 0_usize;
+        let result = primitives.iter().try_for_each(|primitive| {
+            match primitive {
+                PresentationPrimitive::PushClip { .. } => clip_depth += 1,
+                PresentationPrimitive::PopClip => {
+                    clip_depth = clip_depth
+                        .checked_sub(1)
+                        .ok_or(PresentationRendererError::UnbalancedClips)?;
+                }
+                _ => {}
+            }
+            self.draw_primitive(primitive)
+        });
+        for _ in 0..clip_depth {
+            unsafe {
+                self.context.PopAxisAlignedClip();
+            }
+        }
+        result?;
+        if clip_depth != 0 {
+            return Err(PresentationRendererError::UnbalancedClips);
+        }
+        Ok(())
     }
 
     fn draw_primitive(
@@ -323,6 +350,7 @@ impl PresentationRenderer {
         };
         let destination = rect(bounds);
         let clipped = radius > 0.0;
+        let mut clip_geometry = None;
         unsafe {
             if clipped {
                 let clip = rounded(bounds, radius);
@@ -343,6 +371,7 @@ impl PresentationRenderer {
                 layer.maskTransform.M22 = 1.0;
                 self.context
                     .PushLayer(&raw const layer, None::<&ID2D1Layer>);
+                clip_geometry = ManuallyDrop::take(&mut layer.geometricMask);
             }
             self.context.DrawBitmap(
                 bitmap,
@@ -361,6 +390,7 @@ impl PresentationRenderer {
                 self.context.PopLayer();
             }
         }
+        drop(clip_geometry);
         Ok(())
     }
 
@@ -575,6 +605,8 @@ struct EmbeddedKey {
 
 #[derive(Debug, Error)]
 pub(super) enum PresentationRendererError {
+    #[error("presentation clip stack is unbalanced")]
+    UnbalancedClips,
     #[error(transparent)]
     Asset(#[from] AssetError),
     #[error("uploaded presentation icon disappeared from the graphics cache")]
@@ -590,6 +622,7 @@ impl From<PresentationRendererError> for SurfaceError {
         match error {
             PresentationRendererError::Asset(error) => Self::Asset(error),
             PresentationRendererError::BitmapCacheInvariant
+            | PresentationRendererError::UnbalancedClips
             | PresentationRendererError::InvalidIconSize => Self::BitmapCacheInvariant,
             PresentationRendererError::Windows(error) => Self::from(error),
         }

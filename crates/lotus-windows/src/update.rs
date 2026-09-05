@@ -25,6 +25,7 @@ const UPDATE_HELPER_NAME: &str = "lotus-update-helper.exe";
 const UPDATE_STATE_NAME: &str = "update-state.json";
 const STAGING_MARKER_NAME: &str = "lotus-update.staged";
 const POST_INSTALL_HEALTH_MARKER_NAME: &str = "lotus-health.pending";
+const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{EB208C8B-11C0-4B22-93A9-8113140647AA}_is1";
 const STALE_STAGING_AGE: Duration = Duration::from_hours(24);
 
 pub enum UpdateResult {
@@ -34,16 +35,18 @@ pub enum UpdateResult {
 
 pub struct UpdateChecker {
     owner_thread: u32,
+    updates_allowed: bool,
     working: Arc<AtomicBool>,
     results: Receiver<UpdateResult>,
     sender: mpsc::Sender<UpdateResult>,
 }
 
 impl UpdateChecker {
-    pub fn new() -> Self {
+    pub fn new(updates_allowed: bool) -> Self {
         let (sender, results) = mpsc::channel();
         Self {
             owner_thread: unsafe { GetCurrentThreadId() },
+            updates_allowed,
             working: Arc::new(AtomicBool::new(false)),
             results,
             sender,
@@ -54,11 +57,17 @@ impl UpdateChecker {
         current_version: &'static str,
         channel: UpdateChannel,
     ) -> Result<bool, UpdateStartError> {
+        if !self.updates_allowed {
+            return Err(UpdateStartError::UpdatesUnavailable);
+        }
         self.spawn("lotus-update-check", move || {
             UpdateResult::Checked(lotus_update::check(current_version, channel))
         })
     }
     pub fn start_download(&self, release: Release) -> Result<bool, UpdateStartError> {
+        if !self.updates_allowed {
+            return Err(UpdateStartError::UpdatesUnavailable);
+        }
         self.spawn("lotus-update-download", move || {
             UpdateResult::Staged(lotus_update::stage(&release))
         })
@@ -106,7 +115,7 @@ impl UpdateChecker {
 }
 impl Default for UpdateChecker {
     fn default() -> Self {
-        Self::new()
+        Self::new(crate::startup::StartupMode::Standard.allows_update_operations())
     }
 }
 
@@ -127,18 +136,21 @@ enum UpdatePhase {
 
 pub fn is_installed() -> Result<bool, UpdateInstallError> {
     let current = std::env::current_exe().map_err(UpdateInstallError::CurrentExecutable)?;
-    Ok(current
-        .parent()
-        .is_some_and(|directory| directory.join("unins000.exe").is_file()))
+    Ok(installation_identity(&current))
 }
 
 pub fn is_installer_managed_executable() -> Result<bool, UpdateInstallError> {
     let current = std::env::current_exe().map_err(UpdateInstallError::CurrentExecutable)?;
-    let installed = local_app_data()?
-        .join("Programs")
-        .join("Lotus")
-        .join("lotus.exe");
-    Ok(paths_equal(&current, &installed))
+    Ok(installation_identity(&current))
+}
+
+pub(crate) fn is_installer_managed_path(executable: &Path) -> bool {
+    executable.is_file() && installation_identity(executable)
+}
+
+pub(crate) fn installer_executable_from_metadata() -> Option<PathBuf> {
+    let executable = registered_install_location()?.join("lotus.exe");
+    is_installer_managed_path(&executable).then_some(executable)
 }
 
 pub fn post_install_health_pending() -> Result<bool, UpdateInstallError> {
@@ -175,7 +187,13 @@ pub fn verify_post_install_target() -> Result<(), UpdateInstallError> {
     Ok(())
 }
 
-pub fn launch_installer(staged: &StagedUpdate) -> Result<(), UpdateInstallError> {
+pub fn launch_installer(
+    staged: &StagedUpdate,
+    mode: crate::startup::StartupMode,
+) -> Result<(), UpdateInstallError> {
+    if !mode.allows_update_operations() {
+        return Err(UpdateInstallError::UpdatesUnavailable);
+    }
     validate_staging_directory(&staged.directory)?;
     let source = std::env::current_exe().map_err(UpdateInstallError::CurrentExecutable)?;
     let journal = UpdateJournal {
@@ -209,11 +227,11 @@ pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
     let Some(installer) = helper_target(&arguments, INSTALL_UPDATE_ARGUMENT)? else {
         return Ok(false);
     };
-    if development_mode_requested(&arguments) {
-        return Err(UpdateInstallError::DevelopmentUpdateHelper);
-    }
     let startup =
         parse_startup_args(&arguments).map_err(UpdateInstallError::StartupArguments)?;
+    if !startup.mode.allows_update_operations() {
+        return Err(UpdateInstallError::UpdatesUnavailable);
+    }
     let mut journal = read_journal()?.ok_or(UpdateInstallError::MissingJournal)?;
     validate_journal(&journal)?;
     if !matches!(journal.phase, UpdatePhase::Prepared) {
@@ -235,12 +253,6 @@ pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
     }
 }
 
-fn development_mode_requested(arguments: &[OsString]) -> bool {
-    arguments
-        .iter()
-        .any(|argument| argument_eq(argument, "--development"))
-}
-
 pub fn recover_startup(
     post_install_health: bool,
 ) -> Result<Option<String>, UpdateInstallError> {
@@ -251,14 +263,40 @@ pub fn recover_startup(
         return Ok(None);
     };
     validate_journal(&journal)?;
-    if !matches!(journal.phase, UpdatePhase::Failed) {
-        journal.phase = UpdatePhase::Failed;
-        journal.diagnostic = Some(format!(
-            "Lotus did not finish installing version {}. Please re-run the Lotus installer to repair the installation.",
-            journal.target_version
-        ));
-        write_journal(&journal)?;
+    if matches!(journal.phase, UpdatePhase::Failed) {
+        return Ok(None);
     }
+    journal.phase = UpdatePhase::Failed;
+    journal.diagnostic = Some(format!(
+        "Lotus did not finish installing version {}. Please re-run the Lotus installer to repair the installation.",
+        journal.target_version
+    ));
+    write_journal(&journal)?;
+    cleanup_journal_staging(&journal)?;
+    let diagnostic = journal.diagnostic;
+    clear_journal()?;
+    Ok(diagnostic)
+}
+
+pub fn recover_failed_update_notice(
+    mode: crate::startup::StartupMode,
+) -> Result<Option<String>, UpdateInstallError> {
+    if !mode.allows_update_operations() {
+        return Ok(None);
+    }
+    let Some(journal) = read_journal()? else {
+        return Ok(None);
+    };
+    validate_journal(&journal)?;
+    if !matches!(journal.phase, UpdatePhase::Failed) {
+        return Ok(None);
+    }
+
+    let current = std::env::current_exe().map_err(UpdateInstallError::CurrentExecutable)?;
+    if !paths_equal(&current, &journal.source_executable) {
+        return Ok(None);
+    }
+
     cleanup_journal_staging(&journal)?;
     let diagnostic = journal.diagnostic;
     clear_journal()?;
@@ -439,6 +477,32 @@ fn post_install_health_marker() -> Result<PathBuf, UpdateInstallError> {
         .parent()
         .map(|directory| directory.join(POST_INSTALL_HEALTH_MARKER_NAME))
         .ok_or(UpdateInstallError::InvalidInstallDirectory)
+}
+
+fn installation_identity(executable: &Path) -> bool {
+    executable
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("lotus.exe"))
+        && (registered_install_location_matches(executable)
+            || executable.parent().is_some_and(|directory| {
+                directory.join("unins000.exe").is_file()
+                    || has_pending_install_marker(directory)
+            }))
+}
+
+fn registered_install_location_matches(executable: &Path) -> bool {
+    registered_install_location()
+        .is_some_and(|location| paths_equal(executable, &location.join("lotus.exe")))
+}
+
+fn registered_install_location() -> Option<PathBuf> {
+    let key = windows_registry::CURRENT_USER.open(UNINSTALL_KEY).ok()?;
+    key.get_string("InstallLocation").ok().map(PathBuf::from)
+}
+
+fn has_pending_install_marker(directory: &Path) -> bool {
+    fs::read_to_string(directory.join(POST_INSTALL_HEALTH_MARKER_NAME))
+        .is_ok_and(|version| version.trim() == env!("CARGO_PKG_VERSION"))
 }
 fn read_journal() -> Result<Option<UpdateJournal>, UpdateInstallError> {
     let path = journal_path()?;
@@ -624,6 +688,8 @@ fn argument_eq(argument: &OsStr, expected: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum UpdateStartError {
+    #[error("updates require an installed release build")]
+    UpdatesUnavailable,
     #[error("Lotus could not start its update work: {0}")]
     Thread(#[source] std::io::Error),
 }
@@ -635,8 +701,8 @@ pub enum UpdateInstallError {
     CurrentExecutable(#[source] std::io::Error),
     #[error("the update helper is missing its installer target")]
     MissingTarget,
-    #[error("--development cannot be used with --install-update")]
-    DevelopmentUpdateHelper,
+    #[error("updates require an installed release build")]
+    UpdatesUnavailable,
     #[error("the update journal is unavailable")]
     MissingJournal,
     #[error("the update journal records a failed installation")]

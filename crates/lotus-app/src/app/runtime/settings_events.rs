@@ -1,5 +1,6 @@
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState, GraphicsDeviceHealth};
+use lotus_windows::startup::StartupMode;
 use lotus_windows::window::DockWindow;
 use lotus_windows::window_tracker::WindowTracker;
 
@@ -16,6 +17,8 @@ pub(super) struct SettingsEventContext<'a> {
     pub(super) dock_model: &'a mut DockRuntime,
     pub(super) auxiliary: &'a mut ModuleHost,
     pub(super) integration: &'a mut IntegrationRecovery,
+    pub(super) startup_mode: StartupMode,
+    pub(super) startup_registration_allowed: bool,
 }
 
 pub(super) fn drain_settings_events(

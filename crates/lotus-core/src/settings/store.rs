@@ -188,7 +188,7 @@ impl SettingsStore {
         source: &[u8],
         error: SettingsDecodeError,
     ) -> Result<SettingsLoad, SettingsStoreError> {
-        let backup_path = self.invalid_backup_path();
+        let backup_path = self.unique_backup_path("invalid")?;
         write_atomic_bytes(&backup_path, source, "back up invalid settings to")?;
 
         let settings = DockSettings::default().normalized();
@@ -204,10 +204,6 @@ impl SettingsStore {
         fs::create_dir_all(&self.directory).map_err(|error| {
             store_io("create settings directory at", &self.directory, error)
         })
-    }
-
-    fn invalid_backup_path(&self) -> PathBuf {
-        self.directory.join("settings.json.invalid.bak")
     }
 
     fn pre_migration_backup_path(&self, from_version: u32, to_version: u32) -> PathBuf {
@@ -227,11 +223,15 @@ impl SettingsStore {
     }
 
     fn reset_backup_path(&self) -> Result<PathBuf, SettingsStoreError> {
+        self.unique_backup_path("reset")
+    }
+
+    fn unique_backup_path(&self, kind: &str) -> Result<PathBuf, SettingsStoreError> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| SettingsStoreError::Clock(error.to_string()))?;
         let stem = format!(
-            "settings.json.reset-{}-{:09}.bak",
+            "settings.json.{kind}-{}-{:09}.bak",
             timestamp.as_secs(),
             timestamp.subsec_nanos()
         );

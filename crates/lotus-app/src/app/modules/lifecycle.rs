@@ -27,8 +27,11 @@ impl ModuleHost {
         usage: SearchUsage,
         usage_store: SearchUsageStore,
         modules_active: bool,
+        shell_effects_allowed: bool,
+        updates_allowed: bool,
     ) -> Result<Self, AppError> {
-        let search_window = dock.create_search_window()?;
+        let mut search_window = dock.create_search_window()?;
+        search_window.set_outside_click_allowed(shell_effects_allowed);
         let applications = ApplicationServices::new()?;
         dock_model.attach_icon_hydrator(applications.dock_icon_client());
         lotus_windows::backdrop::apply_search_settings(
@@ -46,7 +49,8 @@ impl ModuleHost {
         let settings = SettingsRuntime::new(
             dock.create_settings_window()?,
             dock_model.settings().clone(),
-            is_installed().unwrap_or(false),
+            updates_allowed && is_installed().unwrap_or(false),
+            updates_allowed,
         )?;
         let context_menu_window = dock.create_context_menu_window()?;
         lotus_windows::backdrop::apply_context_menu_settings(
@@ -81,10 +85,15 @@ impl ModuleHost {
             context_menu,
             media: MediaRuntime::new(false),
             status,
-            monitors: MonitorDocks::new(),
+            monitors: MonitorDocks::new(shell_effects_allowed),
             switcher,
         };
-        host.reconcile(dock, dock_model.settings(), modules_active)?;
+        host.reconcile(
+            dock,
+            dock_model.settings(),
+            modules_active,
+            shell_effects_allowed,
+        )?;
         Ok(host)
     }
 
@@ -93,6 +102,7 @@ impl ModuleHost {
         dock: &DockWindow,
         settings: &DockSettings,
         active: bool,
+        shell_effects_allowed: bool,
     ) -> Result<(), AppError> {
         let transition = self.lifecycle.transition(settings, active);
 
@@ -110,7 +120,8 @@ impl ModuleHost {
         dock.set_status_refresh_active(
             transition.enabled(ModuleId::Status) && settings.show_date_time_status,
         )?;
-        self.lifecycle.reconcile_input(settings, transition.next);
+        self.lifecycle
+            .reconcile_input(settings, transition.next, shell_effects_allowed);
         self.lifecycle.enabled = transition.next;
         Ok(())
     }
@@ -132,6 +143,7 @@ pub(super) struct ModuleLifecycle {
     enabled: ModuleSet,
     input_config: Option<InputConfig>,
     input: Option<InputController>,
+    input_unavailable: bool,
 }
 
 struct LifecycleTransition {
@@ -155,6 +167,7 @@ impl ModuleLifecycle {
             enabled: ModuleSet::default(),
             input_config: None,
             input: None,
+            input_unavailable: false,
         }
     }
 
@@ -180,7 +193,8 @@ impl ModuleLifecycle {
     }
 
     pub(super) fn input_healthy(&self) -> bool {
-        self.input.as_ref().is_none_or(InputController::is_healthy)
+        !self.input_unavailable
+            && self.input.as_ref().is_none_or(InputController::is_healthy)
     }
 
     pub(super) fn heartbeat_input(&self) {
@@ -193,19 +207,32 @@ impl ModuleLifecycle {
         self.input.as_ref()
     }
 
-    fn reconcile_input(&mut self, settings: &DockSettings, modules: ModuleSet) {
+    fn reconcile_input(
+        &mut self,
+        settings: &DockSettings,
+        modules: ModuleSet,
+        shell_effects_allowed: bool,
+    ) {
         let next = InputConfig {
-            windows_key_search: modules.contains(ModuleId::Search)
+            windows_key_search: shell_effects_allowed
+                && modules.contains(ModuleId::Search)
                 && settings.search_open_with_windows_key,
-            custom_alt_tab: modules.contains(ModuleId::AltTab),
+            custom_alt_tab: shell_effects_allowed && modules.contains(ModuleId::AltTab),
         };
         let next = (next.windows_key_search || next.custom_alt_tab).then_some(next);
+        if next.is_none() {
+            self.input = None;
+            self.input_config = None;
+            self.input_unavailable = false;
+            return;
+        }
         if self.input_config == next {
             return;
         }
 
         self.input = None;
         self.input_config = None;
+        self.input_unavailable = false;
         let Some(config) = next else {
             return;
         };
@@ -215,7 +242,14 @@ impl ModuleLifecycle {
                 self.input = Some(controller);
                 self.input_config = Some(config);
             }
-            Err(error) => lotus_windows::diagnostics::record_error("input.enable", &error),
+            Err(error) => {
+                self.input_unavailable = true;
+                lotus_windows::diagnostics::record_error("input.enable", &error);
+                lotus_windows::diagnostics::record_diagnostic(
+                    "input.unavailable",
+                    "configured=true fail_open=true",
+                );
+            }
         }
     }
 }

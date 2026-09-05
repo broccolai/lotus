@@ -16,7 +16,7 @@ use crate::platform::windows::display::{ScreenArea, nearest_display};
 use crate::platform::windows::interaction::{OutsideClickObserver, claim_keyboard_focus};
 use crate::platform::windows::native_window::{NativeWindow, WindowCreation, WindowHandle};
 use crate::window::procedure::{
-    SEARCH_OUTSIDE_CLICK_MESSAGE, SearchEvent, WindowClass, WindowState,
+    DismissRequest, SEARCH_OUTSIDE_CLICK_MESSAGE, SearchEvent, WindowClass, WindowState,
 };
 use crate::window::transient::TransientWindow;
 
@@ -25,6 +25,7 @@ const NORMAL_TOP_MINIMUM_DIPS: u32 = 52;
 pub struct SearchWindow {
     window: TransientWindow,
     outside_click: Option<OutsideClickObserver>,
+    outside_click_allowed: bool,
     interaction_suspended: bool,
     _class: Rc<WindowClass>,
 }
@@ -53,6 +54,7 @@ impl SearchWindow {
         Ok(Self {
             window: TransientWindow::new(window),
             outside_click: None,
+            outside_click_allowed: true,
             interaction_suspended: false,
             _class: class,
         })
@@ -70,13 +72,20 @@ impl SearchWindow {
         self.window.dpi()
     }
 
+    pub fn set_outside_click_allowed(&mut self, allowed: bool) {
+        self.outside_click_allowed = allowed;
+        if !allowed {
+            self.outside_click = None;
+        }
+    }
+
     pub fn open(&mut self, anchor: WindowHandle, width: u32, height: u32) -> Result<()> {
         let size = PopupSize::new(width, height)?;
         prepare_launcher(&mut self.window, anchor.raw(), size)?;
         super::procedure::apply_rounded_region(self.hwnd(), 0);
         super::procedure::start_search_clock_timer(self.hwnd())?;
         super::procedure::start_search_focus_timer(self.hwnd())?;
-        if self.outside_click.is_none() {
+        if self.outside_click_allowed && self.outside_click.is_none() {
             self.outside_click =
                 OutsideClickObserver::start(self.hwnd(), SEARCH_OUTSIDE_CLICK_MESSAGE).ok();
         }
@@ -109,13 +118,17 @@ impl SearchWindow {
     pub fn suspend_for_child_popup(&mut self) {
         super::procedure::stop_search_focus_timer(self.hwnd());
         self.outside_click = None;
+        self.window.state().advance_interaction();
         self.interaction_suspended = true;
     }
 
-    pub fn resume_after_child_popup(&mut self) {
+    pub fn resume_after_child_popup(&mut self, restore_focus: bool) {
         self.interaction_suspended = false;
-        let _ = super::procedure::start_search_focus_timer(self.hwnd());
-        if self.outside_click.is_none() {
+        self.window.state().advance_interaction();
+        if restore_focus {
+            let _ = super::procedure::start_search_focus_timer(self.hwnd());
+        }
+        if self.outside_click_allowed && self.outside_click.is_none() {
             self.outside_click =
                 OutsideClickObserver::start(self.hwnd(), SEARCH_OUTSIDE_CLICK_MESSAGE).ok();
         }
@@ -142,6 +155,10 @@ impl SearchWindow {
 
     pub fn has_pending_events(&self) -> bool {
         self.window.state().has_pending_events()
+    }
+
+    pub fn accepts_dismiss(&self, request: DismissRequest) -> bool {
+        self.window.state().accepts_dismiss(request)
     }
 }
 

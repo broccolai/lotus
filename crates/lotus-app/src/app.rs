@@ -123,6 +123,8 @@ enum RestartError {
 struct RuntimeServices<'a> {
     taskbar_badges: Option<&'a TaskbarBadgeController>,
     onboarding_required: bool,
+    startup_mode: StartupMode,
+    startup_registration_allowed: bool,
     integration: &'a mut integration::IntegrationRecovery,
 }
 
@@ -134,6 +136,7 @@ struct PreparedSettings {
 
 #[derive(Clone, Copy)]
 struct StartupEnvironment {
+    mode: StartupMode,
     manages_installed_update_state: bool,
     cleans_requested_staging: bool,
     syncs_startup_registration: bool,
@@ -141,10 +144,7 @@ struct StartupEnvironment {
 
 impl StartupEnvironment {
     fn detect(mode: StartupMode) -> Self {
-        let is_development = mode.is_development();
-        let installer_managed = if is_development {
-            false
-        } else {
+        let installer_managed = if mode.allows_update_operations() {
             match lotus_windows::update::is_installer_managed_executable() {
                 Ok(installed) => installed,
                 Err(error) => {
@@ -155,12 +155,21 @@ impl StartupEnvironment {
                     false
                 }
             }
+        } else {
+            false
         };
         Self {
-            manages_installed_update_state: !is_development && installer_managed,
-            cleans_requested_staging: !is_development,
-            syncs_startup_registration: !is_development,
+            mode,
+            manages_installed_update_state: mode.allows_update_operations()
+                && installer_managed,
+            cleans_requested_staging: mode.allows_update_operations(),
+            syncs_startup_registration: mode.allows_startup_registration()
+                && installer_managed,
         }
+    }
+
+    const fn allows_shell_integration(self) -> bool {
+        self.mode.allows_shell_integration()
     }
 }
 
@@ -229,23 +238,7 @@ impl StartupPhases {
 pub fn run() -> Result<(), AppError> {
     let mut startup_phases = StartupPhases::start();
     enable_per_monitor_v2()?;
-    let startup = parse_startup_args(std::env::args_os().skip(1))?;
-    let _restart_wait = wait_for_restart_source(startup.restart_after)?;
-    let environment = StartupEnvironment::detect(startup.mode);
-    let post_install_health = if environment.manages_installed_update_state {
-        startup.post_install_health
-            || lotus_windows::update::post_install_health_pending().unwrap_or(true)
-            || lotus_windows::update::interrupted_install_health_pending().unwrap_or(true)
-    } else {
-        false
-    };
-    if environment.cleans_requested_staging
-        && let Some(directory) = startup.cleanup_update.as_deref()
-        && let Err(error) =
-            lotus_windows::update::cleanup_requested_staging_directory(directory)
-    {
-        lotus_windows::diagnostics::record_error("update.cleanup_requested", &error);
-    }
+    let (startup, environment, post_install_health) = prepare_startup()?;
     let Some(_instance) = SingleInstance::acquire()? else {
         return Ok(());
     };
@@ -274,7 +267,7 @@ pub fn run() -> Result<(), AppError> {
         surface_size,
     )?);
     startup_phases.graphics_window = startup_phases.complete();
-    let mut window_tracker = WindowTracker::start()?;
+    let mut window_tracker = WindowTracker::start(startup.mode)?;
     startup_phases.initial_window_tracking = startup_phases.complete();
     let mut dock_model = DockRuntime::new(
         dock.handle(),
@@ -285,7 +278,8 @@ pub fn run() -> Result<(), AppError> {
         dock.drag_threshold(),
     )?;
     startup_phases.dock_model = startup_phases.complete();
-    let taskbar_badges = (!onboarding_required)
+    let shell_effects_allowed = environment.allows_shell_integration();
+    let taskbar_badges = (shell_effects_allowed && !onboarding_required)
         .then(|| enable_notification_badges(&dock_model))
         .flatten();
     startup_phases.badge_worker_dispatch = startup_phases.complete();
@@ -295,13 +289,16 @@ pub fn run() -> Result<(), AppError> {
         usage,
         usage_store,
         !onboarding_required,
+        shell_effects_allowed,
+        environment.mode.allows_update_operations(),
     )?;
     startup_phases.auxiliary_windows = startup_phases.complete();
     resize_dock(&dock, &mut graphics, &mut surface, &dock_model)?;
     let mut integration = integration::IntegrationRecovery::new(
         dock_model.settings(),
         &dock,
-        !onboarding_required,
+        shell_effects_allowed,
+        shell_effects_allowed && !onboarding_required,
     );
     window_tracker.refresh_fullscreen();
     let mut initial_windows = InitialWindows {
@@ -315,6 +312,7 @@ pub fn run() -> Result<(), AppError> {
     prepare_initial_windows(
         startup.open_settings,
         onboarding_required,
+        shell_effects_allowed,
         &mut initial_windows,
     )?;
     startup_phases.shell_integration_placement = startup_phases.complete();
@@ -331,6 +329,8 @@ pub fn run() -> Result<(), AppError> {
     let mut runtime = RuntimeServices {
         taskbar_badges: taskbar_badges.as_ref(),
         onboarding_required,
+        startup_mode: environment.mode,
+        startup_registration_allowed: environment.syncs_startup_registration,
         integration: &mut integration,
     };
     let result = run_message_loop(
@@ -346,14 +346,87 @@ pub fn run() -> Result<(), AppError> {
     result
 }
 
+fn prepare_startup() -> Result<
+    (
+        lotus_windows::startup::StartupOptions,
+        StartupEnvironment,
+        bool,
+    ),
+    AppError,
+> {
+    let startup = parse_startup_args(std::env::args_os().skip(1))?;
+    let _restart_wait = wait_for_restart_source(startup.restart_after)?;
+    let environment = StartupEnvironment::detect(startup.mode);
+    lotus_windows::diagnostics::record_diagnostic(
+        "startup.launch_context",
+        &format!(
+            "mode={:?} shell_effects_allowed={} startup_registration_allowed={} installer_managed={}",
+            environment.mode,
+            environment.allows_shell_integration(),
+            environment.syncs_startup_registration,
+            environment.manages_installed_update_state,
+        ),
+    );
+    lotus_windows::diagnostics::record_state(
+        "startup.launch_state",
+        &[
+            ("development", u64::from(environment.mode.is_development())),
+            (
+                "preview",
+                u64::from(environment.mode.uses_isolated_settings()),
+            ),
+            ("debug_build", u64::from(cfg!(debug_assertions))),
+            (
+                "installer_managed",
+                u64::from(environment.manages_installed_update_state),
+            ),
+            (
+                "registration_allowed",
+                u64::from(environment.syncs_startup_registration),
+            ),
+            (
+                "updates_allowed",
+                u64::from(environment.mode.allows_update_operations()),
+            ),
+        ],
+    );
+    let post_install_health = if environment.manages_installed_update_state {
+        startup.post_install_health
+            || lotus_windows::update::post_install_health_pending().unwrap_or(true)
+            || lotus_windows::update::interrupted_install_health_pending().unwrap_or(true)
+    } else {
+        false
+    };
+    if environment.cleans_requested_staging
+        && let Some(directory) = startup.cleanup_update.as_deref()
+        && let Err(error) =
+            lotus_windows::update::cleanup_requested_staging_directory(directory)
+    {
+        lotus_windows::diagnostics::record_error("update.cleanup_requested", &error);
+    }
+    Ok((startup, environment, post_install_health))
+}
+
 fn prepare_settings(
     environment: StartupEnvironment,
     post_install_health: bool,
 ) -> Result<Option<PreparedSettings>, AppError> {
-    let (settings, store) = load_settings()?;
-    let recovery_notice = if environment.manages_installed_update_state {
-        match lotus_windows::update::recover_startup(post_install_health) {
-            Ok(notice) => notice,
+    let (settings, store) = load_settings(environment.mode)?;
+    let recovery_notice = if environment.mode.allows_update_operations() {
+        match lotus_windows::update::recover_failed_update_notice(environment.mode) {
+            Ok(Some(notice)) => Some(notice),
+            Ok(None) if environment.manages_installed_update_state => {
+                match lotus_windows::update::recover_startup(post_install_health) {
+                    Ok(notice) => notice,
+                    Err(error) => {
+                        lotus_windows::diagnostics::record_error("update.recovery", &error);
+                        Some(format!(
+                            "Lotus found an incomplete update, but could not clean it safely. Please re-run the Lotus installer to repair the installation.\n\n{error}"
+                        ))
+                    }
+                }
+            }
+            Ok(None) => None,
             Err(error) => {
                 lotus_windows::diagnostics::record_error("update.recovery", &error);
                 Some(format!(
@@ -427,6 +500,7 @@ fn prepare_settings(
 fn prepare_initial_windows(
     open_settings: bool,
     onboarding_required: bool,
+    shell_effects_allowed: bool,
     windows: &mut InitialWindows<'_>,
 ) -> Result<(), AppError> {
     if !onboarding_required {
@@ -450,7 +524,7 @@ fn prepare_initial_windows(
             true,
             windows.graphics,
         )?;
-    } else {
+    } else if shell_effects_allowed {
         apply_fullscreen_visibility(
             windows.dock,
             windows.surface,
@@ -474,8 +548,18 @@ fn create_auxiliary_windows(
     usage: SearchUsage,
     usage_store: SearchUsageStore,
     modules_active: bool,
+    shell_effects_allowed: bool,
+    updates_allowed: bool,
 ) -> Result<ModuleHost, AppError> {
-    ModuleHost::create(dock, dock_model, usage, usage_store, modules_active)
+    ModuleHost::create(
+        dock,
+        dock_model,
+        usage,
+        usage_store,
+        modules_active,
+        shell_effects_allowed,
+        updates_allowed,
+    )
 }
 
 fn sync_startup_preference(
@@ -530,12 +614,19 @@ fn enable_notification_badges(model: &DockRuntime) -> Option<TaskbarBadgeControl
     }
 }
 
-fn load_settings() -> Result<(DockSettings, SettingsStore), AppError> {
+fn load_settings(mode: StartupMode) -> Result<(DockSettings, SettingsStore), AppError> {
     let local_app_data = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .ok_or(AppError::MissingLocalAppData)?;
-    let settings_directory = local_app_data.join("Lotus");
-    let _ = fs::remove_file(settings_directory.join("lotus.log"));
+    let live_settings_directory = local_app_data.join("Lotus");
+    let settings_directory = if mode.uses_isolated_settings() {
+        let preview_directory = live_settings_directory.join("preview");
+        seed_preview_settings(&live_settings_directory, &preview_directory)?;
+        preview_directory
+    } else {
+        let _ = fs::remove_file(live_settings_directory.join("lotus.log"));
+        live_settings_directory
+    };
     let store = SettingsStore::new(settings_directory);
 
     let settings_existed = store.settings_path().exists();
@@ -573,4 +664,31 @@ fn load_settings() -> Result<(DockSettings, SettingsStore), AppError> {
     }
 
     Ok((load.settings, store))
+}
+
+fn seed_preview_settings(
+    live: &std::path::Path,
+    preview: &std::path::Path,
+) -> Result<(), AppError> {
+    let preview_settings = preview.join("settings.json");
+    if preview_settings.exists() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(preview).map_err(|source| SettingsStoreError::Io {
+        operation: "create preview settings directory at",
+        path: preview.to_owned(),
+        source,
+    })?;
+    let live_settings = live.join("settings.json");
+    if live_settings.is_file() {
+        fs::copy(&live_settings, &preview_settings).map_err(|source| {
+            SettingsStoreError::Io {
+                operation: "copy live settings to preview at",
+                path: preview_settings,
+                source,
+            }
+        })?;
+    }
+    Ok(())
 }

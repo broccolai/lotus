@@ -137,7 +137,9 @@ pub(super) fn reset_lotus(context: &mut SettingsEventContext<'_>) {
             reset.backup_path.display(),
         ),
     );
-    if let Err(error) = startup_registration::sync(reset.settings.start_with_windows) {
+    if context.startup_registration_allowed
+        && let Err(error) = startup_registration::sync(reset.settings.start_with_windows)
+    {
         lotus_windows::diagnostics::record_error(
             "settings.reset_startup_sync_failed",
             &error,
@@ -151,7 +153,7 @@ pub(super) fn reset_lotus(context: &mut SettingsEventContext<'_>) {
             ),
         );
     }
-    match restart_current_process() {
+    match restart_current_process(context.startup_mode) {
         Ok(()) => request_exit(0),
         Err(error) => {
             lotus_windows::diagnostics::record_error(

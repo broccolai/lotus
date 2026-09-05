@@ -46,7 +46,11 @@ impl LauncherCompositionSurface {
 
     fn resize(&mut self, size: SurfaceSize) -> Result<(), WindowsError> {
         if size == self.core.size() {
-            return Ok(());
+            return if self.renderer.is_target_attached() {
+                Ok(())
+            } else {
+                self.renderer.attach_target(self.core.swap_chain())
+            };
         }
         self.renderer.detach_target();
         self.core.resize_buffers(size)?;
@@ -60,6 +64,9 @@ impl LauncherCompositionSurface {
         opacity: f32,
         needs_animation: bool,
     ) -> Result<FrameResult, PresentationRendererError> {
+        if !self.renderer.is_target_attached() {
+            self.renderer.attach_target(self.core.swap_chain())?;
+        }
         let center_x = as_f32(self.core.size().width()) * 0.5;
         let center_y = as_f32(self.core.size().height()) * 0.08;
         unsafe {

@@ -51,6 +51,7 @@ impl SettingsRuntime {
         window: SettingsWindow,
         settings: DockSettings,
         installed: bool,
+        updates_allowed: bool,
     ) -> Result<Self, AppError> {
         let scene = SettingsScene::new(window.dpi(), settings, installed)
             .ok_or(AppError::InvalidSettingsScene)?;
@@ -65,7 +66,7 @@ impl SettingsRuntime {
             pressed_control: None,
             native_icons: NativeIconCache::default(),
             custom_images: CustomImageCache::default(),
-            update_checker: UpdateChecker::new(),
+            update_checker: UpdateChecker::new(updates_allowed),
             pending_update: None,
         })
     }

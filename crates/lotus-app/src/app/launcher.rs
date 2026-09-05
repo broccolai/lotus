@@ -269,10 +269,10 @@ impl LauncherRuntime {
         self.window.suspend_for_child_popup();
     }
 
-    pub(super) fn resume_after_child_popup_if_visible(&mut self) {
+    pub(super) fn resume_after_child_popup_if_visible(&mut self, restore_focus: bool) {
         self.child_popup_open = false;
         if self.visible {
-            self.window.resume_after_child_popup();
+            self.window.resume_after_child_popup(restore_focus);
         }
     }
 
@@ -440,6 +440,9 @@ impl LauncherRuntime {
         graphics: &mut DeviceState,
         dock_model: &DockRuntime,
     ) -> Result<LauncherEventOutcome, AppError> {
+        if !self.visible {
+            return Ok(LauncherEventOutcome::None);
+        }
         if let SearchEvent::ContextMenuRequested(request) = event {
             let context = self.file_location_context(request)?;
             return Ok(match context {
@@ -477,7 +480,11 @@ impl LauncherRuntime {
                 self.move_selection(direction)?;
                 presentation_changed = true;
             }
-            SearchEvent::DismissRequested => self.hide(),
+            SearchEvent::DismissRequested(request) => {
+                if self.window.accepts_dismiss(request) {
+                    self.hide();
+                }
+            }
             SearchEvent::SubmitRequested => submission = self.submit(dock.handle()),
             SearchEvent::Resized { width, height } => {
                 if let (Some(size), Some(surface)) =
@@ -699,9 +706,9 @@ impl LauncherRuntime {
             .surface
             .as_mut()
             .ok_or(AppError::InvalidLauncherScene)?;
-        let content = scene.render_presentation(EmbeddedIcon::FluentSearch);
-        let motion = scene.presentation();
         let render = |surface: &mut LauncherCompositionSurfaceState| {
+            let content = scene.render_presentation(EmbeddedIcon::FluentSearch);
+            let motion = scene.presentation();
             surface.render_scene(
                 &content,
                 motion.scale,

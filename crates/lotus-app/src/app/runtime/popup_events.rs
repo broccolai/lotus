@@ -5,16 +5,17 @@ use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::WindowHandle;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{CompositionSurfaceState, DeviceState};
-use lotus_windows::window::{ContextMenuEvent, DockWindow};
+use lotus_windows::window::DockWindow;
 
 use super::presentation::present_dock_change;
+use crate::app::context_menu::PopupEvent;
 use crate::app::modules::ModuleHost;
 use crate::app::system_actions::{Confirmation, SystemAction, execute_system_action};
 use crate::app::visuals::{AppMenuAction, ContextMenuAction, PopupAction, PowerAction};
 use crate::app::{AppError, DockRuntime, activation};
 
 pub(super) fn handle_context_menu_event(
-    event: ContextMenuEvent,
+    event: PopupEvent,
     dock: &DockWindow,
     graphics: &mut DeviceState,
     surface: &mut ScheduledSurface<CompositionSurfaceState>,
@@ -24,7 +25,8 @@ pub(super) fn handle_context_menu_event(
 ) -> Result<(), AppError> {
     let outcome = auxiliary.handle_context_menu_event(event)?;
     let closed_owner = outcome.closed_owner;
-    if let Some(invocation) = outcome.invocation {
+    let action_invoked = outcome.invocation.is_some();
+    let action_result = if let Some(invocation) = outcome.invocation {
         let mut context = PopupActionContext {
             dock,
             graphics,
@@ -33,10 +35,16 @@ pub(super) fn handle_context_menu_event(
             dock_model,
             auxiliary,
         };
-        execute_popup_action(invocation.action, &mut context)?;
+        execute_popup_action(invocation.action, &mut context)
+    } else {
+        Ok(())
+    };
+    if action_invoked {
+        auxiliary.complete_popup_action(closed_owner);
+    } else {
+        auxiliary.resume_popup_parent(closed_owner, outcome.dismissal_reason);
     }
-    auxiliary.resume_popup_parent(closed_owner);
-    Ok(())
+    action_result
 }
 
 struct PopupActionContext<'a> {

@@ -535,7 +535,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "lotus-app"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "lotus-core",
  "lotus-dock",
@@ -551,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-core"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "atomic-write-file",
  "serde",
@@ -561,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-dock"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "lotus-core",
  "lotus-media",
@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-explorer-bridge"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "minhook",
  "windows",
@@ -579,14 +579,29 @@ dependencies = [
 
 [[package]]
 name = "lotus-media"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "lotus-ui",
 ]
 
 [[package]]
+name = "lotus-photo"
+version = "1.0.5"
+dependencies = [
+ "lotus-core",
+ "lotus-dock",
+ "lotus-search",
+ "lotus-switcher",
+ "lotus-ui",
+ "lotus-windows",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "lotus-search"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "atomic-write-file",
  "fasteval",
@@ -596,7 +611,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-settings"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "lotus-core",
  "lotus-ui",
@@ -604,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-shell-bridge"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "minhook",
  "windows",
@@ -612,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-switcher"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "lotus-core",
  "lotus-ui",
@@ -620,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-ui"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "euclid",
  "thiserror",
@@ -628,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-update"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "lotus-core",
  "semver",
@@ -640,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-windows"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "atomic-write-file",
  "image",

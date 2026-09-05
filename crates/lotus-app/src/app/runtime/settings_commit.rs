@@ -145,7 +145,17 @@ fn apply_settings_result(
     let runtime_result = apply_runtime_integration(context, result.integration)
         .and_then(|()| apply_runtime_presentation(result.presentation, context));
     finish_runtime_refresh(result.applications, context);
-    runtime_result?;
+    if let Err(error) = runtime_result {
+        lotus_windows::diagnostics::record_error("settings.runtime_refresh_failed", &error);
+        show_error(
+            context.auxiliary.settings_owner(),
+            "Lotus Settings",
+            &format!(
+                "Lotus saved your settings but could not fully apply them. Restart Lotus to finish applying the change.\n\n{error}"
+            ),
+        );
+        return Ok(());
+    }
     restart_if_required(result.restart, context);
     Ok(())
 }
@@ -157,7 +167,7 @@ fn restart_after_onboarding(
         .auxiliary
         .mark_settings_applied(context.dock_model.settings().clone());
     context.auxiliary.hide_settings();
-    if let Err(error) = restart_current_process() {
+    if let Err(error) = restart_current_process(context.startup_mode) {
         context.auxiliary.open_settings_without_refresh(
             context.dock_model.settings(),
             context.graphics,
@@ -192,7 +202,9 @@ fn synchronize_startup(
         | IntegrationRefresh::FullRuntime { start_with_windows } => start_with_windows,
     };
 
-    if let Err(error) = startup_registration::sync(start_with_windows) {
+    if context.startup_registration_allowed
+        && let Err(error) = startup_registration::sync(start_with_windows)
+    {
         show_error(
             context.auxiliary.settings_owner(),
             "Lotus Settings",
@@ -210,10 +222,12 @@ fn apply_runtime_integration(
     let IntegrationRefresh::FullRuntime { .. } = integration else {
         return Ok(());
     };
-
-    context
-        .auxiliary
-        .reconcile(context.dock, context.dock_model.settings(), true)?;
+    context.auxiliary.reconcile(
+        context.dock,
+        context.dock_model.settings(),
+        true,
+        context.startup_mode.allows_shell_integration(),
+    )?;
     let _changed = context.auxiliary.refresh_media(context.dock_model);
 
     Ok(())
@@ -243,13 +257,15 @@ fn apply_runtime_presentation(
         context.auxiliary,
         context.dock_model,
     )?;
-    apply_fullscreen_visibility(
-        context.dock,
-        context.dock_surface,
-        context.window_tracker,
-        context.dock_model,
-        context.auxiliary,
-    )?;
+    if context.startup_mode.allows_shell_integration() {
+        apply_fullscreen_visibility(
+            context.dock,
+            context.dock_surface,
+            context.window_tracker,
+            context.dock_model,
+            context.auxiliary,
+        )?;
+    }
 
     Ok(())
 }
@@ -272,7 +288,7 @@ fn finish_runtime_refresh(
 
 fn restart_if_required(restart: RestartDisposition, context: &SettingsEventContext<'_>) {
     if restart == RestartDisposition::Ordinary {
-        if let Err(error) = restart_current_process() {
+        if let Err(error) = restart_current_process(context.startup_mode) {
             show_restart_error(context, &error);
         } else {
             request_exit(0);
@@ -288,9 +304,13 @@ fn show_restart_error(context: &SettingsEventContext<'_>, error: &RestartError) 
     );
 }
 
-pub(super) fn restart_current_process() -> Result<(), RestartError> {
+pub(super) fn restart_current_process(
+    mode: lotus_windows::startup::StartupMode,
+) -> Result<(), RestartError> {
     let executable = std::env::current_exe()?;
-    let arguments = format!("--restart-after {} --open-settings", std::process::id());
+    let mut arguments = format!("--restart-after {} --open-settings", std::process::id());
+    arguments.push(' ');
+    arguments.push_str(mode.restart_argument());
     launch_target(&executable.to_string_lossy(), Some(&arguments))?;
     Ok(())
 }

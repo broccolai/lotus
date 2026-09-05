@@ -27,6 +27,8 @@ $allowedLotusDependencies = [ordered]@{
     'lotus-dock' = @('lotus-core', 'lotus-media', 'lotus-ui')
     'lotus-explorer-bridge' = @()
     'lotus-media' = @('lotus-ui')
+    # Standalone native scene-capture executable; never a production feature dependency.
+    'lotus-photo' = @('lotus-core', 'lotus-dock', 'lotus-search', 'lotus-switcher', 'lotus-ui', 'lotus-windows')
     'lotus-search' = @('lotus-core', 'lotus-ui')
     'lotus-settings' = @('lotus-core', 'lotus-ui')
     'lotus-shell-bridge' = @()

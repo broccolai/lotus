@@ -8,11 +8,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{
-    ContextMenuEvent, CursorMove, SEARCH_OUTSIDE_CLICK_MESSAGE, SearchEdit, SearchEvent,
-    SelectionDirection, SettingsEvent, SettingsKey, is_context_menu_window,
-    is_search_window, is_settings_window, low_word, push_event, with_window_state,
+    ContextMenuEvent, CursorMove, DismissReason, SEARCH_OUTSIDE_CLICK_MESSAGE, SearchEdit,
+    SearchEvent, SelectionDirection, SettingsEvent, SettingsKey, is_context_menu_window,
+    is_search_window, is_settings_window, low_word, push_event, request_dismiss,
+    with_window_state,
 };
-use crate::platform::windows::interaction::{claim_keyboard_focus, key_is_pressed};
+use crate::platform::windows::interaction::{
+    OutsideClickObserver, claim_keyboard_focus, key_is_pressed,
+};
 
 pub(super) fn dispatch(
     hwnd: HWND,
@@ -28,7 +31,9 @@ pub(super) fn dispatch(
             Some(dispatch_search_activation(hwnd, wparam, lparam))
         }
         SEARCH_OUTSIDE_CLICK_MESSAGE if is_search_window(hwnd) => {
-            push_event(hwnd, SearchEvent::DismissRequested);
+            if OutsideClickObserver::is_current_message(hwnd, wparam.0) {
+                request_dismiss(hwnd, DismissReason::OutsideClick);
+            }
             Some(LRESULT(0))
         }
         WM_ACTIVATE if is_context_menu_window(hwnd) => {
@@ -91,7 +96,7 @@ fn dispatch_search_activation(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRE
     let activated_window = HWND(lparam.0.cast_unsigned() as *mut _);
     let opening_context_menu = inactive && is_context_menu_window(activated_window);
     if inactive && !opening_context_menu {
-        push_event(hwnd, SearchEvent::DismissRequested);
+        request_dismiss(hwnd, DismissReason::Deactivated);
     }
     let result = unsafe { DefWindowProcW(hwnd, WM_ACTIVATE, wparam, lparam) };
     if !inactive {
@@ -102,7 +107,13 @@ fn dispatch_search_activation(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRE
 
 fn dispatch_context_menu_activation(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if low_word(wparam.0) == WA_INACTIVE {
-        push_event(hwnd, ContextMenuEvent::DismissRequested);
+        let activated_window = HWND(lparam.0.cast_unsigned() as *mut _);
+        let reason = if is_search_window(activated_window) {
+            DismissReason::OwnerActivated
+        } else {
+            DismissReason::Deactivated
+        };
+        request_dismiss(hwnd, reason);
     }
     unsafe { DefWindowProcW(hwnd, WM_ACTIVATE, wparam, lparam) }
 }
@@ -113,6 +124,10 @@ fn dispatch_search_key(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if wparam.0 == usize::from(VK_ESCAPE.0) {
+        request_dismiss(hwnd, DismissReason::Escape);
+        return LRESULT(0);
+    }
     if let Some(event) = search_key_event(wparam) {
         push_event(hwnd, event);
         LRESULT(0)
@@ -151,8 +166,11 @@ fn dispatch_context_menu_key(
     if message == WM_KEYUP {
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     }
+    if key == VK_ESCAPE.0 {
+        request_dismiss(hwnd, DismissReason::Escape);
+        return LRESULT(0);
+    }
     let event = match key {
-        key if key == VK_ESCAPE.0 => ContextMenuEvent::DismissRequested,
         key if key == VK_RETURN.0 || key == VK_SPACE.0 => {
             ContextMenuEvent::SelectionRequested
         }
@@ -203,7 +221,6 @@ fn search_key_event_for(key: u16, control_pressed: bool) -> Option<SearchEvent> 
         key if key == VK_DOWN.0 => {
             Some(SearchEvent::MoveSelection(SelectionDirection::Next))
         }
-        key if key == VK_ESCAPE.0 => Some(SearchEvent::DismissRequested),
         key if key == VK_RETURN.0 => Some(SearchEvent::SubmitRequested),
         _ => None,
     }

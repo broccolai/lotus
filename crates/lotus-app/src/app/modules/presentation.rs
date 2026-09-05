@@ -49,9 +49,18 @@ impl ModuleHost {
         pass: &mut FramePass,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        self.launcher.render_frame(pass, graphics)?;
-        self.context_menu.render_frame(pass, graphics)?;
-        self.settings.render_frame(pass, graphics)?;
+        if let Err(error) = self.launcher.render_frame(pass, graphics) {
+            lotus_windows::diagnostics::record_error("search.render", &error);
+            self.hide_launcher();
+        }
+        if let Err(error) = self.context_menu.render_frame(pass, graphics) {
+            lotus_windows::diagnostics::record_error("popup.render", &error);
+            self.hide_context_menu();
+        }
+        if let Err(error) = self.settings.render_frame(pass, graphics) {
+            lotus_windows::diagnostics::record_error("settings.render", &error);
+            self.settings.hide();
+        }
         if let Err(error) = self.switcher.render_frame(pass, graphics) {
             lotus_windows::diagnostics::record_error("alt_tab.render", &error);
             self.switcher.abandon();

@@ -73,7 +73,7 @@ pub(super) fn execute_settings_action(
         action @ (SettingsAction::CheckForUpdates
         | SettingsAction::CancelUpdate
         | SettingsAction::AcceptUpdate) => {
-            execute_update_action(&action, context.auxiliary);
+            execute_update_action(&action, context.auxiliary, context.startup_mode);
             Ok(())
         }
         SettingsAction::RestartIntegration => {
@@ -133,11 +133,17 @@ pub(super) fn execute_settings_action(
     }
 }
 
-fn execute_update_action(action: &SettingsAction, auxiliary: &mut ModuleHost) {
+fn execute_update_action(
+    action: &SettingsAction,
+    auxiliary: &mut ModuleHost,
+    mode: lotus_windows::startup::StartupMode,
+) {
     match action {
-        SettingsAction::CheckForUpdates => update_events::start_update_check(auxiliary),
+        SettingsAction::CheckForUpdates => {
+            update_events::start_update_check(auxiliary, mode);
+        }
         SettingsAction::CancelUpdate => update_events::cancel_update(auxiliary),
-        SettingsAction::AcceptUpdate => update_events::accept_update(auxiliary),
+        SettingsAction::AcceptUpdate => update_events::accept_update(auxiliary, mode),
         _ => {}
     }
 }

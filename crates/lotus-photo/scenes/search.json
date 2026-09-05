@@ -1,0 +1,24 @@
+{
+  "kind": "search",
+  "dpi": 192,
+  "apps": [
+    {
+      "name": "Zen",
+      "path": "C:/ProgramData/Microsoft/Windows/Start Menu/Programs/Zen.lnk"
+    },
+    {
+      "name": "Steam",
+      "path": "C:/ProgramData/Microsoft/Windows/Start Menu/Programs/Steam/Steam.lnk"
+    },
+    {
+      "name": "OBS Studio",
+      "path": "C:/ProgramData/Microsoft/Windows/Start Menu/Programs/OBS Studio.lnk"
+    },
+    {
+      "name": "File Explorer",
+      "path": "C:/Windows/explorer.exe"
+    }
+  ],
+  "query": "",
+  "selected": 0
+}

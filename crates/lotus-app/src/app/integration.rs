@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use lotus_ui::frame::ScheduledSurface;
 use lotus_windows::appbar::{
     ShellIntegration, ShellIntegrationHealth, ShellRecoverySource,
@@ -51,6 +53,8 @@ impl IntegrationRecoverySource {
 pub(super) struct IntegrationRecovery {
     shell: ShellIntegration,
     lifecycle: SystemLifecycleObserver,
+    shell_effects_allowed: bool,
+    last_maintenance: Option<Instant>,
 }
 
 pub(super) struct IntegrationRecoveryContext<'a> {
@@ -66,12 +70,39 @@ impl IntegrationRecovery {
     pub(super) fn new(
         settings: &lotus_core::settings::DockSettings,
         dock: &DockWindow,
-        enabled: bool,
+        shell_effects_allowed: bool,
+        integration_enabled: bool,
     ) -> Self {
         Self {
-            shell: ShellIntegration::new(settings, dock, enabled),
+            shell: ShellIntegration::new(settings, dock, integration_enabled),
             lifecycle: SystemLifecycleObserver::register(dock.handle()),
+            shell_effects_allowed,
+            last_maintenance: None,
         }
+    }
+
+    pub(super) const fn shell_effects_allowed(&self) -> bool {
+        self.shell_effects_allowed
+    }
+
+    pub(super) const fn requires_maintenance(&self) -> bool {
+        self.shell_effects_allowed && self.shell.requires_maintenance()
+    }
+
+    pub(super) fn maintain(
+        &mut self,
+        settings: &lotus_core::settings::DockSettings,
+        dock: &DockWindow,
+    ) -> bool {
+        if !self.requires_maintenance()
+            || self
+                .last_maintenance
+                .is_some_and(|last| last.elapsed() < Duration::from_secs(1))
+        {
+            return false;
+        }
+        self.last_maintenance = Some(Instant::now());
+        self.shell.maintain(settings, dock)
     }
 
     pub(super) fn recovery_source(
@@ -79,6 +110,9 @@ impl IntegrationRecovery {
         message: &NativeMessage,
         dock: &DockWindow,
     ) -> Option<IntegrationRecoverySource> {
+        if !self.shell_effects_allowed {
+            return None;
+        }
         if let Some(source) = self
             .shell
             .take_recovery_request(message.is_thread_message(), message.id())
@@ -154,6 +188,9 @@ impl IntegrationRecovery {
             "integration.recovery_requested",
             &format!("source={}", source.diagnostic_name()),
         );
+        if !self.shell_effects_allowed {
+            return;
+        }
         if source == IntegrationRecoverySource::AppBarPositionChanged {
             self.shell.recover(
                 context.dock_model.settings(),
@@ -168,7 +205,7 @@ impl IntegrationRecovery {
             return;
         }
         self.lifecycle.recover_registration();
-        let mut degraded = self.shell.health() == ShellIntegrationHealth::Degraded;
+        let mut degraded = false;
         if let Err(error) = context
             .dock
             .refresh_placement(context.dock_model.settings())
@@ -184,6 +221,7 @@ impl IntegrationRecovery {
             context.dock,
             source.shell_source(),
         );
+        degraded |= self.shell.health() == ShellIntegrationHealth::Degraded;
 
         let tray_health = lotus_windows::tray::recover();
         degraded |= tray_health == lotus_windows::tray::TrayIntegrationHealth::Degraded;

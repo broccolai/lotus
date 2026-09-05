@@ -4,6 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::panic::PanicHookInfo;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, Once, TryLockError};
 
 use atomic_write_file::AtomicWriteFile;
@@ -20,6 +21,7 @@ const EXPORTED_LOG_BYTES_PER_FILE: usize = 32 * 1024;
 
 static PANIC_HOOK: Once = Once::new();
 static LOG_WRITES: Mutex<()> = Mutex::new(());
+static DROPPED_WRITES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
 pub enum DiagnosticsExportError {
@@ -60,6 +62,16 @@ pub fn record_message(context: &str, message: &str) {
 
 pub fn record_diagnostic(context: &str, message: &str) {
     write_entry("diagnostic", context, message);
+}
+
+/// Records numeric lifecycle state that is safe to retain in support exports.
+pub fn record_state(context: &'static str, fields: &[(&'static str, u64)]) {
+    let details = fields
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    write_entry("state", context, &format!("@state {details}"));
 }
 
 pub fn log_path() -> Option<PathBuf> {
@@ -156,10 +168,26 @@ fn append_recent_logs(output: &mut String) {
 
 fn redact_log_headers(text: &str) -> String {
     text.lines()
-        .filter(|line| line.starts_with('['))
+        .filter(|line| line.starts_with('[') || is_numeric_state_line(line))
         .map(redact_support_text)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn is_numeric_state_line(line: &str) -> bool {
+    line.strip_prefix("@state ").is_some_and(|fields| {
+        !fields.is_empty()
+            && fields.split_whitespace().all(|field| {
+                field.split_once('=').is_some_and(|(name, value)| {
+                    !name.is_empty()
+                        && name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+                        && !value.is_empty()
+                        && value.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            })
+    })
 }
 
 fn redact_support_text(text: &str) -> String {
@@ -219,33 +247,44 @@ fn record_panic(info: &PanicHookInfo<'_>) {
 
 fn write_entry(severity: &str, context: &str, details: &str) {
     let Some(path) = log_path() else {
+        DROPPED_WRITES.fetch_add(1, Ordering::Relaxed);
         return;
     };
     let _guard = match LOG_WRITES.try_lock() {
         Ok(guard) => guard,
         Err(TryLockError::Poisoned(error)) => error.into_inner(),
-        Err(TryLockError::WouldBlock) => return,
+        Err(TryLockError::WouldBlock) => {
+            DROPPED_WRITES.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
     };
     let Some(directory) = path.parent() else {
         return;
     };
     if fs::create_dir_all(directory).is_err() {
+        DROPPED_WRITES.fetch_add(1, Ordering::Relaxed);
         return;
     }
     rotate_if_needed(&path);
     let Ok(mut log) = OpenOptions::new().create(true).append(true).open(path) else {
+        DROPPED_WRITES.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    let _ = writeln!(
+    if writeln!(
         log,
-        "[{}] version={} pid={} severity={} context={}\n{}\n",
+        "[{}] version={} pid={} severity={} context={} dropped_writes={}\n{}\n",
         local_timestamp(),
         env!("CARGO_PKG_VERSION"),
         current_process_id(),
         severity,
         context,
+        DROPPED_WRITES.load(Ordering::Relaxed),
         details
-    );
+    )
+    .is_err()
+    {
+        DROPPED_WRITES.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 fn rotate_if_needed(path: &std::path::Path) {

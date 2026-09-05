@@ -218,49 +218,73 @@ pub const fn is_input_wake(message: u32) -> bool {
     message == INPUT_WAKE
 }
 
-pub struct UiHeartbeatTimer(Option<usize>);
+pub struct UiHeartbeatTimer {
+    timer: Option<usize>,
+    interval_ms: u32,
+}
 
 impl UiHeartbeatTimer {
-    pub fn start(enabled: bool) -> Result<Self, NativeError> {
-        if !enabled {
-            return Ok(Self(None));
-        }
-        let timer = unsafe { SetTimer(None, 0, health::HEARTBEAT_INTERVAL_MS, None) };
-        if timer == 0 {
-            return Err(windows::core::Error::from_thread().into());
-        }
-        Ok(Self(Some(timer)))
+    pub fn start(
+        input_enabled: bool,
+        maintenance_required: bool,
+    ) -> Result<Self, NativeError> {
+        let interval_ms = heartbeat_interval(input_enabled, maintenance_required);
+        let timer = start_heartbeat_timer(interval_ms)?;
+        Ok(Self { timer, interval_ms })
     }
 
     pub fn matches(&self, message: u32, parameter: usize) -> bool {
-        message == WM_TIMER && self.0 == Some(parameter)
+        message == WM_TIMER && self.timer == Some(parameter)
     }
 
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<(), NativeError> {
-        if enabled == self.0.is_some() {
+    pub fn set_modes(
+        &mut self,
+        input_enabled: bool,
+        maintenance_required: bool,
+    ) -> Result<(), NativeError> {
+        let interval_ms = heartbeat_interval(input_enabled, maintenance_required);
+        if interval_ms == self.interval_ms {
             return Ok(());
         }
 
-        if let Some(timer) = self.0.take() {
+        if let Some(timer) = self.timer.take() {
             let _ = unsafe { KillTimer(None, timer) };
-            return Ok(());
         }
-
-        let timer = unsafe { SetTimer(None, 0, health::HEARTBEAT_INTERVAL_MS, None) };
-        if timer == 0 {
-            return Err(windows::core::Error::from_thread().into());
-        }
-        self.0 = Some(timer);
+        self.timer = start_heartbeat_timer(interval_ms)?;
+        self.interval_ms = interval_ms;
         Ok(())
     }
 }
 
 impl Drop for UiHeartbeatTimer {
     fn drop(&mut self) {
-        if let Some(timer) = self.0 {
+        if let Some(timer) = self.timer {
             let _ = unsafe { KillTimer(None, timer) };
         }
     }
+}
+
+const MAINTENANCE_HEARTBEAT_INTERVAL_MS: u32 = 1_000;
+
+const fn heartbeat_interval(input_enabled: bool, maintenance_required: bool) -> u32 {
+    if input_enabled {
+        health::HEARTBEAT_INTERVAL_MS
+    } else if maintenance_required {
+        MAINTENANCE_HEARTBEAT_INTERVAL_MS
+    } else {
+        0
+    }
+}
+
+fn start_heartbeat_timer(interval_ms: u32) -> Result<Option<usize>, NativeError> {
+    if interval_ms == 0 {
+        return Ok(None);
+    }
+    let timer = unsafe { SetTimer(None, 0, interval_ms, None) };
+    if timer == 0 {
+        return Err(windows::core::Error::from_thread().into());
+    }
+    Ok(Some(timer))
 }
 
 pub(super) struct Shared {

@@ -1,6 +1,7 @@
 mod context_menu;
 mod dock;
 mod events;
+pub mod photo;
 mod procedure;
 mod search;
 mod settings;
@@ -11,9 +12,9 @@ mod transient;
 pub use context_menu::{ContextMenuWindow, PopupAlignment};
 pub use dock::DockWindow;
 pub use events::{
-    ContextMenuEvent, CursorMove, DockContextRequest, DockEvent, PointerEvent, SearchEdit,
-    SearchEvent, SelectionDirection, SettingsEvent, SettingsKey, SignedPoint, StatusEvent,
-    SwitcherEvent,
+    ContextMenuEvent, CursorMove, DismissReason, DismissRequest, DockContextRequest,
+    DockEvent, PointerEvent, SearchEdit, SearchEvent, SelectionDirection, SettingsEvent,
+    SettingsKey, SignedPoint, StatusEvent, SwitcherEvent,
 };
 pub use lotus_dock::appbar::AppBarLayout;
 pub use search::SearchWindow;

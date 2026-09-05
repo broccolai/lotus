@@ -69,14 +69,14 @@ impl TransientWindow {
     }
 
     pub(super) fn show_and_focus(&mut self) {
-        self.clear_events();
+        self.state().advance_interaction();
         self.native.reveal(Activation::Activate);
         let _ = claim_keyboard_focus(self.hwnd());
     }
 
     pub(super) fn hide(&mut self) {
         self.native.hide();
-        self.clear_events();
+        self.state().advance_interaction();
     }
 
     pub(super) fn state(&self) -> &WindowState {

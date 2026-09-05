@@ -82,6 +82,7 @@ impl MonitorPresentationRequest {
 }
 
 pub(super) struct MonitorDocks {
+    fullscreen_occlusion_allowed: bool,
     docks: Vec<MonitorDock>,
     rendered_revision: u64,
     topology_dirty: bool,
@@ -114,8 +115,9 @@ impl MonitorDocks {
             .any(|dock| dock.window.has_pending_events())
     }
 
-    pub(super) const fn new() -> Self {
+    pub(super) const fn new(fullscreen_occlusion_allowed: bool) -> Self {
         Self {
+            fullscreen_occlusion_allowed,
             docks: Vec::new(),
             rendered_revision: u64::MAX,
             topology_dirty: true,
@@ -270,7 +272,8 @@ impl MonitorDocks {
         tracker: &WindowTracker,
     ) -> Result<(), AppError> {
         for replica in &mut self.docks {
-            let fullscreen = tracker.fullscreen_on_same_monitor(replica.window.handle());
+            let fullscreen = self.fullscreen_occlusion_allowed
+                && tracker.fullscreen_on_same_monitor(replica.window.handle());
             let occluded = settings.hide_when_fullscreen && fullscreen;
             replica.window.set_fullscreen_occluded(occluded)?;
             if occluded {

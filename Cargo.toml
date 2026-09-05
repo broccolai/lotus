@@ -4,6 +4,7 @@ members = [
     "crates/lotus-dock",
     "crates/lotus-explorer-bridge",
     "crates/lotus-media",
+    "crates/lotus-photo",
     "crates/lotus-search",
     "crates/lotus-settings",
     "crates/lotus-shell-bridge",
@@ -16,7 +17,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "1.0.4"
+version = "1.0.5"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"

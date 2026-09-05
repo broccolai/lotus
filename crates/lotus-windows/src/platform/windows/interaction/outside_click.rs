@@ -23,6 +23,13 @@ pub(crate) struct OutsideClickObserver {
 }
 
 impl OutsideClickObserver {
+    pub(crate) fn is_current_message(target: HWND, generation: usize) -> bool {
+        generation != 0
+            && generation & 1 == 0
+            && OUTSIDE_CLICK_GENERATION.load(Ordering::Acquire) == generation
+            && OUTSIDE_CLICK_TARGET.load(Ordering::Relaxed) == target.0.addr().cast_signed()
+    }
+
     pub(crate) fn start(target: HWND, message: u32) -> Result<Self, NativeError> {
         let module = unsafe { GetModuleHandleW(None) }?;
         let hook = unsafe {
@@ -119,7 +126,7 @@ unsafe extern "system" fn outside_click_hook(
                     PostMessageW(
                         Some(target),
                         u32::try_from(raw_message).unwrap_or_default(),
-                        WPARAM(0),
+                        WPARAM(generation),
                         LPARAM(0),
                     )
                 };

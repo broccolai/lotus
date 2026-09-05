@@ -148,7 +148,6 @@ pub struct WindowTracker {
     window_revision: u64,
     fullscreen_revision: u64,
     presentation_revision: u64,
-    shell_fullscreen_window: Option<WindowId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -226,7 +225,7 @@ impl IdentityStabilization {
 }
 
 impl WindowTracker {
-    pub fn start() -> Result<Self, NativeError> {
+    pub fn start(mode: crate::startup::StartupMode) -> Result<Self, NativeError> {
         let (own_process_id, ui_thread) =
             unsafe { (GetCurrentProcessId(), GetCurrentThreadId()) };
         let shared = Arc::new(SharedState {
@@ -240,7 +239,14 @@ impl WindowTracker {
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
             .name("lotus-window-tracker".to_owned())
-            .spawn(move || run_worker(own_process_id, worker_shared, startup_sender))
+            .spawn(move || {
+                run_worker(
+                    own_process_id,
+                    worker_shared,
+                    startup_sender,
+                    mode.allows_shell_integration(),
+                );
+            })
             .map_err(|error| Error::new(E_FAIL, error.to_string()))?;
 
         match startup_receiver.recv_timeout(Duration::from_secs(2)) {
@@ -273,7 +279,6 @@ impl WindowTracker {
             window_revision: snapshot.window_revision,
             fullscreen_revision: snapshot.fullscreen_revision,
             presentation_revision: 0,
-            shell_fullscreen_window: None,
         })
     }
 
@@ -282,40 +287,30 @@ impl WindowTracker {
     }
 
     pub const fn fullscreen_window(&self) -> Option<WindowId> {
-        match self.shell_fullscreen_window {
-            Some(window) => Some(window),
-            None => self.fullscreen_window,
-        }
+        self.fullscreen_window
     }
 
     pub fn fullscreen_on_same_monitor(&self, window: WindowHandle) -> bool {
-        [self.shell_fullscreen_window, self.fullscreen_window]
+        foreground::observe_fullscreen_window(self.own_process_id)
             .into_iter()
-            .flatten()
             .filter_map(foreground::hwnd_from_window_id)
             .any(|fullscreen| foreground::same_monitor(window.raw(), fullscreen))
     }
 
     pub fn set_shell_fullscreen(&mut self, fullscreen: bool) {
-        if fullscreen {
-            self.shell_fullscreen_window =
-                foreground::observe_foreground_window(self.own_process_id);
-            if self.shell_fullscreen_window.is_none() {
-                self.fullscreen_window =
-                    foreground::observe_fullscreen_window(self.own_process_id);
-            }
+        let observed = foreground::observe_fullscreen_window(self.own_process_id);
+        if self.fullscreen_window != observed {
+            self.fullscreen_window = observed;
             self.presentation_revision = self.presentation_revision.wrapping_add(1);
-            return;
         }
-
-        let ended_window = self.shell_fullscreen_window.take();
-        let foreground = foreground::observe_foreground_window(self.own_process_id);
-        self.fullscreen_window = if foreground == ended_window {
-            None
-        } else {
-            foreground::observe_fullscreen_window(self.own_process_id)
-        };
-        self.presentation_revision = self.presentation_revision.wrapping_add(1);
+        crate::diagnostics::record_diagnostic(
+            "window_tracker.shell_fullscreen_notification",
+            if fullscreen {
+                "hint=entered foreground=refreshed"
+            } else {
+                "hint=exited foreground=refreshed"
+            },
+        );
     }
 
     pub const fn presentation_revision(&self) -> u64 {
@@ -364,16 +359,10 @@ impl WindowTracker {
     }
 
     pub fn refresh_fullscreen(&mut self) {
-        self.validate_shell_fullscreen();
-        self.fullscreen_window = foreground::observe_fullscreen_window(self.own_process_id);
-    }
-
-    fn validate_shell_fullscreen(&mut self) {
-        if self
-            .shell_fullscreen_window
-            .is_some_and(|window| !foreground::is_fullscreen_window(window))
-        {
-            self.shell_fullscreen_window = None;
+        let observed = foreground::observe_fullscreen_window(self.own_process_id);
+        if self.fullscreen_window != observed {
+            self.fullscreen_window = observed;
+            self.presentation_revision = self.presentation_revision.wrapping_add(1);
         }
     }
 }
@@ -382,6 +371,7 @@ fn run_worker(
     own_process_id: u32,
     shared: Arc<SharedState>,
     startup: mpsc::SyncSender<Result<PublishedSnapshot, String>>,
+    hooks_allowed: bool,
 ) {
     let Some(_apartment) = ComApartment::enter() else {
         let _ = startup.send(Err(
@@ -400,7 +390,11 @@ fn run_worker(
     shared
         .worker_thread
         .store(thread_id, AtomicOrdering::Release);
-    let hooks = match events::install_hooks() {
+    let hooks = match if hooks_allowed {
+        events::install_hooks()
+    } else {
+        Ok(Vec::new())
+    } {
         Ok(hooks) => hooks,
         Err(error) => {
             events::release_callback_thread(thread_id);

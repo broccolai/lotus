@@ -41,6 +41,31 @@ pub struct TaskbarStateGuard {
     journal: StateJournal<ShellTaskbarState>,
 }
 
+/// Parent-owned baseline used only to recover if the out-of-process guardian disappears.
+#[derive(Clone, Copy)]
+pub struct TaskbarStateSnapshot(TaskbarState);
+
+impl TaskbarStateSnapshot {
+    pub fn capture() -> Result<Self, TaskbarStateError> {
+        let mut backend = ShellTaskbarState;
+        backend.state().map(Self)
+    }
+
+    /// Restores a non-autohide baseline only while the guardian's autohide state remains active.
+    /// A user who already used autohide is never forced out of it by this fallback.
+    pub fn restore_exclusive_fallback(self) -> Result<bool, TaskbarStateError> {
+        if self.0.has_autohide() {
+            return Ok(false);
+        }
+        let mut backend = ShellTaskbarState;
+        if !backend.state()?.has_autohide() {
+            return Ok(false);
+        }
+        backend.set_state(self.0)?;
+        Ok(true)
+    }
+}
+
 impl TaskbarStateGuard {
     pub fn enable_autohide() -> Result<Self, TaskbarStateError> {
         StateJournal::enable(ShellTaskbarState).map(|journal| Self { journal })

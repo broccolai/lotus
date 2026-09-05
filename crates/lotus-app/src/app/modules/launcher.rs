@@ -63,7 +63,8 @@ impl ModuleHost {
         graphics: &mut DeviceState,
         dock_model: &DockRuntime,
     ) -> Result<LauncherEventOutcome, AppError> {
-        if matches!(event, lotus_windows::window::SearchEvent::DismissRequested) {
+        if matches!(event, lotus_windows::window::SearchEvent::DismissRequested(request) if self.launcher.window.accepts_dismiss(request))
+        {
             self.context_menu.close_if_owned_by(PopupOwner::Search);
         }
         let outcome = self

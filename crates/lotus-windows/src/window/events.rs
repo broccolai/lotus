@@ -95,7 +95,7 @@ pub enum SearchEvent {
     PointerLeft,
     PointerReleased { x: i32, y: i32 },
     ContextMenuRequested(DockContextRequest),
-    DismissRequested,
+    DismissRequested(DismissRequest),
     SubmitRequested,
     Resized { width: u32, height: u32 },
     DpiChanged { dpi: u32 },
@@ -113,7 +113,7 @@ pub enum ContextMenuEvent {
     Scroll(SelectionDirection),
     SelectionRequested,
     ShiftChanged(bool),
-    DismissRequested,
+    DismissRequested(DismissRequest),
     Resized { width: u32, height: u32 },
     DpiChanged { dpi: u32 },
     RenderRequested,
@@ -128,6 +128,21 @@ pub enum SwitcherEvent {
     Resized { width: u32, height: u32 },
     DpiChanged { dpi: u32 },
     RenderRequested,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DismissReason {
+    Escape,
+    OwnerActivated,
+    Deactivated,
+    OutsideClick,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DismissRequest {
+    pub reason: DismissReason,
+    pub(super) generation: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

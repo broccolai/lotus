@@ -21,7 +21,7 @@ pub enum StartupRegistrationError {
     #[error("Lotus could not locate its executable for Windows startup: {0}")]
     CurrentExecutable(#[from] std::io::Error),
     #[error(
-        "Lotus is running from the temporary path `{path}` and will not register it for Windows startup"
+        "Lotus executable `{path}` is not a verified installation and will not register for Windows startup"
     )]
     TransientExecutable { path: PathBuf },
     #[error("Windows could not update the Lotus startup entry: {0}")]
@@ -60,8 +60,12 @@ pub fn sync(enabled: bool) -> Result<(), StartupRegistrationError> {
 
 fn stable_startup_executable() -> Result<PathBuf, StartupRegistrationError> {
     let current = std::env::current_exe()?;
-    if !is_temporary_path(&current) {
+    if crate::update::is_installer_managed_path(&current) {
         return Ok(current);
+    }
+
+    if let Some(installed) = crate::update::installer_executable_from_metadata() {
+        return Ok(installed);
     }
 
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
@@ -69,16 +73,9 @@ fn stable_startup_executable() -> Result<PathBuf, StartupRegistrationError> {
             .join("Programs")
             .join("Lotus")
             .join("lotus.exe");
-        if installed.is_file() && !is_temporary_path(&installed) {
+        if crate::update::is_installer_managed_path(&installed) {
             return Ok(installed);
         }
-    }
-
-    if let Some(registered) = registered_startup_executable()
-        && registered.is_file()
-        && !is_temporary_path(&registered)
-    {
-        return Ok(registered);
     }
 
     Err(StartupRegistrationError::TransientExecutable { path: current })
@@ -88,16 +85,12 @@ fn remove_transient_startup_registration() -> Result<(), StartupRegistrationErro
     let Ok(key) = windows_registry::CURRENT_USER.open(RUN_KEY) else {
         return Ok(());
     };
-    if registered_startup_executable_from(&key).is_some_and(|path| is_temporary_path(&path))
+    if registered_startup_executable_from(&key)
+        .is_some_and(|path| !crate::update::is_installer_managed_path(&path))
     {
         key.remove_value(VALUE_NAME)?;
     }
     Ok(())
-}
-
-fn registered_startup_executable() -> Option<PathBuf> {
-    let key = windows_registry::CURRENT_USER.open(RUN_KEY).ok()?;
-    registered_startup_executable_from(&key)
 }
 
 fn registered_startup_executable_from(key: &windows_registry::Key) -> Option<PathBuf> {
@@ -113,13 +106,6 @@ fn registered_startup_executable_from(key: &windows_registry::Key) -> Option<Pat
         .then_some(path)
 }
 
-fn is_temporary_path(path: &Path) -> bool {
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
-    let temporary = std::env::temp_dir();
-    let temporary = temporary.canonicalize().unwrap_or(temporary);
-    path.starts_with(temporary)
-}
-
 fn startup_command(executable: &Path) -> String {
     format!(r#""{}""#, executable.display())
 }
@@ -129,11 +115,36 @@ pub enum StartupMode {
     #[default]
     Standard,
     Development,
+    Preview,
 }
 
 impl StartupMode {
     pub const fn is_development(self) -> bool {
         matches!(self, Self::Development)
+    }
+
+    pub const fn allows_shell_integration(self) -> bool {
+        !matches!(self, Self::Preview)
+    }
+
+    pub const fn allows_startup_registration(self) -> bool {
+        matches!(self, Self::Standard) && !cfg!(debug_assertions)
+    }
+
+    pub const fn allows_update_operations(self) -> bool {
+        matches!(self, Self::Standard) && !cfg!(debug_assertions)
+    }
+
+    pub const fn uses_isolated_settings(self) -> bool {
+        matches!(self, Self::Preview)
+    }
+
+    pub const fn restart_argument(self) -> &'static str {
+        match self {
+            Self::Standard => "--normal-mode",
+            Self::Development => "--development",
+            Self::Preview => "--test-mode",
+        }
     }
 }
 
@@ -156,8 +167,18 @@ pub enum StartupArgsError {
     ConflictingRestartProcesses { first: u32, second: u32 },
     #[error("--cleanup-update requires a staging directory")]
     MissingCleanupDirectory,
-    #[error("--development cannot be used with {argument}")]
-    DevelopmentWithInstalledUpdateArgument { argument: &'static str },
+    #[error("unsupported Lotus startup argument `{0}`")]
+    UnknownArgument(String),
+    #[error("conflicting Lotus startup modes `{first}` and `{second}`")]
+    ConflictingModes {
+        first: &'static str,
+        second: &'static str,
+    },
+    #[error("{mode} cannot be used with {argument}")]
+    NonStandardModeWithInstalledUpdateArgument {
+        mode: &'static str,
+        argument: &'static str,
+    },
 }
 
 pub fn parse_startup_args<I, S>(arguments: I) -> Result<StartupOptions, StartupArgsError>
@@ -167,7 +188,12 @@ where
 {
     let arguments = arguments.into_iter().collect::<Vec<_>>();
     let mut restart_after = None;
-    let mut mode = StartupMode::Standard;
+    let mut mode = if cfg!(debug_assertions) {
+        StartupMode::Development
+    } else {
+        StartupMode::Standard
+    };
+    let mut requested_mode = None;
     let mut open_settings = false;
     let mut cleanup_update = None;
     let mut post_install_health = false;
@@ -176,7 +202,11 @@ where
     while index < arguments.len() {
         let argument = arguments[index].as_ref();
         if argument_eq(argument, "--development") {
-            mode = StartupMode::Development;
+            select_mode(&mut mode, &mut requested_mode, StartupMode::Development)?;
+        } else if argument_eq(argument, "--test-mode") {
+            select_mode(&mut mode, &mut requested_mode, StartupMode::Preview)?;
+        } else if argument_eq(argument, "--normal-mode") {
+            select_mode(&mut mode, &mut requested_mode, StartupMode::Standard)?;
         } else if argument_eq(argument, "--restart-after") {
             index += 1;
             let value = arguments
@@ -205,20 +235,35 @@ where
             ));
         } else if argument_eq(argument, "--post-install-health") {
             post_install_health = true;
+        } else if argument_eq(argument, "--install-update") {
+            index += 1;
+            if arguments.get(index).is_none() {
+                return Err(StartupArgsError::MissingCleanupDirectory);
+            }
+        } else {
+            return Err(StartupArgsError::UnknownArgument(
+                argument.to_string_lossy().into_owned(),
+            ));
         }
         index += 1;
     }
 
-    if mode == StartupMode::Development {
+    if mode != StartupMode::Standard {
         if cleanup_update.is_some() {
-            return Err(StartupArgsError::DevelopmentWithInstalledUpdateArgument {
-                argument: "--cleanup-update",
-            });
+            return Err(
+                StartupArgsError::NonStandardModeWithInstalledUpdateArgument {
+                    mode: mode_name(mode),
+                    argument: "--cleanup-update",
+                },
+            );
         }
         if post_install_health {
-            return Err(StartupArgsError::DevelopmentWithInstalledUpdateArgument {
-                argument: "--post-install-health",
-            });
+            return Err(
+                StartupArgsError::NonStandardModeWithInstalledUpdateArgument {
+                    mode: mode_name(mode),
+                    argument: "--post-install-health",
+                },
+            );
         }
     }
 
@@ -229,6 +274,32 @@ where
         cleanup_update,
         post_install_health,
     })
+}
+
+fn select_mode(
+    mode: &mut StartupMode,
+    requested_mode: &mut Option<StartupMode>,
+    next: StartupMode,
+) -> Result<(), StartupArgsError> {
+    if let Some(previous) = *requested_mode
+        && previous != next
+    {
+        return Err(StartupArgsError::ConflictingModes {
+            first: mode_name(previous),
+            second: mode_name(next),
+        });
+    }
+    *mode = next;
+    *requested_mode = Some(next);
+    Ok(())
+}
+
+const fn mode_name(mode: StartupMode) -> &'static str {
+    match mode {
+        StartupMode::Standard => "--normal-mode",
+        StartupMode::Development => "--development",
+        StartupMode::Preview => "--test-mode",
+    }
 }
 
 fn argument_eq(argument: &OsStr, expected: &str) -> bool {

@@ -3,11 +3,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IsWindow, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindowAsync,
 };
 
-use super::taskbar_windows::taskbar_windows;
+use super::taskbar_windows::{TaskbarWindowIdentity, taskbar_windows};
 
 /// Restores every taskbar window that this transaction actually hid.
 pub(super) struct TaskbarVisibilityTransaction {
-    hidden_windows: Vec<HWND>,
+    hidden_windows: Vec<TaskbarWindowIdentity>,
 }
 
 impl TaskbarVisibilityTransaction {
@@ -24,21 +24,32 @@ impl TaskbarVisibilityTransaction {
     }
 
     pub(super) fn hide(&mut self, hwnd: HWND) {
+        let Some(identity) = TaskbarWindowIdentity::capture(hwnd) else {
+            return;
+        };
         // SAFETY: The callback or current shell lookup supplied a live top-level taskbar HWND.
         if !unsafe { IsWindowVisible(hwnd).as_bool() } {
             return;
         }
-        if !self.hidden_windows.contains(&hwnd) {
-            self.hidden_windows.push(hwnd);
+        if !self
+            .hidden_windows
+            .iter()
+            .any(|existing| existing.hwnd() == hwnd)
+        {
+            self.hidden_windows.push(identity);
+        }
+        if !identity.still_matches() {
+            return;
         }
         // SAFETY: Hiding an exact taskbar-class HWND is reversible and its visibility is journaled.
         let _ = unsafe { ShowWindowAsync(hwnd, SW_HIDE) };
     }
 
     fn restore(&self) {
-        for &hwnd in &self.hidden_windows {
+        for identity in &self.hidden_windows {
+            let hwnd = identity.hwnd();
             // SAFETY: The handle is only used when Windows still recognizes it.
-            if unsafe { IsWindow(Some(hwnd)).as_bool() } {
+            if identity.still_matches() && unsafe { IsWindow(Some(hwnd)).as_bool() } {
                 // SAFETY: This restores only a taskbar window that was visible when
                 // the guardian first observed it, without activating it.
                 let _ = unsafe { ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE) };

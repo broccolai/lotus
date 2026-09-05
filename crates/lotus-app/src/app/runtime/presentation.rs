@@ -46,6 +46,16 @@ pub(super) fn sync_monitor_presentation(
         dock.set_mascot_animation_delay(None)?;
         return Ok(());
     }
+    if !runtime.startup_mode.allows_shell_integration() {
+        let _changed = dock.set_fullscreen_occluded(false)?;
+        auxiliary.set_status_fullscreen_occluded(false)?;
+        dock.set_mascot_animation_delay(
+            dock.is_visible()
+                .then(|| dock_model.mascot_animation_delay())
+                .flatten(),
+        )?;
+        return Ok(());
+    }
     apply_fullscreen_visibility(dock, surface, window_tracker, dock_model, auxiliary)?;
     let mascot_visible = (dock.is_visible() && !dock.is_fullscreen_occluded())
         || auxiliary.has_visible_monitor_dock();
@@ -74,7 +84,18 @@ pub(crate) fn apply_fullscreen_visibility(
         auxiliary.hide_launcher();
         surface.stop_animation();
     }
-    let _changed = dock.set_fullscreen_occluded(occluded)?;
+    let changed = dock.set_fullscreen_occluded(occluded)?;
+    if changed {
+        lotus_windows::diagnostics::record_state(
+            "dock.visibility",
+            &[
+                ("occluded", u64::from(occluded)),
+                ("fullscreen_present", u64::from(fullscreen_present)),
+                ("search_reveal", u64::from(temporarily_revealed)),
+                ("dock_visible", u64::from(dock.is_visible())),
+            ],
+        );
+    }
     auxiliary.set_status_fullscreen_occluded(occluded)?;
     Ok(())
 }

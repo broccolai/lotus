@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -13,11 +13,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::Error;
 
-use super::taskbar_windows::is_taskbar_window;
+use super::taskbar_windows::{is_taskbar_window, restore_verified_taskbars};
 use super::visibility_transaction::TaskbarVisibilityTransaction;
 use crate::exclusive_taskbar::ExclusiveTaskbarError;
 use crate::messages::TASKBAR_EVENT as TASKBAR_EVENT_MESSAGE;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 static EVENT_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
 pub(super) struct TaskbarEventObserver {
@@ -48,7 +49,8 @@ impl TaskbarEventObserver {
             Err(_) => {
                 stop.store(true, Ordering::Release);
                 post_quit(EVENT_THREAD_ID.load(Ordering::Acquire));
-                let _ = thread.join();
+                let _ = join_if_finished(thread);
+                restore_verified_taskbars();
                 Err(ExclusiveTaskbarError::EventObserverStopped)
             }
         }
@@ -72,15 +74,42 @@ impl TaskbarEventObserver {
             };
         }
     }
+
+    pub(super) fn shutdown(&mut self) -> bool {
+        self.stop.store(true, Ordering::Release);
+        clear_event_thread(self.thread_id);
+        post_quit(self.thread_id);
+        let Some(thread) = self.thread.take() else {
+            return true;
+        };
+        let started = Instant::now();
+        while !thread.is_finished() && started.elapsed() < SHUTDOWN_TIMEOUT {
+            thread::sleep(Duration::from_millis(25));
+        }
+        if thread.is_finished() {
+            let _ = thread.join();
+            return true;
+        }
+        false
+    }
+}
+
+fn join_if_finished(thread: thread::JoinHandle<()>) -> bool {
+    let started = Instant::now();
+    while !thread.is_finished() && started.elapsed() < SHUTDOWN_TIMEOUT {
+        thread::sleep(Duration::from_millis(25));
+    }
+    if thread.is_finished() {
+        let _ = thread.join();
+        true
+    } else {
+        false
+    }
 }
 
 impl Drop for TaskbarEventObserver {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        post_quit(self.thread_id);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        let _ = self.shutdown();
     }
 }
 
@@ -116,7 +145,7 @@ fn taskbar_event_loop(ready: &mpsc::SyncSender<Result<u32, Error>>, stop: &Atomi
     loop {
         // SAFETY: `message` remains writable and this thread owns its message queue.
         let result = unsafe { GetMessageW(&raw mut message, None, 0, 0) }.0;
-        if result <= 0 {
+        if result <= 0 || stop.load(Ordering::Acquire) {
             break;
         }
         if message.message == TASKBAR_EVENT_MESSAGE {

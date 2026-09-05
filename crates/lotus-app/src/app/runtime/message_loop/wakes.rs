@@ -42,7 +42,7 @@ impl MessageLoop<'_, '_> {
         let mut changed = false;
         let mut presented_size = self.dock_model.scene().desired_size();
         if wakes.update {
-            update_events::handle_update_results(self.auxiliary);
+            update_events::handle_update_results(self.auxiliary, self.runtime.startup_mode);
             changed = true;
         }
         if wakes.badges

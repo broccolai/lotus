@@ -73,7 +73,7 @@ impl EventQueue {
         // WM_CONTEXTMENU confirms that Windows completed an in-Search right-click. A
         // dismissal queued earlier by the low-level outside-click observer belongs to the
         // same handoff and must not close the parent before its child popup opens.
-        events.retain(|event| !matches!(event, SearchEvent::DismissRequested));
+        events.retain(|event| !matches!(event, SearchEvent::DismissRequested(request) if request.reason == super::DismissReason::OutsideClick));
         events.push_back(SearchEvent::ContextMenuRequested(request));
     }
 

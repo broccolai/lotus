@@ -7,6 +7,8 @@ use super::{
     record_duration, saturating_add, saturating_sub, usize_as_u64,
 };
 
+static LAST_SLOW_EVENT_LOG_MS: AtomicU64 = AtomicU64::new(0);
+
 impl ResponsivenessMetrics {
     pub fn record_input_callback(&self) {
         saturating_add(&self.input_callbacks, 1);
@@ -328,6 +330,31 @@ impl ResponsivenessMetrics {
         }
         if event.total_us >= 1_000_000 {
             saturating_add(&self.ui_message_critical, 1);
+        }
+        let previous = LAST_SLOW_EVENT_LOG_MS.load(Ordering::Relaxed);
+        if (previous == 0 || event.timestamp_ms.saturating_sub(previous) >= 1_000)
+            && LAST_SLOW_EVENT_LOG_MS
+                .compare_exchange(
+                    previous,
+                    event.timestamp_ms,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+        {
+            crate::diagnostics::record_state(
+                "ui.slow_event",
+                &[
+                    ("timestamp_ms", event.timestamp_ms),
+                    ("message_id", u64::from(event.message_id)),
+                    ("total_us", event.total_us),
+                    ("slowest_phase_us", event.slowest_phase_us),
+                    ("dirty_mask", u64::from(event.dirty_surface_mask)),
+                    ("visible_mask", u64::from(event.visible_feature_mask)),
+                    ("graphics_generation", event.graphics_generation),
+                    ("input_fail_open", u64::from(event.input_fail_open)),
+                ],
+            );
         }
         if let Ok(mut ring) = self.slow_ui_events.lock() {
             if ring.events.len() == SLOW_UI_EVENTS {

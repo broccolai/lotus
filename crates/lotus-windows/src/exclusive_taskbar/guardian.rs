@@ -6,34 +6,38 @@ use std::time::{Duration, SystemTime};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    CreateEventW, EVENT_MODIFY_STATE, OpenEventW, OpenProcess, PROCESS_SYNCHRONIZE,
+    SYNCHRONIZATION_ACCESS_RIGHTS, SetEvent, WaitForSingleObject,
 };
+use windows::core::{HSTRING, PCWSTR};
 
 use super::observer::TaskbarEventObserver;
+use super::taskbar_windows::restore_verified_taskbars;
 use crate::exclusive_taskbar::ExclusiveTaskbarError;
 use crate::taskbar_state::TaskbarStateGuard;
 
 pub(super) const GUARDIAN_ARGUMENT: &str = "--lotus-taskbar-guardian";
 pub(super) const READY_FILE: &str = "ready";
 pub(super) const REFRESH_FILE: &str = "refresh";
-pub(super) const STOP_FILE: &str = "stop";
 pub(super) const START_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL_MILLISECONDS: u32 = 100;
 
 pub(super) fn spawn(
     parent_process_id: u32,
     control_directory: &Path,
+    cancellation_event: &str,
 ) -> Result<Child, std::io::Error> {
     Command::new(std::env::current_exe()?)
         .arg(GUARDIAN_ARGUMENT)
         .arg(parent_process_id.to_string())
         .arg(control_directory)
+        .arg(cancellation_event)
         .spawn()
 }
 
 pub(super) fn request<I, S>(
     arguments: I,
-) -> Result<Option<(u32, PathBuf)>, ExclusiveTaskbarError>
+) -> Result<Option<(u32, PathBuf, String)>, ExclusiveTaskbarError>
 where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
@@ -54,31 +58,38 @@ where
         .next()
         .map(PathBuf::from)
         .ok_or(ExclusiveTaskbarError::InvalidGuardianArguments)?;
+    let cancellation_event = arguments
+        .next()
+        .and_then(|value| value.into_string().ok())
+        .filter(|value| !value.is_empty())
+        .ok_or(ExclusiveTaskbarError::InvalidGuardianArguments)?;
     if arguments.next().is_some() {
         return Err(ExclusiveTaskbarError::InvalidGuardianArguments);
     }
 
-    Ok(Some((process_id, directory)))
+    Ok(Some((process_id, directory, cancellation_event)))
 }
 
 pub(super) fn run(
     parent_process_id: u32,
     control_directory: &Path,
+    cancellation_event: &str,
 ) -> Result<(), ExclusiveTaskbarError> {
     let parent = ProcessHandle::open(parent_process_id)?;
+    let cancellation = CancellationEvent::open(cancellation_event)?;
     let mut taskbar_state = TaskbarStateGuard::enable_autohide()?;
-    let event_observer = TaskbarEventObserver::start()?;
+    let mut event_observer = TaskbarEventObserver::start()?;
     fs::write(control_directory.join(READY_FILE), [])?;
 
     loop {
-        // SAFETY: `parent` owns a live synchronization handle and the bounded timeout
-        // keeps the guardian responsive to cancellation and taskbar recreation.
+        if cancellation.is_signalled()? {
+            break;
+        }
+        // SAFETY: `parent` owns a live synchronization handle. The bounded wait keeps the
+        // guardian responsive to its independent cancellation event and taskbar recreation.
         match unsafe { WaitForSingleObject(parent.0, POLL_INTERVAL_MILLISECONDS) } {
             WAIT_OBJECT_0 => break,
             WAIT_TIMEOUT => {
-                if control_directory.join(STOP_FILE).exists() {
-                    break;
-                }
                 let refresh = control_directory.join(REFRESH_FILE);
                 if refresh.exists() {
                     let _ = fs::remove_file(refresh);
@@ -92,8 +103,16 @@ pub(super) fn run(
         }
     }
 
-    drop(event_observer);
-    let _ = taskbar_state.restore();
+    let observer_stopped = event_observer.shutdown();
+    restore_verified_taskbars();
+    let restored = taskbar_state.restore().is_ok();
+    crate::diagnostics::record_state(
+        "exclusive_taskbar.guardian_shutdown",
+        &[
+            ("observer_stopped", u64::from(observer_stopped)),
+            ("taskbar_restored", u64::from(restored)),
+        ],
+    );
     cleanup_control_directory(control_directory);
     Ok(())
 }
@@ -108,8 +127,66 @@ pub(super) fn control_directory() -> PathBuf {
 pub(super) fn cleanup_control_directory(directory: &Path) {
     let _ = fs::remove_file(directory.join(READY_FILE));
     let _ = fs::remove_file(directory.join(REFRESH_FILE));
-    let _ = fs::remove_file(directory.join(STOP_FILE));
     let _ = fs::remove_dir(directory);
+}
+
+pub(super) struct CancellationEvent {
+    handle: HANDLE,
+    name: String,
+}
+
+impl CancellationEvent {
+    pub(super) fn create() -> Result<Self, ExclusiveTaskbarError> {
+        let name = format!(
+            "Local\\Lotus.TaskbarGuardian.{}.{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos())
+        );
+        let wide = HSTRING::from(&name);
+        let handle = unsafe { CreateEventW(None, true, false, PCWSTR(wide.as_ptr())) }
+            .map_err(|error| ExclusiveTaskbarError::ParentProcess(error.into()))?;
+        Ok(Self { handle, name })
+    }
+
+    fn open(name: &str) -> Result<Self, ExclusiveTaskbarError> {
+        let wide = HSTRING::from(name);
+        let handle = unsafe {
+            OpenEventW(
+                EVENT_MODIFY_STATE | SYNCHRONIZATION_ACCESS_RIGHTS(PROCESS_SYNCHRONIZE.0),
+                false,
+                PCWSTR(wide.as_ptr()),
+            )
+        }
+        .map_err(|error| ExclusiveTaskbarError::ParentProcess(error.into()))?;
+        Ok(Self {
+            handle,
+            name: name.to_owned(),
+        })
+    }
+
+    pub(super) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(super) fn signal(&self) {
+        let _ = unsafe { SetEvent(self.handle) };
+    }
+
+    fn is_signalled(&self) -> Result<bool, ExclusiveTaskbarError> {
+        match unsafe { WaitForSingleObject(self.handle, 0) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(ExclusiveTaskbarError::ParentWait),
+        }
+    }
+}
+
+impl Drop for CancellationEvent {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.handle) };
+    }
 }
 
 struct ProcessHandle(HANDLE);

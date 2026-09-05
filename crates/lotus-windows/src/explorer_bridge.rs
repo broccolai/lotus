@@ -24,6 +24,8 @@ pub(crate) struct ExplorerBridgeLease {
     module: HMODULE,
     hook: HHOOK,
     taskbar: HWND,
+    explorer_process: u32,
+    explorer_thread: u32,
     owner: HWND,
     message: u32,
     acknowledgement: u32,
@@ -33,7 +35,7 @@ pub(crate) struct ExplorerBridgeLease {
 impl ExplorerBridgeLease {
     pub(crate) fn attach(owner: HWND) -> Option<Self> {
         let taskbar = primary_taskbar()?;
-        let thread_id = trusted_explorer_thread(taskbar)?;
+        let (explorer_process, explorer_thread) = trusted_explorer_identity(taskbar)?;
         let path = HSTRING::from(
             crate::bridge_cache::cached_bridge_path(
                 crate::bridge_cache::BridgeBinary::Explorer,
@@ -54,7 +56,7 @@ impl ExplorerBridgeLease {
                 WH_CALLWNDPROC,
                 hook_procedure,
                 Some(HINSTANCE(module.0)),
-                thread_id,
+                explorer_thread,
             )
         }) else {
             let _ = unsafe { FreeLibrary(module) };
@@ -88,12 +90,24 @@ impl ExplorerBridgeLease {
             module,
             hook,
             taskbar,
+            explorer_process,
+            explorer_thread,
             owner,
             message,
             acknowledgement,
             token,
         };
         lease.configure(true).then_some(lease)
+    }
+
+    pub(crate) fn reassert(&self) -> bool {
+        self.configure(true)
+    }
+
+    pub(crate) fn is_usable(&self) -> bool {
+        trusted_explorer_identity(self.taskbar).is_some_and(|(process, thread)| {
+            process == self.explorer_process && thread == self.explorer_thread
+        })
     }
 
     fn configure(&self, enabled: bool) -> bool {
@@ -189,7 +203,7 @@ fn primary_taskbar() -> Option<HWND> {
     unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) }.ok()
 }
 
-fn trusted_explorer_thread(window: HWND) -> Option<u32> {
+fn trusted_explorer_identity(window: HWND) -> Option<(u32, u32)> {
     let mut class_name = [0_u16; 32];
     let length = unsafe { GetClassNameW(window, &mut class_name) };
     let length = usize::try_from(length).ok()?;
@@ -205,7 +219,7 @@ fn trusted_explorer_thread(window: HWND) -> Option<u32> {
 
     let actual = crate::window_tracker::process_image_path(process_id)?;
     let expected = PathBuf::from(env::var_os("SystemRoot")?).join("explorer.exe");
-    same_windows_path(&actual, &expected).then_some(thread_id)
+    same_windows_path(&actual, &expected).then_some((process_id, thread_id))
 }
 
 fn same_windows_path(left: &Path, right: &Path) -> bool {

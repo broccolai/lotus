@@ -19,9 +19,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::w;
 
 pub(crate) use super::events::{
-    ContextMenuEvent, CursorMove, DockContextRequest, DockEvent, PointerEvent, SearchEdit,
-    SearchEvent, SelectionDirection, SettingsEvent, SettingsKey, SignedPoint, StatusEvent,
-    SwitcherEvent,
+    ContextMenuEvent, CursorMove, DismissReason, DismissRequest, DockContextRequest,
+    DockEvent, PointerEvent, SearchEdit, SearchEvent, SelectionDirection, SettingsEvent,
+    SettingsKey, SignedPoint, StatusEvent, SwitcherEvent,
 };
 use crate::NativeError;
 use crate::platform::windows::interaction::{PointerCursor, WindowTimer, request_exit};
@@ -51,6 +51,7 @@ pub(super) enum WindowKind {
 
 pub struct WindowState {
     pending: EventQueue,
+    interaction_generation: Cell<usize>,
     corner_radius: Cell<u32>,
     pub(super) tracking_mouse_leave: Cell<bool>,
     pub(super) left_button_pressed: Cell<bool>,
@@ -65,6 +66,7 @@ impl WindowState {
     fn with_pending(pending: EventQueue) -> Self {
         Self {
             pending,
+            interaction_generation: Cell::new(0),
             corner_radius: Cell::new(0),
             tracking_mouse_leave: Cell::new(false),
             left_button_pressed: Cell::new(false),
@@ -145,7 +147,7 @@ impl WindowState {
                     self.push_event(ContextMenuEvent::PointerReleased { x, y });
                 }
                 PointerEvent::Cancelled => {
-                    self.push_event(ContextMenuEvent::DismissRequested);
+                    self.dismiss(DismissReason::Cancelled);
                 }
                 PointerEvent::LeftButtonPressed { .. } => {}
             },
@@ -171,6 +173,34 @@ impl WindowState {
     pub fn clear_events(&self) {
         self.pending.clear();
         self.pending_high_surrogate.set(None);
+    }
+
+    pub(super) fn advance_interaction(&self) {
+        self.interaction_generation
+            .set(self.interaction_generation.get().wrapping_add(1));
+        self.clear_events();
+    }
+
+    pub(super) fn accepts_dismiss(&self, request: DismissRequest) -> bool {
+        request.generation == self.interaction_generation.get()
+    }
+
+    pub(super) fn interaction_generation(&self) -> usize {
+        self.interaction_generation.get()
+    }
+
+    fn dismiss(&self, reason: DismissReason) {
+        let request = DismissRequest {
+            reason,
+            generation: self.interaction_generation.get(),
+        };
+        match self.kind() {
+            WindowKind::Search => self.push_event(SearchEvent::DismissRequested(request)),
+            WindowKind::ContextMenu => {
+                self.push_event(ContextMenuEvent::DismissRequested(request));
+            }
+            _ => {}
+        }
     }
 
     fn kind(&self) -> WindowKind {
@@ -222,6 +252,10 @@ impl Default for WindowState {
     fn default() -> Self {
         Self::with_pending(EventQueue::dock())
     }
+}
+
+fn request_dismiss(hwnd: HWND, reason: DismissReason) {
+    with_window_state(hwnd, |state| state.dismiss(reason));
 }
 
 pub struct WindowClass {

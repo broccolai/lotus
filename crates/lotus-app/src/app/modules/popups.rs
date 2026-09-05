@@ -3,11 +3,13 @@ use lotus_core::window::{WindowId, WindowInfo};
 use lotus_windows::WindowHandle;
 use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth};
 use lotus_windows::search_catalog::ApplicationCatalogSnapshot;
-use lotus_windows::window::{ContextMenuEvent, PopupAlignment, SignedPoint};
+use lotus_windows::window::{DismissReason, PopupAlignment, SignedPoint};
 
 use super::ModuleHost;
 use crate::app::AppError;
-use crate::app::context_menu::{AppMenuOptions, ContextMenuEventOutcome, PopupOwner};
+use crate::app::context_menu::{
+    AppMenuOptions, ContextMenuEventOutcome, PopupEvent, PopupOwner,
+};
 use crate::app::dock::DockRuntime;
 
 impl ModuleHost {
@@ -67,20 +69,20 @@ impl ModuleHost {
         self.switcher.window.has_pending_events()
     }
 
-    pub(in crate::app) fn drain_context_menu_events(&mut self) -> Vec<ContextMenuEvent> {
+    pub(in crate::app) fn drain_context_menu_events(&mut self) -> Vec<PopupEvent> {
         self.context_menu.drain_events()
     }
 
     pub(in crate::app) fn handle_context_menu_event(
         &mut self,
-        event: ContextMenuEvent,
+        event: PopupEvent,
     ) -> Result<ContextMenuEventOutcome, AppError> {
         self.context_menu.handle_event(event)
     }
 
     pub(in crate::app) fn hide_context_menu(&mut self) {
         let owner = self.context_menu.hide();
-        self.resume_popup_parent(owner);
+        self.resume_popup_parent(owner, None);
     }
 
     pub(in crate::app) fn open_context_menu(
@@ -123,7 +125,7 @@ impl ModuleHost {
     ) -> Result<(), AppError> {
         self.launcher.suspend_for_child_popup();
         if let Err(error) = self.context_menu.open_file_location(anchor, path, graphics) {
-            self.launcher.resume_after_child_popup_if_visible();
+            self.launcher.resume_after_child_popup_if_visible(true);
             return Err(error);
         }
         Ok(())
@@ -184,10 +186,32 @@ impl ModuleHost {
         self.context_menu.replace_picker(style, windows, graphics)
     }
 
-    pub(in crate::app) fn resume_popup_parent(&mut self, owner: Option<PopupOwner>) {
-        if matches!(owner, Some(PopupOwner::Search)) {
-            self.launcher.resume_after_child_popup_if_visible();
+    pub(in crate::app) fn complete_popup_action(&mut self, owner: Option<PopupOwner>) {
+        if owner == Some(PopupOwner::Search) {
+            self.launcher.resume_after_child_popup_if_visible(true);
             self.launcher.focus_if_visible();
+        }
+    }
+
+    pub(in crate::app) fn resume_popup_parent(
+        &mut self,
+        owner: Option<PopupOwner>,
+        reason: Option<DismissReason>,
+    ) {
+        if matches!(owner, Some(PopupOwner::Search)) {
+            if matches!(
+                reason,
+                Some(DismissReason::Deactivated | DismissReason::OutsideClick)
+            ) {
+                self.hide_launcher();
+                return;
+            }
+            let restore_focus = reason == Some(DismissReason::Escape);
+            self.launcher
+                .resume_after_child_popup_if_visible(restore_focus);
+            if restore_focus {
+                self.launcher.focus_if_visible();
+            }
         }
     }
 }

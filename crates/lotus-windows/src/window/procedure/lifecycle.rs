@@ -13,10 +13,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{
-    ContextMenuEvent, DockContextRequest, SearchEvent, SettingsEvent, SignedPoint,
-    SwitcherEvent, WindowKind, clear_window_state, initialize_window_state,
-    is_dock_context_window, is_dock_window, is_search_window, is_settings_window, low_word,
-    push_context_request, push_dpi_event, push_event, push_resize_event, window_kind,
+    DismissReason, DockContextRequest, SettingsEvent, SignedPoint, SwitcherEvent,
+    WindowKind, clear_window_state, initialize_window_state, is_dock_context_window,
+    is_dock_window, is_search_window, is_settings_window, low_word, push_context_request,
+    push_dpi_event, push_event, push_resize_event, request_dismiss, window_kind,
     with_window_state,
 };
 use crate::platform::windows::display::{nearest_display, nearest_display_to_point};
@@ -104,12 +104,12 @@ fn apply_pointer_cursor(hwnd: HWND) -> bool {
 
 fn dispatch_close_message(hwnd: HWND) -> LRESULT {
     match window_kind(hwnd) {
-        Some(WindowKind::Search) => push_event(hwnd, SearchEvent::DismissRequested),
+        Some(WindowKind::Search) => request_dismiss(hwnd, DismissReason::Cancelled),
         Some(WindowKind::Settings) => {
             push_event(hwnd, SettingsEvent::CloseRequested);
         }
         Some(WindowKind::ContextMenu) => {
-            push_event(hwnd, ContextMenuEvent::DismissRequested);
+            request_dismiss(hwnd, DismissReason::Cancelled);
         }
         Some(WindowKind::Switcher) => {
             push_event(hwnd, SwitcherEvent::CloseRequested);
