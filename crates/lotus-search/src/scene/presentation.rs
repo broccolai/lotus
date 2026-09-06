@@ -223,15 +223,18 @@ impl<Asset: Clone> LauncherScene<Asset> {
         ));
         presentation.push(PresentationPrimitive::Text {
             value: if self.is_command_mode() {
-                "Lotus Actions"
+                "lotus Actions"
             } else if self.is_calculator_mode() {
-                "Lotus Calculator"
+                "lotus Calculator"
             } else {
-                "Lotus"
+                "lotus"
             }
             .to_owned(),
             bounds: rect(layout.footer_label),
-            style: text_style(12.5, FontWeight::Semibold, HorizontalAlignment::Leading),
+            style: TextStyle {
+                family: lotus_ui::presentation::FontFamily::Brand,
+                ..text_style(12.5, FontWeight::Semibold, HorizontalAlignment::Leading)
+            },
             color: self.theme().accent,
         });
         presentation.push(PresentationPrimitive::Text {
