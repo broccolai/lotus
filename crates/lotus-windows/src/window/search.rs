@@ -142,11 +142,14 @@ impl SearchWindow {
         self.interaction_suspended = false;
     }
 
-    pub fn drain_events(&mut self) -> impl Iterator<Item = SearchEvent> + '_ {
+    pub fn drain_events_up_to(
+        &mut self,
+        limit: usize,
+    ) -> impl Iterator<Item = SearchEvent> + '_ {
         let suspended = self.interaction_suspended;
         self.window
             .state_mut()
-            .drain_events()
+            .drain_events_up_to(limit)
             .into_iter()
             .filter(move |event| {
                 !suspended || !matches!(event, SearchEvent::FocusRefreshRequested)

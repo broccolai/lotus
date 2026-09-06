@@ -113,6 +113,18 @@ impl ResponsivenessMetrics {
             flyout_attempts: self.flyout_attempts.load(Ordering::Relaxed),
             flyout_max_us: self.flyout_max_us.load(Ordering::Relaxed),
             flyout_histogram: load_histogram(&self.flyout_histogram),
+            icon_source_discovery_calls: self
+                .icon_source_discovery_calls
+                .load(Ordering::Relaxed),
+            icon_source_discovery_total_us: self
+                .icon_source_discovery_total_us
+                .load(Ordering::Relaxed),
+            icon_source_discovery_max_us: self
+                .icon_source_discovery_max_us
+                .load(Ordering::Relaxed),
+            icon_raster_calls: self.icon_raster_calls.load(Ordering::Relaxed),
+            icon_raster_total_us: self.icon_raster_total_us.load(Ordering::Relaxed),
+            icon_raster_max_us: self.icon_raster_max_us.load(Ordering::Relaxed),
             flyout_worker_start_max_us: self
                 .flyout_worker_start_max_us
                 .load(Ordering::Relaxed),
@@ -131,6 +143,18 @@ impl ResponsivenessMetrics {
             switcher_requests: self.switcher_requests.load(Ordering::Relaxed),
             switcher_results: self.switcher_results.load(Ordering::Relaxed),
             caches: std::array::from_fn(|index| self.cache_snapshot(index)),
+            tracked_window_registry_lock_calls: self
+                .tracked_window_registry_lock_calls
+                .load(Ordering::Relaxed),
+            tracked_window_registry_lock_total_us: self
+                .tracked_window_registry_lock_total_us
+                .load(Ordering::Relaxed),
+            tracked_window_registry_lock_max_us: self
+                .tracked_window_registry_lock_max_us
+                .load(Ordering::Relaxed),
+            activation_calls: self.activation_calls.load(Ordering::Relaxed),
+            activation_total_us: self.activation_total_us.load(Ordering::Relaxed),
+            activation_max_us: self.activation_max_us.load(Ordering::Relaxed),
         }
     }
 
@@ -182,6 +206,19 @@ impl ResponsivenessMetrics {
                 .load(Ordering::Relaxed),
             catalog_build_max_us: self
                 .application_catalog_build_max_us
+                .load(Ordering::Relaxed),
+            catalog_lock_calls: self.application_catalog_lock_calls.load(Ordering::Relaxed),
+            catalog_lock_wait_total_us: self
+                .application_catalog_lock_wait_total_us
+                .load(Ordering::Relaxed),
+            catalog_lock_wait_max_us: self
+                .application_catalog_lock_wait_max_us
+                .load(Ordering::Relaxed),
+            catalog_lock_hold_total_us: self
+                .application_catalog_lock_hold_total_us
+                .load(Ordering::Relaxed),
+            catalog_lock_hold_max_us: self
+                .application_catalog_lock_hold_max_us
                 .load(Ordering::Relaxed),
             window_fact_hits: self.window_identity_fact_hits.load(Ordering::Relaxed),
             window_fact_misses: self.window_identity_fact_misses.load(Ordering::Relaxed),

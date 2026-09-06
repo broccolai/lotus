@@ -98,8 +98,14 @@ impl SettingsWindow {
         self.window.state().set_settings_layout_dpi(dpi);
     }
 
-    pub fn drain_events(&mut self) -> impl Iterator<Item = SettingsEvent> + '_ {
-        self.window.state_mut().drain_events().into_iter()
+    pub fn drain_events_up_to(
+        &mut self,
+        limit: usize,
+    ) -> impl Iterator<Item = SettingsEvent> + '_ {
+        self.window
+            .state_mut()
+            .drain_events_up_to(limit)
+            .into_iter()
     }
 
     pub fn has_pending_events(&self) -> bool {

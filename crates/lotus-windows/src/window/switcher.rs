@@ -80,8 +80,14 @@ impl SwitcherWindow {
         self.window.state().set_pointer_cursor(cursor);
     }
 
-    pub fn drain_events(&mut self) -> impl Iterator<Item = SwitcherEvent> + '_ {
-        self.window.state_mut().drain_events().into_iter()
+    pub fn drain_events_up_to(
+        &mut self,
+        limit: usize,
+    ) -> impl Iterator<Item = SwitcherEvent> + '_ {
+        self.window
+            .state_mut()
+            .drain_events_up_to(limit)
+            .into_iter()
     }
 
     pub fn has_pending_events(&self) -> bool {

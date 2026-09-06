@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use lotus_core::application::{
-    ApplicationIdentity, ApplicationKey, PinnedApplicationAssignment,
-    RegisteredApplication, WindowApplicationAssignments, is_shared_host_executable,
+    PinnedApplicationAssignment, RegisteredApplication, WindowApplicationAssignments,
+    is_shared_host_executable,
 };
 use lotus_core::dock::DockItem;
 use lotus_core::settings::{DockSettings, PinnedApp};
@@ -119,98 +117,6 @@ impl DockModel {
         self.items = items;
     }
 
-    pub fn prepared_catalogue_pin_repair(
-        &self,
-        assignments: &[PinnedApplicationAssignment],
-        applications: &[RegisteredApplication],
-        safe_aliases: &[Vec<String>],
-    ) -> Option<DockSettings> {
-        let mut next = self.settings.clone();
-        let mut retained = HashMap::<ApplicationKey, usize>::new();
-        let mut removed = Vec::new();
-        let mut aliases = HashMap::<usize, Vec<String>>::new();
-
-        for (index, assignment) in assignments.iter().enumerate() {
-            let strong = assignment.registered_index.is_some()
-                || matches!(
-                    assignment.key,
-                    ApplicationKey::Registered(_) | ApplicationKey::LaunchSignature(_)
-                );
-            if !strong {
-                continue;
-            }
-            if let Some(&first) = retained.get(&assignment.key) {
-                removed.push((index, first));
-                aliases
-                    .entry(first)
-                    .or_default()
-                    .extend(safe_aliases.get(index).into_iter().flatten().cloned());
-            } else {
-                retained.insert(assignment.key.clone(), index);
-            }
-        }
-
-        let mut renamed = HashMap::new();
-        for (index, assignment) in assignments.iter().enumerate() {
-            let Some(application) = assignment
-                .registered_index
-                .and_then(|index| applications.get(index))
-            else {
-                continue;
-            };
-            let Some(pin) = next.pinned_apps.get_mut(index) else {
-                continue;
-            };
-            renamed
-                .entry(pin.id.to_ascii_lowercase())
-                .or_insert_with(|| application.id.clone());
-            pin.id.clone_from(&application.id);
-            pin.name.clone_from(&application.name);
-            pin.launch_target.clone_from(&application.launch.target);
-            pin.arguments.clone_from(&application.launch.arguments);
-            pin.icon_source = Some(application.icon_source.clone());
-            pin.app_user_model_id
-                .clone_from(&application.app_user_model_id);
-            let mut merged_aliases = safe_aliases.get(index).cloned().unwrap_or_default();
-            merged_aliases.extend(aliases.remove(&index).unwrap_or_default());
-            merged_aliases.sort();
-            merged_aliases.dedup();
-            pin.match_executables = merged_aliases;
-        }
-        for &(index, first) in &removed {
-            let Some(duplicate) = self.settings.pinned_apps.get(index) else {
-                continue;
-            };
-            let Some(retained) = next.pinned_apps.get(first) else {
-                continue;
-            };
-            renamed
-                .entry(duplicate.id.to_ascii_lowercase())
-                .or_insert_with(|| retained.id.clone());
-        }
-        for &(index, _) in removed.iter().rev() {
-            next.pinned_apps.remove(index);
-        }
-        next.item_order = next
-            .item_order
-            .into_iter()
-            .map(|id| renamed.get(&id.to_ascii_lowercase()).cloned().unwrap_or(id))
-            .fold(Vec::new(), |mut order, id| {
-                if !order
-                    .iter()
-                    .any(|saved: &String| saved.eq_ignore_ascii_case(&id))
-                {
-                    order.push(id);
-                }
-                order
-            });
-        let next = next.normalized();
-        if next == self.settings {
-            return None;
-        }
-        Some(next)
-    }
-
     pub fn prepare_settings(
         &self,
         next: DockSettings,
@@ -310,14 +216,14 @@ impl DockModel {
                     .collect(),
             });
             if settings.pinned_apps.iter().any(|pin| {
-                pin.application_identity(None)
-                    .match_strength(&launch.identity())
-                    .is_match()
+                pin.launch_target.eq_ignore_ascii_case(&launch.target)
+                    && pin.arguments == launch.arguments
             }) {
                 return None;
             }
+            let pin_id = next_pin_id(&settings.pinned_apps, &launch.id);
             settings.pinned_apps.push(PinnedApp {
-                id: launch.id,
+                id: pin_id.clone(),
                 name: launch.name,
                 launch_target: launch.target,
                 arguments: launch.arguments,
@@ -326,7 +232,7 @@ impl DockModel {
                 match_executables: launch.match_executables,
                 ..Default::default()
             });
-            insert_item_order(&mut settings.item_order, &self.items, source_index);
+            insert_item_order(&mut settings.item_order, &self.items, source_index, &pin_id);
         } else {
             settings
                 .pinned_apps
@@ -347,25 +253,18 @@ impl DockModel {
     }
 }
 
-impl PinLaunch {
-    fn identity(&self) -> ApplicationIdentity {
-        ApplicationIdentity::new(
-            self.app_user_model_id.as_deref(),
-            Some(&self.id),
-            Some(&self.target),
-            std::iter::empty(),
-        )
-    }
-}
-
 fn executable_alias(path: &str) -> Option<String> {
     let executable = path.rsplit(['\\', '/']).next()?;
     (!is_shared_host_executable(executable) && !executable.is_empty())
         .then(|| executable.into())
 }
 
-fn insert_item_order(order: &mut Vec<String>, items: &[DockItem], source_index: usize) {
-    let id = &items[source_index].id;
+fn insert_item_order(
+    order: &mut Vec<String>,
+    items: &[DockItem],
+    source_index: usize,
+    id: &str,
+) {
     if order.iter().any(|saved| saved.eq_ignore_ascii_case(id)) {
         return;
     }
@@ -378,7 +277,28 @@ fn insert_item_order(order: &mut Vec<String>, items: &[DockItem], source_index: 
                 .position(|saved| saved.eq_ignore_ascii_case(&item.id))
         })
         .unwrap_or(order.len());
-    order.insert(next, id.clone());
+    order.insert(next, id.to_owned());
+}
+
+fn next_pin_id(pins: &[PinnedApp], preferred: &str) -> String {
+    if !pins
+        .iter()
+        .any(|pin| pin.id.eq_ignore_ascii_case(preferred))
+    {
+        return preferred.to_owned();
+    }
+
+    let mut suffix = 2_u32;
+    loop {
+        let candidate = format!("{preferred}#{suffix}");
+        if !pins
+            .iter()
+            .any(|pin| pin.id.eq_ignore_ascii_case(&candidate))
+        {
+            return candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    }
 }
 
 fn restart_required(previous: &DockSettings, current: &DockSettings) -> bool {

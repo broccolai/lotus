@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::path::Path;
 use std::ptr;
+use std::time::Instant;
 
 use lotus_core::activation::ActivationDecision;
 use lotus_core::dock::DockItem;
@@ -76,15 +77,14 @@ pub fn execute_activation(
 ) -> Result<(), ActivationError> {
     match decision {
         ActivationDecision::Launch => launch(item),
-        ActivationDecision::Minimize(window) => minimize(window),
-        ActivationDecision::Focus(window) => focus(window),
+        ActivationDecision::Minimize(window) => measure_activation(|| minimize(window)),
+        ActivationDecision::Focus(window) => measure_activation(|| focus(window)),
     }
 }
 
 fn minimize(window: TrackedWindowKey) -> Result<(), ActivationError> {
     let existing = existing_window(window)?;
     let _was_visible = unsafe { ShowWindow(existing.hwnd, SW_MINIMIZE) };
-    drop(existing);
     ensure_current(window)?;
     Ok(())
 }
@@ -94,12 +94,9 @@ fn focus(window: TrackedWindowKey) -> Result<(), ActivationError> {
     if unsafe { IsIconic(existing.hwnd) }.as_bool() {
         let _was_visible = unsafe { ShowWindow(existing.hwnd, SW_RESTORE) };
     }
-    drop(existing);
-
     ensure_current(window)?;
     let existing = existing_window(window)?;
     let activated = activate_exact_window(existing.hwnd).is_owned();
-    drop(existing);
     if activated {
         ensure_current(window)?;
         Ok(())
@@ -110,21 +107,23 @@ fn focus(window: TrackedWindowKey) -> Result<(), ActivationError> {
 }
 
 pub fn focus_window(window: TrackedWindowKey) -> Result<(), ActivationError> {
-    focus(window)
+    measure_activation(|| focus(window))
 }
 
 pub fn switch_window(window: TrackedWindowKey) -> Result<(), ActivationError> {
+    measure_activation(|| switch_window_inner(window))
+}
+
+fn switch_window_inner(window: TrackedWindowKey) -> Result<(), ActivationError> {
     let existing = existing_window(window)?;
     if unsafe { IsIconic(existing.hwnd) }.as_bool() {
         let _was_visible = unsafe { ShowWindow(existing.hwnd, SW_RESTORE) };
     }
 
     unsafe { SwitchToThisWindow(existing.hwnd, true) };
-    drop(existing);
     ensure_current(window)?;
     let existing = existing_window(window)?;
     let activated = activate_exact_window(existing.hwnd).is_owned();
-    drop(existing);
     if activated {
         ensure_current(window)?;
         Ok(())
@@ -135,6 +134,10 @@ pub fn switch_window(window: TrackedWindowKey) -> Result<(), ActivationError> {
 }
 
 pub fn request_window_close(window: TrackedWindowKey) -> Result<(), ActivationError> {
+    measure_activation(|| request_window_close_inner(window))
+}
+
+fn request_window_close_inner(window: TrackedWindowKey) -> Result<(), ActivationError> {
     let existing = existing_window(window)?;
     let posted = unsafe {
         PostMessageW(
@@ -144,7 +147,6 @@ pub fn request_window_close(window: TrackedWindowKey) -> Result<(), ActivationEr
             LPARAM(0),
         )
     };
-    drop(existing);
     match posted {
         Ok(()) => ensure_current(window),
         Err(source) => classify_close_delivery(window, source, ensure_current(window)),
@@ -152,11 +154,14 @@ pub fn request_window_close(window: TrackedWindowKey) -> Result<(), ActivationEr
 }
 
 pub fn force_window_close(window: TrackedWindowKey) -> Result<(), ActivationError> {
+    measure_activation(|| force_window_close_inner(window))
+}
+
+fn force_window_close_inner(window: TrackedWindowKey) -> Result<(), ActivationError> {
     let existing = existing_window(window)?;
     // `existing_window` established this HWND is a current top-level window identity.
     let ended =
         unsafe { EndTask(existing.hwnd, BOOL::from(false), BOOL::from(true)) }.as_bool();
-    drop(existing);
     if ended {
         return ensure_current(window);
     }
@@ -166,17 +171,15 @@ pub fn force_window_close(window: TrackedWindowKey) -> Result<(), ActivationErro
 
 struct ExistingWindow {
     hwnd: HWND,
-    _current: crate::window_tracker::CurrentTrackedWindow,
 }
 
 fn existing_window(key: TrackedWindowKey) -> Result<ExistingWindow, ActivationError> {
-    let Some(current) = crate::window_tracker::hold_current_tracked_window(key) else {
+    if !crate::window_tracker::is_current_tracked_window(key) {
         crate::window_tracker::report_stale_target(key);
         return Err(ActivationError::RetiredWindow(key));
-    };
+    }
     let hwnd = hwnd_from_id(key.id)?;
     if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
-        drop(current);
         crate::window_tracker::report_stale_target(key);
         return Err(ActivationError::MissingWindow(key.id));
     }
@@ -188,17 +191,13 @@ fn existing_window(key: TrackedWindowKey) -> Result<ExistingWindow, ActivationEr
         )
     };
     if process_id != key.process_id {
-        drop(current);
         crate::window_tracker::report_stale_target(key);
         return Err(ActivationError::IdentityMismatch {
             key,
             actual_process_id: process_id,
         });
     }
-    Ok(ExistingWindow {
-        hwnd,
-        _current: current,
-    })
+    Ok(ExistingWindow { hwnd })
 }
 
 fn ensure_current(key: TrackedWindowKey) -> Result<(), ActivationError> {
@@ -229,6 +228,13 @@ fn launch(item: &DockItem) -> Result<(), ActivationError> {
 }
 
 pub fn launch_target(target: &str, arguments: Option<&str>) -> Result<(), ActivationError> {
+    measure_activation(|| launch_target_inner(target, arguments))
+}
+
+fn launch_target_inner(
+    target: &str,
+    arguments: Option<&str>,
+) -> Result<(), ActivationError> {
     let request = LaunchRequest::new(target, arguments)?;
     let file = wide_null(&request.target);
     let parameters = request.arguments.as_deref().map(wide_null);
@@ -282,4 +288,13 @@ impl LaunchRequest {
 
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
+}
+
+fn measure_activation(
+    operation: impl FnOnce() -> Result<(), ActivationError>,
+) -> Result<(), ActivationError> {
+    let started = Instant::now();
+    let result = operation();
+    crate::responsiveness::METRICS.record_activation(started.elapsed());
+    result
 }

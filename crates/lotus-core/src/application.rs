@@ -103,7 +103,6 @@ pub enum ApplicationResolution {
     Associated {
         key: ApplicationKey,
     },
-    Prevented,
     Ambiguous {
         evidence: ResolutionEvidence,
         candidate_count: usize,
@@ -112,6 +111,21 @@ pub enum ApplicationResolution {
         key: ApplicationKey,
         launch: Option<LaunchSpec>,
     },
+}
+
+/// Whether an observed window may provide relaunch data for a persisted pin.
+/// Runtime grouping deliberately remains available when pinning is disallowed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PinEligibility {
+    Allowed,
+    Prevented,
+}
+
+impl PinEligibility {
+    #[must_use]
+    pub const fn allows_pinning(self) -> bool {
+        matches!(self, Self::Allowed)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -155,7 +169,19 @@ pub struct WindowApplicationAssignments {
     pub catalog_generation: u64,
     pub window_revision: u64,
     pub by_window: HashMap<TrackedWindowKey, ApplicationResolution>,
+    pub pin_eligibility_by_window: HashMap<TrackedWindowKey, PinEligibility>,
     pub presentation_by_window: HashMap<TrackedWindowKey, ApplicationPresentation>,
+}
+
+impl WindowApplicationAssignments {
+    #[must_use]
+    pub fn can_pin(&self, key: TrackedWindowKey) -> bool {
+        self.pin_eligibility_by_window
+            .get(&key)
+            .copied()
+            .unwrap_or(PinEligibility::Prevented)
+            .allows_pinning()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

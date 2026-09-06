@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use lotus_core::application::{WindowApplicationFacts, is_reliable_registered_id};
 use lotus_core::window::{TrackedWindowKey, WindowId, WindowInfo};
 use windows::Win32::Foundation::{E_FAIL, HWND, LPARAM, WPARAM};
+use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, GetWindowThreadProcessId, IsWindow, KillTimer, MSG,
@@ -43,53 +44,84 @@ static TRACKED_WINDOWS: std::sync::LazyLock<Mutex<TrackedWindowRegistry>> =
 #[derive(Default)]
 struct TrackedWindowRegistry {
     next_incarnation: u64,
-    windows: Vec<TrackedWindowKey>,
+    windows: Vec<TrackedWindowLifetime>,
 }
 
-pub(crate) struct CurrentTrackedWindow {
-    _registry: std::sync::MutexGuard<'static, TrackedWindowRegistry>,
-}
-
-pub(crate) fn hold_current_tracked_window(
+#[derive(Clone, Copy)]
+struct TrackedWindowLifetime {
     key: TrackedWindowKey,
-) -> Option<CurrentTrackedWindow> {
-    let registry = TRACKED_WINDOWS.lock().ok()?;
-    registry.contains(key).then_some(CurrentTrackedWindow {
-        _registry: registry,
-    })
+    process_creation_time: Option<u64>,
+    observed_at: u32,
+}
+
+pub(crate) fn is_current_tracked_window(key: TrackedWindowKey) -> bool {
+    let started = Instant::now();
+    let Ok(registry) = TRACKED_WINDOWS.lock() else {
+        METRICS.record_tracked_window_registry_lock(started.elapsed());
+        return false;
+    };
+    METRICS.record_tracked_window_registry_lock(started.elapsed());
+    registry.contains(key)
 }
 
 impl TrackedWindowRegistry {
-    fn assign(&mut self, windows: &mut [WindowInfo]) {
+    fn assign(
+        &mut self,
+        windows: &mut [WindowInfo],
+        process_cache: &enumeration::ProcessMetadataCache,
+    ) {
         self.windows
-            .retain(|key| windows.iter().any(|window| window.id == key.id));
+            .retain(|lifetime| windows.iter().any(|window| window.id == lifetime.key.id));
         for window in windows {
-            let key = self
+            let process_creation_time = process_cache.creation_time(window.process_id);
+            let current_key = self
                 .windows
                 .iter()
-                .find(|key| key.id == window.id && key.process_id == window.process_id)
-                .copied()
-                .unwrap_or_else(|| {
-                    self.next_incarnation = self.next_incarnation.wrapping_add(1).max(1);
-                    let key = TrackedWindowKey {
-                        id: window.id,
-                        process_id: window.process_id,
-                        incarnation: self.next_incarnation,
-                    };
-                    self.windows.retain(|candidate| candidate.id != key.id);
-                    self.windows.push(key);
-                    key
+                .find(|lifetime| {
+                    lifetime.key.id == window.id
+                        && lifetime.key.process_id == window.process_id
+                        && lifetime.process_creation_time == process_creation_time
+                })
+                .map(|lifetime| lifetime.key);
+            let key = if let Some(key) = current_key {
+                key
+            } else {
+                self.next_incarnation = self.next_incarnation.wrapping_add(1).max(1);
+                let key = TrackedWindowKey {
+                    id: window.id,
+                    process_id: window.process_id,
+                    incarnation: self.next_incarnation,
+                };
+                self.windows.retain(|candidate| candidate.key.id != key.id);
+                self.windows.push(TrackedWindowLifetime {
+                    key,
+                    process_creation_time,
+                    observed_at: unsafe { GetTickCount() },
                 });
+                key
+            };
             window.incarnation = key.incarnation;
         }
     }
 
     fn contains(&self, key: TrackedWindowKey) -> bool {
-        self.windows.contains(&key)
+        self.windows.iter().any(|candidate| candidate.key == key)
     }
 
     fn retire(&mut self, key: TrackedWindowKey) {
-        self.windows.retain(|candidate| *candidate != key);
+        self.windows.retain(|candidate| candidate.key != key);
+    }
+
+    fn retirement_key(&self, id: WindowId, event_time: u32) -> Option<TrackedWindowKey> {
+        self.windows
+            .iter()
+            .find(|lifetime| lifetime.key.id == id)
+            .filter(|lifetime| !event_precedes(event_time, lifetime.observed_at))
+            .map(|lifetime| lifetime.key)
+    }
+
+    fn invalidate_all(&mut self) {
+        self.windows.clear();
     }
 }
 
@@ -107,14 +139,31 @@ pub(crate) fn with_live_tracked_window<T>(
     if address == 0 {
         return None;
     }
-    let _current = hold_current_tracked_window(key)?;
+    if !is_current_tracked_window(key) {
+        return None;
+    }
     let hwnd = HWND(std::ptr::with_exposed_provenance_mut::<c_void>(address));
     if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
         return None;
     }
     let mut process_id = 0;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut process_id)) };
-    (process_id == key.process_id).then(|| operation(hwnd))
+    if process_id != key.process_id {
+        return None;
+    }
+
+    let result = operation(hwnd);
+    let still_current = is_current_tracked_window(key);
+    let still_matches = unsafe { IsWindow(Some(hwnd)) }.as_bool() && {
+        let mut process_id = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut process_id)) };
+        process_id == key.process_id
+    };
+    (still_current && still_matches).then_some(result)
+}
+
+const fn event_precedes(event_time: u32, observed_at: u32) -> bool {
+    event_time != observed_at && observed_at.wrapping_sub(event_time) < (u32::MAX / 2)
 }
 
 pub(crate) fn report_stale_target(key: TrackedWindowKey) {
@@ -284,6 +333,10 @@ impl WindowTracker {
 
     pub fn current_windows(&self) -> &[WindowInfo] {
         self.windows.as_ref()
+    }
+
+    pub const fn window_revision(&self) -> u64 {
+        self.window_revision
     }
 
     pub const fn fullscreen_window(&self) -> Option<WindowId> {
@@ -480,6 +533,7 @@ fn worker_message_loop(state: &mut WorkerState) {
 impl WorkerState {
     fn refresh(&mut self) {
         METRICS.record_tracker_worker_refresh_execution();
+        self.apply_retirement_evidence();
         let enumeration_started = Instant::now();
         let Ok(mut windows) =
             enumeration::enumerate_windows(self.own_process_id, &mut self.process_cache)
@@ -489,7 +543,7 @@ impl WorkerState {
             self.reschedule_reconcile();
             return;
         };
-        assign_window_incarnations(&mut windows);
+        assign_window_incarnations(&mut windows, &self.process_cache);
         suppress_stale_targets(&mut windows, Instant::now());
         self.hydrate_application_facts(&mut windows);
         METRICS.record_window_enumeration(enumeration_started.elapsed());
@@ -513,6 +567,31 @@ impl WorkerState {
             self.fullscreen_revision = self.fullscreen_revision.wrapping_add(1);
         }
         self.publish();
+    }
+
+    fn apply_retirement_evidence(&mut self) {
+        let evidence = events::take_retirement_evidence();
+        if evidence.overflowed {
+            if let Ok(mut registry) = TRACKED_WINDOWS.lock() {
+                registry.invalidate_all();
+            }
+            self.application_facts.clear();
+            self.identity_stabilization.clear();
+            return;
+        }
+
+        if evidence.destroyed.is_empty() {
+            return;
+        }
+        if let Ok(mut registry) = TRACKED_WINDOWS.lock() {
+            for destroyed in evidence.destroyed {
+                if let Some(key) =
+                    registry.retirement_key(destroyed.id, destroyed.event_time)
+                {
+                    registry.retire(key);
+                }
+            }
+        }
     }
 
     fn snapshot(&self) -> PublishedSnapshot {
@@ -737,9 +816,12 @@ fn has_strong_window_identity(facts: &WindowApplicationFacts) -> bool {
             .is_some_and(|relaunch| relaunch.arguments.is_some())
 }
 
-fn assign_window_incarnations(windows: &mut [WindowInfo]) {
+fn assign_window_incarnations(
+    windows: &mut [WindowInfo],
+    process_cache: &enumeration::ProcessMetadataCache,
+) {
     if let Ok(mut registry) = TRACKED_WINDOWS.lock() {
-        registry.assign(windows);
+        registry.assign(windows, process_cache);
     }
 }
 

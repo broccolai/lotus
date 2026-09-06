@@ -50,10 +50,11 @@ impl ModuleHost {
         self.launcher.invalidate();
     }
 
-    pub(in crate::app) fn drain_launcher_events(
+    pub(in crate::app) fn drain_launcher_events_up_to(
         &mut self,
+        limit: usize,
     ) -> Vec<lotus_windows::window::SearchEvent> {
-        self.launcher.drain_events()
+        self.launcher.drain_events_up_to(limit)
     }
 
     pub(in crate::app) fn handle_launcher_event(

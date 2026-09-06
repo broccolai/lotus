@@ -54,11 +54,12 @@ impl ModuleHost {
             .finish_sync(dock, request, input, graphics, window_tracker)
     }
 
-    pub(in crate::app) fn drain_monitor_dock_events(
+    pub(in crate::app) fn drain_monitor_dock_events_up_to(
         &mut self,
         graphics: &mut DeviceState,
+        limit: usize,
     ) -> Result<MonitorDockEventDrain, AppError> {
-        self.monitors.drain_events(graphics)
+        self.monitors.drain_events_up_to(graphics, limit)
     }
 
     pub(in crate::app) fn has_pending_monitor_events(&self) -> bool {

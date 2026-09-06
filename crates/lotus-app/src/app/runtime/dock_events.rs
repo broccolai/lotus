@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use lotus_windows::WindowHandle;
+use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::{DeviceState, SurfaceSize};
 use lotus_windows::window::{
     DockContextRequest, DockEvent, DockWindow, PointerEvent, PopupAlignment, SignedPoint,
@@ -11,7 +12,7 @@ use crate::app::dock::DockInteractionIntent;
 use crate::app::modules::ModuleHost;
 use crate::app::monitors::DockAction;
 use crate::app::primary_dock::PrimaryDock;
-use crate::app::settings_persistence::SettingsPersistence;
+use crate::app::settings_persistence::{SettingsPersistence, SettingsSaveReason};
 use crate::app::system_actions::{SystemAction, execute_system_action};
 use crate::app::visuals::{DockHitTarget, SystemStatusKind};
 use crate::app::{AppError, DockRuntime};
@@ -122,8 +123,19 @@ fn handle_dock_pointer(
     };
     match intent {
         DockInteractionIntent::Reorder(request) => {
-            if dock_model.persist_reorder(&request, settings_persistence)? {
-                primary_dock.invalidate();
+            if let Some(settings) = dock_model.prepare_reorder(&request) {
+                match settings_persistence
+                    .request_save(SettingsSaveReason::Reorder, settings)
+                {
+                    Ok(()) => primary_dock.invalidate(),
+                    Err(error) => {
+                        show_error(
+                            primary_dock.window().handle(),
+                            "Lotus",
+                            error.message(),
+                        );
+                    }
+                }
             }
             auxiliary.hide_launcher();
             Ok(())

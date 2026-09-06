@@ -162,14 +162,20 @@ impl StatusRuntime {
         }
     }
 
-    pub(super) fn drain_events(&mut self) -> Vec<(usize, StatusEvent)> {
-        self.zones
-            .iter_mut()
-            .enumerate()
-            .flat_map(|(index, zone)| {
-                zone.window.drain_events().map(move |event| (index, event))
-            })
-            .collect()
+    pub(super) fn drain_events_up_to(&mut self, limit: usize) -> Vec<(usize, StatusEvent)> {
+        let mut events = Vec::with_capacity(limit);
+        for (index, zone) in self.zones.iter_mut().enumerate() {
+            let remaining = limit.saturating_sub(events.len());
+            if remaining == 0 {
+                break;
+            }
+            events.extend(
+                zone.window
+                    .drain_events_up_to(remaining)
+                    .map(|event| (index, event)),
+            );
+        }
+        events
     }
 
     pub(super) fn has_pending_events(&self) -> bool {

@@ -1,10 +1,43 @@
 use lotus_ui::frame::FramePass;
 use lotus_windows::graphics::DeviceState;
+use lotus_windows::window::DockWindow;
 
 use super::ModuleHost;
+use crate::app::dock::DockRuntime;
 use crate::app::{AppError, PresentationSurface};
 
 impl ModuleHost {
+    pub(in crate::app) fn prepare_input_presentations(
+        &mut self,
+        dock: &DockWindow,
+        dock_model: &DockRuntime,
+        graphics: &mut DeviceState,
+    ) {
+        if self.lifecycle.search_takeover_requested() {
+            self.applications.refresh_launcher_catalog_if_stale();
+            let catalog = self.applications.prepare_launcher_catalog(
+                dock_model.items(),
+                &dock_model.settings().hidden_executables,
+            );
+            if let Err(error) = self.launcher.prepare_presentation(
+                dock_model,
+                catalog,
+                dock.dpi(),
+                graphics,
+            ) {
+                self.lifecycle.set_search_presentation_ready(false);
+                lotus_windows::diagnostics::record_error("search.prepare", &error);
+            }
+        }
+
+        if self.lifecycle.switcher_takeover_requested()
+            && let Err(error) = self.switcher.prepare_presentation(graphics)
+        {
+            self.lifecycle.set_switcher_presentation_ready(false);
+            lotus_windows::diagnostics::record_error("alt_tab.prepare", &error);
+        }
+    }
+
     pub(in crate::app) fn diagnostic_surface_masks(&self) -> (u32, u32, u32) {
         let states = [
             (
@@ -49,9 +82,15 @@ impl ModuleHost {
         pass: &mut FramePass,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        if let Err(error) = self.launcher.render_frame(pass, graphics) {
-            lotus_windows::diagnostics::record_error("search.render", &error);
-            self.hide_launcher();
+        match self.launcher.render_frame(pass, graphics) {
+            Ok(()) => self
+                .lifecycle
+                .set_search_presentation_ready(self.launcher.presentation_ready()),
+            Err(error) => {
+                self.lifecycle.set_search_presentation_ready(false);
+                lotus_windows::diagnostics::record_error("search.render", &error);
+                self.hide_launcher();
+            }
         }
         if let Err(error) = self.context_menu.render_frame(pass, graphics) {
             lotus_windows::diagnostics::record_error("popup.render", &error);
@@ -61,9 +100,15 @@ impl ModuleHost {
             lotus_windows::diagnostics::record_error("settings.render", &error);
             self.settings.hide();
         }
-        if let Err(error) = self.switcher.render_frame(pass, graphics) {
-            lotus_windows::diagnostics::record_error("alt_tab.render", &error);
-            self.switcher.abandon();
+        match self.switcher.render_frame(pass, graphics) {
+            Ok(()) => self
+                .lifecycle
+                .set_switcher_presentation_ready(self.switcher.presentation_ready()),
+            Err(error) => {
+                self.lifecycle.set_switcher_presentation_ready(false);
+                lotus_windows::diagnostics::record_error("alt_tab.render", &error);
+                self.switcher.abandon();
+            }
         }
         self.status.render_frame(pass, graphics)?;
         self.monitors.render_frame(pass, graphics)

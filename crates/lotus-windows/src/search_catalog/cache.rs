@@ -45,7 +45,9 @@ pub struct ReadySearchCatalog {
 struct CacheState {
     snapshot: Arc<ApplicationCatalogSnapshot>,
     refreshed_at: Option<Instant>,
-    refreshing: bool,
+    active_refresh: Option<u64>,
+    next_refresh: u64,
+    next_generation: u64,
     generation: u64,
 }
 
@@ -54,7 +56,9 @@ impl Default for CacheState {
         Self {
             snapshot: Arc::new(ApplicationCatalogSnapshot::new(0, Vec::new())),
             refreshed_at: None,
-            refreshing: false,
+            active_refresh: None,
+            next_refresh: 0,
+            next_generation: 0,
             generation: 0,
         }
     }
@@ -115,9 +119,9 @@ impl SearchCatalogCache {
     }
 
     pub fn refresh_if_stale(&self, maximum_age: Duration) -> io::Result<RefreshStatus> {
-        {
+        let (refresh, generation) = {
             let mut state = lock(&self.state);
-            if state.refreshing {
+            if state.active_refresh.is_some() {
                 return Ok(RefreshStatus::InProgress);
             }
             if state
@@ -126,8 +130,13 @@ impl SearchCatalogCache {
             {
                 return Ok(RefreshStatus::Fresh);
             }
-            state.refreshing = true;
-        }
+            state.next_refresh = state.next_refresh.wrapping_add(1).max(1);
+            let refresh = state.next_refresh;
+            state.next_generation = state.next_generation.wrapping_add(1).max(1);
+            let generation = state.next_generation;
+            state.active_refresh = Some(refresh);
+            (refresh, generation)
+        };
 
         let state = Arc::clone(&self.state);
         let discovery = Arc::clone(&self.discovery);
@@ -138,22 +147,31 @@ impl SearchCatalogCache {
                 let completion = RefreshCompletion {
                     state: Arc::clone(&state),
                     owner_thread,
+                    refresh,
                 };
                 let build_started = Instant::now();
                 let catalog = build_registered_catalog(discovery());
                 let entry_count = catalog.applications.len();
-                let generation = {
+                let snapshot = Arc::new(ApplicationCatalogSnapshot::with_search_entries(
+                    generation,
+                    catalog.applications,
+                    catalog.search_entries,
+                ));
+                let lock_wait_started = Instant::now();
+                let (generation, replaced, lock_wait, lock_hold) = {
                     let mut state = lock(&state);
+                    let lock_wait = lock_wait_started.elapsed();
+                    let lock_hold_started = Instant::now();
+                    if state.active_refresh != Some(refresh) {
+                        return;
+                    }
                     state.refreshed_at = Some(Instant::now());
-                    state.generation = state.generation.saturating_add(1);
-                    state.snapshot =
-                        Arc::new(ApplicationCatalogSnapshot::with_search_entries(
-                            state.generation,
-                            catalog.applications,
-                            catalog.search_entries,
-                        ));
-                    state.generation
+                    state.generation = generation;
+                    let replaced = std::mem::replace(&mut state.snapshot, snapshot);
+                    (generation, replaced, lock_wait, lock_hold_started.elapsed())
                 };
+                drop(replaced);
+                METRICS.record_application_catalog_lock(lock_wait, lock_hold);
                 METRICS.record_application_catalog(
                     generation,
                     entry_count,
@@ -164,7 +182,10 @@ impl SearchCatalogCache {
                 drop(completion);
             });
         if let Err(error) = spawn {
-            lock(&self.state).refreshing = false;
+            let mut state = lock(&self.state);
+            if state.active_refresh == Some(refresh) {
+                state.active_refresh = None;
+            }
             return Err(error);
         }
         Ok(RefreshStatus::Started)
@@ -496,11 +517,17 @@ fn union_if_compatible(
 struct RefreshCompletion {
     state: Arc<Mutex<CacheState>>,
     owner_thread: u32,
+    refresh: u64,
 }
 
 impl Drop for RefreshCompletion {
     fn drop(&mut self) {
-        lock(&self.state).refreshing = false;
+        let mut state = lock(&self.state);
+        if state.active_refresh != Some(self.refresh) {
+            return;
+        }
+        state.active_refresh = None;
+        drop(state);
         let _ = unsafe {
             PostThreadMessageW(
                 self.owner_thread,

@@ -106,6 +106,12 @@ struct ProcessMetadata {
 }
 
 impl ProcessMetadataCache {
+    pub(super) fn creation_time(&self, process_id: u32) -> Option<u64> {
+        self.entries
+            .get(&process_id)
+            .map(|entry| entry.creation_time)
+    }
+
     fn cached(&self, process_id: u32) -> Option<&ProcessMetadata> {
         self.entries.get(&process_id)
     }

@@ -66,6 +66,7 @@ pub(super) struct AppMenuOptions {
     pub(super) identity: String,
     pub(super) running_windows: usize,
     pub(super) pinned: bool,
+    pub(super) pin_eligible: bool,
     pub(super) shift_held: bool,
 }
 
@@ -152,6 +153,7 @@ impl ContextMenuRuntime {
             options.identity,
             options.running_windows,
             options.pinned,
+            options.pin_eligible,
             options.shift_held,
         )
         .ok_or(AppError::InvalidContextMenuScene)?;
@@ -368,10 +370,10 @@ impl ContextMenuRuntime {
         Ok(())
     }
 
-    pub(super) fn drain_events(&mut self) -> Vec<PopupEvent> {
+    pub(super) fn drain_events_up_to(&mut self, limit: usize) -> Vec<PopupEvent> {
         let generation = self.window.interaction_generation();
         self.window
-            .drain_events()
+            .drain_events_up_to(limit)
             .map(|event| PopupEvent { event, generation })
             .collect()
     }

@@ -171,6 +171,7 @@ impl<Asset: Clone> DockPopup<Asset> {
         identity: String,
         running_windows: usize,
         pinned: bool,
+        pin_eligible: bool,
         shift_held: bool,
     ) -> Option<Self> {
         let open = AppEntry {
@@ -220,10 +221,15 @@ impl<Asset: Clone> DockPopup<Asset> {
             kind: PopupKind::App {
                 identity,
                 running_windows,
-                entries: [Some(open), Some(customize), Some(pin), close]
-                    .into_iter()
-                    .flatten()
-                    .collect(),
+                entries: [
+                    Some(open),
+                    Some(customize),
+                    pin_eligible.then_some(pin),
+                    close,
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
             },
             hovered: None,
             selected: None,

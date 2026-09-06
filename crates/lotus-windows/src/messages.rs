@@ -14,3 +14,5 @@ pub(crate) const ICON_HYDRATION_WAKE: u32 = WM_APP + 0x4D1;
 pub(crate) const SHELL_INTEGRATION_RECOVERY: u32 = WM_APP + 0x4D2;
 pub(crate) const GRAPHICS_RECOVERY_WAKE: u32 = WM_APP + 0x4D3;
 pub(crate) const INPUT_RESYNC: u32 = WM_APP + 0x4D4;
+pub(crate) const RUNTIME_CONTINUATION: u32 = WM_APP + 0x4D5;
+pub(crate) const SETTINGS_PERSISTENCE_WAKE: u32 = WM_APP + 0x4D6;

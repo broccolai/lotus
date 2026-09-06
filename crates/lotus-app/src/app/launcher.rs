@@ -140,6 +140,31 @@ impl LauncherRuntime {
         Ok(())
     }
 
+    pub(super) fn prepare_presentation(
+        &mut self,
+        dock_model: &DockRuntime,
+        catalog: PreparedLauncherCatalog,
+        dpi: u32,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        if self.surface.has_graphics_surface() {
+            return Ok(());
+        }
+
+        self.prepare_catalog(dock_model, catalog);
+        self.rebuild_scene(dpi)?;
+        let size = self
+            .scene
+            .as_ref()
+            .ok_or(AppError::InvalidLauncherScene)?
+            .desired_size();
+        self.surface.prepare_hidden(size, graphics)
+    }
+
+    pub(super) const fn presentation_ready(&self) -> bool {
+        self.surface.presentation_ready()
+    }
+
     pub(super) fn refresh_catalog_if_ready(
         &mut self,
         dock: &DockWindow,
@@ -632,16 +657,18 @@ impl LauncherRuntime {
         pass: &mut FramePass,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        if !self.is_visible() {
+        if !self.is_visible() && self.surface.presentation_ready() {
             self.surface.stop_animation();
             return Ok(());
         }
-        let scene = self.scene.as_ref().ok_or(AppError::InvalidLauncherScene)?;
+        let Some(scene) = self.scene.as_ref() else {
+            return Ok(());
+        };
         self.surface.render_frame(pass, graphics, scene)
     }
 
-    pub(super) fn drain_events(&mut self) -> Vec<SearchEvent> {
-        self.surface.drain_events()
+    pub(super) fn drain_events_up_to(&mut self, limit: usize) -> Vec<SearchEvent> {
+        self.surface.drain_events_up_to(limit)
     }
 
     pub(super) fn has_pending_events(&self) -> bool {

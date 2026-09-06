@@ -8,7 +8,7 @@ use super::{
 
 pub(in crate::window) trait QueuedEvent: Copy + private::Sealed {
     fn events(queue: &mut PendingEvents) -> &mut VecDeque<Self>;
-    fn is_pointer_move(self) -> bool;
+    fn supersedes(self, previous: Self) -> bool;
 }
 
 pub(super) struct EventQueue(RefCell<PendingEvents>);
@@ -51,8 +51,7 @@ impl EventQueue {
         let events = E::events(&mut queue);
         if events
             .back()
-            .is_some_and(|previous| previous.is_pointer_move())
-            && event.is_pointer_move()
+            .is_some_and(|previous| event.supersedes(*previous))
         {
             *events.back_mut().expect("nonempty pending queue") = event;
         } else {
@@ -60,8 +59,11 @@ impl EventQueue {
         }
     }
 
-    pub(super) fn drain<E: QueuedEvent>(&self) -> VecDeque<E> {
-        std::mem::take(E::events(&mut self.0.borrow_mut()))
+    pub(super) fn drain_up_to<E: QueuedEvent>(&self, limit: usize) -> VecDeque<E> {
+        let mut queue = self.0.borrow_mut();
+        let events = E::events(&mut queue);
+        let count = limit.min(events.len());
+        events.drain(..count).collect()
     }
 
     pub(super) fn push_search_context_request(&self, request: DockContextRequest) {
@@ -144,8 +146,21 @@ impl QueuedEvent for DockEvent {
         }
     }
 
-    fn is_pointer_move(self) -> bool {
-        matches!(self, Self::Pointer(PointerEvent::Moved { .. }))
+    fn supersedes(self, previous: Self) -> bool {
+        matches!(
+            (previous, self),
+            (
+                Self::Pointer(PointerEvent::Moved { .. }),
+                Self::Pointer(PointerEvent::Moved { .. })
+            ) | (Self::Resized { .. }, Self::Resized { .. })
+                | (Self::DpiChanged { .. }, Self::DpiChanged { .. })
+                | (
+                    Self::PlacementRefreshRequested,
+                    Self::PlacementRefreshRequested
+                )
+                | (Self::StatusRefreshRequested, Self::StatusRefreshRequested)
+                | (Self::RenderRequested, Self::RenderRequested)
+        )
     }
 }
 
@@ -157,8 +172,16 @@ impl QueuedEvent for StatusEvent {
         events
     }
 
-    fn is_pointer_move(self) -> bool {
-        matches!(self, Self::Pointer(PointerEvent::Moved { .. }))
+    fn supersedes(self, previous: Self) -> bool {
+        matches!(
+            (previous, self),
+            (
+                Self::Pointer(PointerEvent::Moved { .. }),
+                Self::Pointer(PointerEvent::Moved { .. })
+            ) | (Self::Resized { .. }, Self::Resized { .. })
+                | (Self::DpiChanged { .. }, Self::DpiChanged { .. })
+                | (Self::RenderRequested, Self::RenderRequested)
+        )
     }
 }
 
@@ -170,8 +193,16 @@ impl QueuedEvent for SearchEvent {
         events
     }
 
-    fn is_pointer_move(self) -> bool {
-        matches!(self, Self::PointerMoved { .. })
+    fn supersedes(self, previous: Self) -> bool {
+        matches!(
+            (previous, self),
+            (Self::PointerMoved { .. }, Self::PointerMoved { .. })
+                | (Self::Resized { .. }, Self::Resized { .. })
+                | (Self::DpiChanged { .. }, Self::DpiChanged { .. })
+                | (Self::ClockRefreshRequested, Self::ClockRefreshRequested)
+                | (Self::FocusRefreshRequested, Self::FocusRefreshRequested)
+                | (Self::RenderRequested, Self::RenderRequested)
+        )
     }
 }
 
@@ -183,8 +214,14 @@ impl QueuedEvent for SettingsEvent {
         events
     }
 
-    fn is_pointer_move(self) -> bool {
-        matches!(self, Self::PointerMoved { .. })
+    fn supersedes(self, previous: Self) -> bool {
+        matches!(
+            (previous, self),
+            (Self::PointerMoved { .. }, Self::PointerMoved { .. })
+                | (Self::Resized { .. }, Self::Resized { .. })
+                | (Self::DpiChanged { .. }, Self::DpiChanged { .. })
+                | (Self::RenderRequested, Self::RenderRequested)
+        )
     }
 }
 
@@ -196,8 +233,14 @@ impl QueuedEvent for ContextMenuEvent {
         events
     }
 
-    fn is_pointer_move(self) -> bool {
-        matches!(self, Self::PointerMoved { .. })
+    fn supersedes(self, previous: Self) -> bool {
+        matches!(
+            (previous, self),
+            (Self::PointerMoved { .. }, Self::PointerMoved { .. })
+                | (Self::Resized { .. }, Self::Resized { .. })
+                | (Self::DpiChanged { .. }, Self::DpiChanged { .. })
+                | (Self::RenderRequested, Self::RenderRequested)
+        )
     }
 }
 
@@ -209,8 +252,14 @@ impl QueuedEvent for SwitcherEvent {
         events
     }
 
-    fn is_pointer_move(self) -> bool {
-        matches!(self, Self::PointerMoved { .. })
+    fn supersedes(self, previous: Self) -> bool {
+        matches!(
+            (previous, self),
+            (Self::PointerMoved { .. }, Self::PointerMoved { .. })
+                | (Self::Resized { .. }, Self::Resized { .. })
+                | (Self::DpiChanged { .. }, Self::DpiChanged { .. })
+                | (Self::RenderRequested, Self::RenderRequested)
+        )
     }
 }
 

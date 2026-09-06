@@ -55,8 +55,11 @@ impl DwmThumbnail {
     fn register(destination: HWND, source: TrackedWindowKey) -> Option<Self> {
         let handle =
             crate::window_tracker::with_live_tracked_window(source, |source| unsafe {
-                DwmRegisterThumbnail(destination, source).ok()
-            })??;
+                DwmRegisterThumbnail(destination, source)
+                    .ok()
+                    .map(RegisteredThumbnail)
+            })??
+            .into_handle();
         Some(Self {
             handle: Some(handle),
         })
@@ -89,6 +92,22 @@ impl DwmThumbnail {
         let _ = crate::window_tracker::with_live_tracked_window(source, |_| unsafe {
             DwmUpdateThumbnailProperties(handle, &raw const properties)
         });
+    }
+}
+
+struct RegisteredThumbnail(isize);
+
+impl RegisteredThumbnail {
+    fn into_handle(self) -> isize {
+        let handle = self.0;
+        std::mem::forget(self);
+        handle
+    }
+}
+
+impl Drop for RegisteredThumbnail {
+    fn drop(&mut self) {
+        let _ = unsafe { DwmUnregisterThumbnail(self.0) };
     }
 }
 

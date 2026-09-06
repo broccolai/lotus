@@ -5,6 +5,7 @@ mod pickers;
 mod surface;
 mod updates;
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 pub(in crate::app) use applications::application_records;
@@ -13,10 +14,11 @@ use lotus_core::settings::{ApplicationIconOverride, DockSettings};
 use lotus_settings::scene::{
     SettingsAction, SettingsControl, SettingsScene, SettingsUpdateActivity,
 };
-use lotus_windows::custom_image::CustomImageCache;
 use lotus_windows::graphics::{DeviceState, GraphicsDevice};
+use lotus_windows::icon_hydrator::{
+    HydratedSettingsIcon, SettingsIconClient, SettingsIconRequest,
+};
 use lotus_windows::interaction::PointerCursor;
-use lotus_windows::native_icon::NativeIconCache;
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::search_catalog::ApplicationCatalogSnapshot;
 use lotus_windows::update::{Release, UpdateResult, UpdateStartError};
@@ -35,8 +37,10 @@ pub(in crate::app) struct SettingsRuntime {
     dragging_slider: Option<lotus_settings::scene::SettingsSlider>,
     dragging_scrollbar: Option<u32>,
     pressed_control: Option<SettingsControl>,
-    native_icons: NativeIconCache,
-    custom_images: CustomImageCache,
+    icon_hydrator: SettingsIconClient,
+    hydrated_icons: HashMap<String, HydratedSettingsIcon>,
+    expected_icons: HashMap<String, SettingsIconRequest>,
+    icon_settings_revision: u64,
     updates: SettingsUpdates,
 }
 
@@ -46,6 +50,7 @@ impl SettingsRuntime {
         settings: DockSettings,
         installed: bool,
         updates_allowed: bool,
+        icon_hydrator: SettingsIconClient,
     ) -> Result<Self, AppError> {
         let scene = SettingsScene::new(window.dpi(), settings, installed)
             .ok_or(AppError::InvalidSettingsScene)?;
@@ -56,8 +61,10 @@ impl SettingsRuntime {
             dragging_slider: None,
             dragging_scrollbar: None,
             pressed_control: None,
-            native_icons: NativeIconCache::default(),
-            custom_images: CustomImageCache::default(),
+            icon_hydrator,
+            hydrated_icons: HashMap::new(),
+            expected_icons: HashMap::new(),
+            icon_settings_revision: 0,
             updates: SettingsUpdates::new(updates_allowed),
         })
     }
@@ -237,8 +244,11 @@ impl SettingsRuntime {
         self.surface.recover(device)
     }
 
-    pub(in crate::app) fn drain_events(&mut self) -> Vec<SettingsEvent> {
-        self.surface.drain_events()
+    pub(in crate::app) fn drain_events_up_to(
+        &mut self,
+        limit: usize,
+    ) -> Vec<SettingsEvent> {
+        self.surface.drain_events_up_to(limit)
     }
 
     pub(in crate::app) fn has_pending_events(&self) -> bool {
@@ -427,7 +437,9 @@ impl SettingsRuntime {
     }
 
     pub(in crate::app) fn clear_icon_caches(&mut self) {
-        self.custom_images.clear();
+        self.hydrated_icons.clear();
+        self.expected_icons.clear();
+        self.icon_settings_revision = self.icon_settings_revision.wrapping_add(1);
     }
 
     pub(in crate::app) fn choose_color(&mut self, target: ColorTarget) -> ColorOutcome {
@@ -488,6 +500,43 @@ impl SettingsRuntime {
         dock_items: &[lotus_core::dock::DockItem],
     ) {
         applications::hydrate_previews(self, applications, dock_items);
+    }
+
+    pub(in crate::app) fn drain_hydrated_application_icons(
+        &mut self,
+        results: impl IntoIterator<Item = HydratedSettingsIcon>,
+    ) -> bool {
+        let mut changed = false;
+        for result in results {
+            if result.pixel_size != applications::PREVIEW_ICON_PIXEL_SIZE
+                || result.settings_revision != self.icon_settings_revision
+                || !self
+                    .expected_icons
+                    .get(&result.identity)
+                    .is_some_and(|expected| {
+                        expected.icon_source == result.icon_source
+                            && expected.custom_image_path == result.custom_image_path
+                            && expected.pixel_size == result.pixel_size
+                            && expected.settings_revision == result.settings_revision
+                    })
+            {
+                continue;
+            }
+            let Some(icon) = result.icon.clone() else {
+                continue;
+            };
+            if self
+                .hydrated_icons
+                .get(&result.identity)
+                .is_some_and(|current| current.icon.as_ref() == Some(&icon))
+            {
+                continue;
+            }
+            let identity = result.identity.clone();
+            self.hydrated_icons.insert(identity.clone(), result);
+            changed |= self.scene.set_application_icon(&identity, icon);
+        }
+        changed
     }
 
     pub(in crate::app) fn render_frame(

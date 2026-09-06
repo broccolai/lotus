@@ -41,8 +41,11 @@ impl ModuleHost {
         self.status.set_fullscreen_occluded(occluded)
     }
 
-    pub(in crate::app) fn drain_status_events(&mut self) -> Vec<(usize, StatusEvent)> {
-        self.status.drain_events()
+    pub(in crate::app) fn drain_status_events_up_to(
+        &mut self,
+        limit: usize,
+    ) -> Vec<(usize, StatusEvent)> {
+        self.status.drain_events_up_to(limit)
     }
 
     pub(in crate::app) fn has_pending_window_events(&self) -> bool {

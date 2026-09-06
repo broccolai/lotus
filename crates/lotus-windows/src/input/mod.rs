@@ -5,10 +5,10 @@ mod replay;
 mod shutdown;
 mod state;
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lotus_switcher::model::Direction;
 use thiserror::Error;
@@ -173,6 +173,17 @@ impl InputController {
         health::try_recover_from_fail_open(&self.shared);
     }
 
+    pub fn set_capability_readiness(&self, search_ready: bool, switcher_ready: bool) {
+        let readiness = CapabilityReadiness::new(search_ready, switcher_ready);
+        let previous = self.shared.readiness.swap(readiness.0, Ordering::AcqRel);
+        let previous = CapabilityReadiness(previous);
+        if (previous.search_ready() && !search_ready)
+            || (previous.switcher_ready() && !switcher_ready)
+        {
+            let _ = health::request_cleanup(&self.shared);
+        }
+    }
+
     pub fn is_healthy(&self) -> bool {
         !self.shared.fail_open.load(Ordering::Acquire)
     }
@@ -221,6 +232,7 @@ pub const fn is_input_wake(message: u32) -> bool {
 pub struct UiHeartbeatTimer {
     timer: Option<usize>,
     interval_ms: u32,
+    next_deadline: Option<Instant>,
 }
 
 impl UiHeartbeatTimer {
@@ -230,11 +242,24 @@ impl UiHeartbeatTimer {
     ) -> Result<Self, NativeError> {
         let interval_ms = heartbeat_interval(input_enabled, maintenance_required);
         let timer = start_heartbeat_timer(interval_ms)?;
-        Ok(Self { timer, interval_ms })
+        Ok(Self {
+            timer,
+            interval_ms,
+            next_deadline: heartbeat_deadline(interval_ms),
+        })
     }
 
     pub fn matches(&self, message: u32, parameter: usize) -> bool {
         message == WM_TIMER && self.timer == Some(parameter)
+    }
+
+    pub fn due(&self) -> bool {
+        self.next_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    pub fn acknowledge(&mut self) {
+        self.next_deadline = heartbeat_deadline(self.interval_ms);
     }
 
     pub fn set_modes(
@@ -252,6 +277,7 @@ impl UiHeartbeatTimer {
         }
         self.timer = start_heartbeat_timer(interval_ms)?;
         self.interval_ms = interval_ms;
+        self.next_deadline = heartbeat_deadline(interval_ms);
         Ok(())
     }
 }
@@ -287,6 +313,11 @@ fn start_heartbeat_timer(interval_ms: u32) -> Result<Option<usize>, NativeError>
     Ok(Some(timer))
 }
 
+fn heartbeat_deadline(interval_ms: u32) -> Option<Instant> {
+    (interval_ms != 0)
+        .then(|| Instant::now() + Duration::from_millis(u64::from(interval_ms)))
+}
+
 pub(super) struct Shared {
     heartbeat: AtomicU64,
     fail_open: AtomicBool,
@@ -302,6 +333,7 @@ pub(super) struct Shared {
     healthy_heartbeats: AtomicU32,
     worker_thread: AtomicU32,
     pressed_resync_requested: AtomicBool,
+    readiness: AtomicU8,
 }
 
 impl Shared {
@@ -321,7 +353,38 @@ impl Shared {
             healthy_heartbeats: AtomicU32::new(0),
             worker_thread: AtomicU32::new(0),
             pressed_resync_requested: AtomicBool::new(false),
+            readiness: AtomicU8::new(0),
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct CapabilityReadiness(u8);
+
+impl CapabilityReadiness {
+    const SEARCH: u8 = 1;
+    const SWITCHER: u8 = 1 << 1;
+
+    const fn new(search_ready: bool, switcher_ready: bool) -> Self {
+        Self(
+            (if search_ready {
+                Self::SEARCH
+            } else {
+                0
+            }) | if switcher_ready {
+                Self::SWITCHER
+            } else {
+                0
+            },
+        )
+    }
+
+    pub(super) fn search_ready(self) -> bool {
+        self.0 & Self::SEARCH != 0
+    }
+
+    pub(super) fn switcher_ready(self) -> bool {
+        self.0 & Self::SWITCHER != 0
     }
 }
 

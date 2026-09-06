@@ -196,8 +196,11 @@ impl ModuleHost {
         self.settings.invalidate();
     }
 
-    pub(in crate::app) fn drain_settings_events(&mut self) -> Vec<SettingsEvent> {
-        self.settings.drain_events()
+    pub(in crate::app) fn drain_settings_events_up_to(
+        &mut self,
+        limit: usize,
+    ) -> Vec<SettingsEvent> {
+        self.settings.drain_events_up_to(limit)
     }
 
     pub(in crate::app) fn handle_settings_event(

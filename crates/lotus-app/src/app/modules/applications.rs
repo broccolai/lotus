@@ -1,6 +1,6 @@
 use super::ModuleHost;
 use crate::app::AppError;
-use crate::app::applications::HydratedIconBatch;
+use crate::app::applications::{ApplicationView, HydratedIconBatch};
 use crate::app::dock::DockRuntime;
 
 pub(in crate::app) struct HydratedIconDrainOutcome {
@@ -19,10 +19,14 @@ impl HydratedIconDrainOutcome {
 }
 
 impl ModuleHost {
-    pub(in crate::app) fn application_snapshot(
-        &self,
-    ) -> std::sync::Arc<lotus_windows::search_catalog::ApplicationCatalogSnapshot> {
-        self.applications.snapshot()
+    pub(in crate::app) fn reconcile_application_view(
+        &mut self,
+        windows: &[lotus_core::window::WindowInfo],
+        settings: &lotus_core::settings::DockSettings,
+        window_revision: u64,
+    ) -> std::sync::Arc<ApplicationView> {
+        self.applications
+            .reconcile_view(windows, settings, window_revision)
     }
 
     pub(in crate::app) fn refresh_catalog(
@@ -53,14 +57,22 @@ impl ModuleHost {
             launcher,
             switcher,
             dock,
+            settings,
         } = self.applications.drain_hydrated_icons();
 
         let launcher_changed = self.launcher.drain_hydrated_icons(launcher)?;
         let switcher_changed = self.switcher.drain_hydrated_icons(switcher);
         let dock_changed = dock_model.drain_hydrated_window_icons(dock);
+        let settings_changed = self.settings.drain_hydrated_application_icons(settings);
+        if settings_changed {
+            self.settings.invalidate();
+        }
 
         Ok(HydratedIconDrainOutcome {
-            requests_frame: launcher_changed || switcher_changed || dock_changed,
+            requests_frame: launcher_changed
+                || switcher_changed
+                || dock_changed
+                || settings_changed,
             dock_presentation_changed: dock_changed,
         })
     }

@@ -25,10 +25,6 @@ impl BackgroundWorker {
         }
     }
 
-    pub(crate) fn set_join_policy(&mut self, join_policy: WorkerJoinPolicy) {
-        self.join_policy = join_policy;
-    }
-
     pub(crate) fn shutdown(&mut self) {
         if let Some(stop) = self.stop.take() {
             stop();

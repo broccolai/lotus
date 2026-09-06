@@ -99,8 +99,14 @@ impl ContextMenuWindow {
         self.window.hide();
     }
 
-    pub fn drain_events(&mut self) -> impl Iterator<Item = ContextMenuEvent> + '_ {
-        self.window.state_mut().drain_events().into_iter()
+    pub fn drain_events_up_to(
+        &mut self,
+        limit: usize,
+    ) -> impl Iterator<Item = ContextMenuEvent> + '_ {
+        self.window
+            .state_mut()
+            .drain_events_up_to(limit)
+            .into_iter()
     }
 
     pub fn has_pending_events(&self) -> bool {

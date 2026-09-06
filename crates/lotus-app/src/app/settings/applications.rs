@@ -7,14 +7,13 @@ use lotus_core::application::{
 use lotus_core::dock::DockItem;
 use lotus_core::settings::DockSettings;
 use lotus_settings::scene::{SettingsApplicationRecord, SettingsControl};
-use lotus_windows::custom_image::CustomImageCache;
-use lotus_windows::native_icon::NativeIconCache;
+use lotus_windows::icon_hydrator::SettingsIconRequest;
 use lotus_windows::responsiveness::{LayoutOperation, METRICS};
 use lotus_windows::search_catalog::ApplicationCatalogSnapshot;
 
 use super::SettingsRuntime;
 
-const PREVIEW_ICON_PIXEL_SIZE: u32 = 96;
+pub(super) const PREVIEW_ICON_PIXEL_SIZE: u32 = 96;
 
 pub(in crate::app) fn application_records(
     snapshot: &ApplicationCatalogSnapshot,
@@ -55,6 +54,7 @@ pub(super) fn hydrate_previews(
     }
 
     let settings = runtime.scene.draft().clone();
+    let mut requests = Vec::new();
     for id in ids {
         let source = snapshot
             .applications
@@ -75,17 +75,36 @@ pub(super) fn hydrate_previews(
         let Some((identity, icon_source)) = source else {
             continue;
         };
-        let Some(icon) = effective_application_icon(
-            &identity,
-            icon_source,
-            &settings,
-            &mut runtime.native_icons,
-            &mut runtime.custom_images,
-        ) else {
-            continue;
+        let custom_image_path = settings
+            .application_icon_override_for(&identity)
+            .map(|override_| override_.image_path.clone().into());
+        let request = SettingsIconRequest {
+            identity: id,
+            icon_source: icon_source.into(),
+            custom_image_path,
+            pixel_size: PREVIEW_ICON_PIXEL_SIZE,
+            settings_revision: runtime.icon_settings_revision,
         };
-        let _ = runtime.scene.set_application_icon(&id, icon);
+        runtime
+            .expected_icons
+            .insert(request.identity.clone(), request.clone());
+        if let Some(icon) = runtime
+            .hydrated_icons
+            .get(&request.identity)
+            .filter(|icon| {
+                icon.icon_source == request.icon_source
+                    && icon.custom_image_path == request.custom_image_path
+                    && icon.pixel_size == request.pixel_size
+                    && icon.settings_revision == request.settings_revision
+            })
+            .and_then(|icon| icon.icon.clone())
+        {
+            let _ = runtime.scene.set_application_icon(&request.identity, icon);
+        } else {
+            requests.push(request);
+        }
     }
+    runtime.icon_hydrator.request_settings(requests);
 }
 
 fn visible_application_ids(runtime: &SettingsRuntime) -> Vec<String> {
@@ -162,26 +181,6 @@ fn settings_record(
         app_user_model_id,
         match_executables,
         customized: custom.is_some(),
-        missing_icon: custom
-            .is_some_and(|override_| !Path::new(&override_.image_path).is_file()),
+        missing_icon: false,
     }
-}
-
-fn effective_application_icon(
-    identity: &ApplicationIdentity,
-    icon_source: &str,
-    settings: &DockSettings,
-    native_icons: &mut NativeIconCache,
-    custom_images: &mut CustomImageCache,
-) -> Option<lotus_ui::icon::RasterIcon> {
-    if let Some(override_) = settings.application_icon_override_for(identity)
-        && let Ok(icon) = custom_images.image(Path::new(&override_.image_path))
-    {
-        return Some(icon);
-    }
-
-    native_icons
-        .icon(Path::new(icon_source), PREVIEW_ICON_PIXEL_SIZE)
-        .ok()
-        .flatten()
 }

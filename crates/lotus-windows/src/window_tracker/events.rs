@@ -1,5 +1,8 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{LazyLock, Mutex};
 
+use lotus_core::window::WindowId;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -26,10 +29,24 @@ const TRACKED_EVENTS: [u32; 6] = [
     EVENT_OBJECT_LOCATIONCHANGE,
     EVENT_OBJECT_NAMECHANGE,
 ];
+const RETIREMENT_EVIDENCE_CAPACITY: usize = 256;
 
 static CALLBACK_THREAD: AtomicU32 = AtomicU32::new(0);
 static REFRESH_QUEUED: AtomicBool = AtomicBool::new(false);
 static CALLBACKS_ACTIVE: AtomicBool = AtomicBool::new(false);
+static RETIREMENT_EVIDENCE: LazyLock<Mutex<VecDeque<RetirementEvidence>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::with_capacity(RETIREMENT_EVIDENCE_CAPACITY)));
+static RETIREMENT_EVIDENCE_OVERFLOWED: AtomicBool = AtomicBool::new(false);
+
+pub(super) struct RetirementEvidence {
+    pub(super) id: WindowId,
+    pub(super) event_time: u32,
+}
+
+pub(super) struct RetirementBatch {
+    pub(super) destroyed: Vec<RetirementEvidence>,
+    pub(super) overflowed: bool,
+}
 
 pub(super) fn claim_callback_thread(thread_id: u32) -> bool {
     CALLBACK_THREAD
@@ -52,6 +69,10 @@ pub(super) fn release_callback_thread(thread_id: u32) {
     {
         CALLBACKS_ACTIVE.store(false, Ordering::Release);
         REFRESH_QUEUED.store(false, Ordering::Release);
+        RETIREMENT_EVIDENCE_OVERFLOWED.store(false, Ordering::Release);
+        if let Ok(mut evidence) = RETIREMENT_EVIDENCE.lock() {
+            evidence.clear();
+        }
     }
 }
 
@@ -65,6 +86,18 @@ pub(super) fn request_immediate_reconcile() {
         let _ = unsafe {
             PostThreadMessageW(thread_id, IMMEDIATE_RECONCILE_MESSAGE, WPARAM(0), LPARAM(0))
         };
+    }
+}
+
+pub(super) fn take_retirement_evidence() -> RetirementBatch {
+    let overflowed = RETIREMENT_EVIDENCE_OVERFLOWED.swap(false, Ordering::AcqRel);
+    let destroyed = RETIREMENT_EVIDENCE
+        .lock()
+        .map(|mut evidence| evidence.drain(..).collect())
+        .unwrap_or_default();
+    RetirementBatch {
+        destroyed,
+        overflowed,
     }
 }
 
@@ -112,13 +145,17 @@ unsafe extern "system" fn win_event_callback(
     object_id: i32,
     _child_id: i32,
     _event_thread: u32,
-    _event_time: u32,
+    event_time: u32,
 ) {
     if !CALLBACKS_ACTIVE.load(Ordering::Acquire)
         || hwnd.0.is_null()
         || (event != EVENT_SYSTEM_FOREGROUND && object_id != OBJID_WINDOW.0)
     {
         return;
+    }
+
+    if event == EVENT_OBJECT_DESTROY {
+        record_retirement(hwnd, event_time);
     }
 
     if REFRESH_QUEUED.swap(true, Ordering::AcqRel) {
@@ -134,4 +171,22 @@ unsafe extern "system" fn win_event_callback(
     {
         REFRESH_QUEUED.store(false, Ordering::Release);
     }
+}
+
+fn record_retirement(hwnd: HWND, event_time: u32) {
+    let Some(address) = (!hwnd.0.is_null()).then_some(hwnd.0.addr()) else {
+        return;
+    };
+    let Some(id) = u64::try_from(address).ok().map(WindowId::new) else {
+        return;
+    };
+    let Ok(mut evidence) = RETIREMENT_EVIDENCE.try_lock() else {
+        RETIREMENT_EVIDENCE_OVERFLOWED.store(true, Ordering::Release);
+        return;
+    };
+    if evidence.len() == RETIREMENT_EVIDENCE_CAPACITY {
+        RETIREMENT_EVIDENCE_OVERFLOWED.store(true, Ordering::Release);
+        return;
+    }
+    evidence.push_back(RetirementEvidence { id, event_time });
 }

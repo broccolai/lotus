@@ -8,9 +8,12 @@ use lotus_switcher::model::Direction;
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RCONTROL,
+    VK_RMENU, VK_RSHIFT, VK_SHIFT,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, KillTimer, LLKHF_ALTDOWN, MSG,
+    CallNextHookEx, GetMessageW, HHOOK, KBDLLHOOKSTRUCT, KillTimer, LLKHF_EXTENDED, MSG,
     PM_NOREMOVE, PeekMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx,
     WH_KEYBOARD_LL, WM_TIMER,
 };
@@ -19,8 +22,11 @@ use super::health::{self, HEARTBEAT_INTERVAL_MS};
 use super::mailbox::{self, CyclePush};
 use super::state::{
     HookDecision, InputSequence, KeyEvent, PressedKeys, SequenceEffect, Transition,
+    is_physical_keyboard_key,
 };
-use super::{InputAction, InputConfig, InputError, NativeError, Shared, replay};
+use super::{
+    CapabilityReadiness, InputAction, InputConfig, InputError, NativeError, Shared, replay,
+};
 use crate::messages::{ALT_TAB_FALLBACK_REPLAY, INPUT_RESYNC};
 use crate::responsiveness::{InputFailOpenReason, METRICS};
 
@@ -206,13 +212,20 @@ unsafe fn keyboard_hook_inner(message: WPARAM, data: LPARAM) -> HookOutcome {
     let Some(transition) = Transition::from_message(message_id) else {
         return HookOutcome::Pass;
     };
-    let Ok(key) = u16::try_from(keyboard.vkCode) else {
-        return HookOutcome::Pass;
+    let Some(key) = normalize_key(keyboard) else {
+        return HOOK_STATE.with(|slot| {
+            let mut state = slot.borrow_mut();
+            let Some(state) = state.as_mut() else {
+                return HookOutcome::Pass;
+            };
+            let _ = state.sequence.invalidate();
+            health::request_pressed_key_resync(&state.shared);
+            HookOutcome::Pass
+        });
     };
     let event = KeyEvent {
         key,
         transition,
-        alt_down: keyboard.flags.contains(LLKHF_ALTDOWN),
         self_injected: keyboard.dwExtraInfo == replay::LOTUS_INPUT_MARKER,
     };
 
@@ -241,7 +254,12 @@ unsafe fn keyboard_hook_inner(message: WPARAM, data: LPARAM) -> HookOutcome {
             return HookOutcome::Pass;
         }
 
-        let (decision, win_disqualified) = state.sequence.transition(event);
+        let readiness = CapabilityReadiness(state.shared.readiness.load(Ordering::Acquire));
+        let (decision, win_disqualified) = state.sequence.transition(
+            event,
+            readiness.search_ready(),
+            readiness.switcher_ready(),
+        );
         if win_disqualified {
             METRICS.record_input_win_sequence_disqualified();
         }
@@ -326,6 +344,33 @@ fn pressed_keys() -> PressedKeys {
         pressed.set(key, unsafe { GetAsyncKeyState(i32::from(key)) } < 0);
     }
     pressed
+}
+
+fn normalize_key(keyboard: &KBDLLHOOKSTRUCT) -> Option<u16> {
+    let key = u16::try_from(keyboard.vkCode).ok()?;
+    let key = match key {
+        key if key == VK_SHIFT.0 => match keyboard.scanCode {
+            0x2A => VK_LSHIFT.0,
+            0x36 => VK_RSHIFT.0,
+            _ => return None,
+        },
+        key if key == VK_CONTROL.0 => {
+            if keyboard.flags.contains(LLKHF_EXTENDED) {
+                VK_RCONTROL.0
+            } else {
+                VK_LCONTROL.0
+            }
+        }
+        key if key == VK_MENU.0 => {
+            if keyboard.flags.contains(LLKHF_EXTENDED) {
+                VK_RMENU.0
+            } else {
+                VK_LMENU.0
+            }
+        }
+        key => key,
+    };
+    is_physical_keyboard_key(key).then_some(key)
 }
 
 pub(super) fn resync_pressed_keys() {

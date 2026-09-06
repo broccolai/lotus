@@ -16,7 +16,7 @@ mod protocol;
 mod target;
 mod worker;
 
-pub use protocol::{ACK_MESSAGE_NAME, CONFIG_MESSAGE_NAME, HOOK_EXPORT_NAME};
+pub use protocol::{CONFIG_MESSAGE_NAME, HOOK_EXPORT_NAME};
 
 #[unsafe(no_mangle)]
 unsafe extern "system" fn DllMain(

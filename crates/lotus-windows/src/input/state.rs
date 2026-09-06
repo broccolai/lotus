@@ -1,7 +1,7 @@
 use lotus_switcher::model::Direction;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    VK_ESCAPE, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RMENU, VK_RSHIFT, VK_RWIN,
-    VK_SHIFT, VK_TAB,
+    VK_CONTROL, VK_ESCAPE, VK_LBUTTON, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MBUTTON, VK_MENU,
+    VK_RBUTTON, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_TAB, VK_XBUTTON1, VK_XBUTTON2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -29,7 +29,6 @@ impl Transition {
 pub(super) struct KeyEvent {
     pub(super) key: u16,
     pub(super) transition: Transition,
-    pub(super) alt_down: bool,
     pub(super) self_injected: bool,
 }
 
@@ -67,6 +66,9 @@ struct KeyStateChange {
 
 impl PressedKeys {
     pub(super) fn set(&mut self, key: u16, pressed: bool) {
+        if !is_physical_keyboard_key(key) {
+            return;
+        }
         let word = usize::from(key / 64);
         let mask = 1_u64 << (key % 64);
         if pressed {
@@ -77,6 +79,9 @@ impl PressedKeys {
     }
 
     fn is_down(&self, key: u16) -> bool {
+        if !is_physical_keyboard_key(key) {
+            return false;
+        }
         self.0[usize::from(key / 64)] & (1_u64 << (key % 64)) != 0
     }
 
@@ -85,6 +90,18 @@ impl PressedKeys {
         let is_down = event.transition == Transition::Down;
         self.set(event.key, is_down);
         KeyStateChange { was_down, is_down }
+    }
+
+    fn shift_down(&self) -> bool {
+        self.is_down(VK_LSHIFT.0) || self.is_down(VK_RSHIFT.0)
+    }
+
+    fn shift_mask(&self) -> u8 {
+        u8::from(self.is_down(VK_LSHIFT.0)) | (u8::from(self.is_down(VK_RSHIFT.0)) << 1)
+    }
+
+    fn alt_down(&self) -> bool {
+        self.is_down(VK_LMENU.0) || self.is_down(VK_RMENU.0)
     }
 
     fn any_non_windows_down(&self) -> bool {
@@ -111,8 +128,6 @@ pub(super) struct InputSequence {
     win_candidate: Option<u16>,
     win_disqualified: bool,
     alt_active: bool,
-    shift_mask: u8,
-    alt_mask: u8,
     last_alt: u16,
     captured: Option<u16>,
     sequence: u64,
@@ -128,8 +143,6 @@ impl InputSequence {
             win_candidate: None,
             win_disqualified: false,
             alt_active: false,
-            shift_mask: 0,
-            alt_mask: 0,
             last_alt: VK_LMENU.0,
             captured: None,
             sequence: 0,
@@ -145,24 +158,31 @@ impl InputSequence {
     pub(super) fn resync_pressed_keys(&mut self, pressed: PressedKeys) {
         self.pressed = pressed;
         self.clear_win_candidate();
+        self.captured = None;
     }
 
     pub(super) fn has_active_cleanup_state(&self) -> bool {
         self.captured.is_some() || self.alt_active || self.pending_alt_tab_replay.is_some()
     }
 
-    pub(super) fn transition(&mut self, event: KeyEvent) -> (HookDecision, bool) {
+    pub(super) fn transition(
+        &mut self,
+        event: KeyEvent,
+        search_ready: bool,
+        switcher_ready: bool,
+    ) -> (HookDecision, bool) {
         if event.self_injected {
             return (HookDecision::Pass, false);
         }
         let change = self.pressed.apply(event);
         let repeated_alt_tab = self.config.custom_alt_tab
+            && switcher_ready
             && event.key == VK_TAB.0
             && change.was_down
             && change.is_down;
         if repeated_alt_tab {
             if self.alt_active {
-                let direction = if self.shift_mask != 0 {
+                let direction = if self.pressed.shift_down() {
                     Direction::Reverse
                 } else {
                     Direction::Forward
@@ -173,7 +193,7 @@ impl InputSequence {
                     false,
                 );
             }
-            if event.alt_down || self.captured == Some(VK_TAB.0) {
+            if self.pressed.alt_down() || self.captured == Some(VK_TAB.0) {
                 return (HookDecision::Suppress, false);
             }
         }
@@ -181,14 +201,14 @@ impl InputSequence {
             return (HookDecision::Pass, false);
         }
 
-        self.track_shift(event);
         self.track_alt(event);
         if self.config.custom_alt_tab
+            && switcher_ready
             && let Some(decision) = self.alt_tab(event)
         {
             return (decision, false);
         }
-        if self.config.windows_key_search {
+        if self.config.windows_key_search && search_ready {
             return self.windows_key(event);
         }
         (HookDecision::Pass, false)
@@ -202,9 +222,9 @@ impl InputSequence {
         let alt_fallback = self.pending_alt_tab_replay.and_then(|(pending, steps)| {
             (pending > acknowledged).then_some(AltFallback {
                 steps,
-                alt_is_held: self.alt_mask != 0,
+                alt_is_held: self.pressed.alt_down(),
                 alt_key: self.last_alt,
-                shift_mask: self.shift_mask,
+                shift_mask: self.pressed.shift_mask(),
             })
         });
 
@@ -223,7 +243,6 @@ impl InputSequence {
         if change.was_down == change.is_down {
             return;
         }
-        self.track_shift(event);
         self.track_alt(event);
         self.clear_win_candidate();
     }
@@ -259,7 +278,9 @@ impl InputSequence {
             return self.alt_active.then_some(HookDecision::Pass);
         }
         if event.key == VK_TAB.0
-            && (event.alt_down || self.alt_active || self.captured == Some(VK_TAB.0))
+            && (self.pressed.alt_down()
+                || self.alt_active
+                || self.captured == Some(VK_TAB.0))
         {
             if event.transition == Transition::Up {
                 let captured = self.captured == Some(VK_TAB.0);
@@ -271,7 +292,7 @@ impl InputSequence {
                 });
             }
             self.captured = Some(VK_TAB.0);
-            let direction = if self.shift_mask != 0 {
+            let direction = if self.pressed.shift_down() {
                 Direction::Reverse
             } else {
                 Direction::Forward
@@ -323,19 +344,6 @@ impl InputSequence {
         None
     }
 
-    fn track_shift(&mut self, event: KeyEvent) {
-        let bit = match event.key {
-            key if key == VK_LSHIFT.0 => 0b001,
-            key if key == VK_RSHIFT.0 => 0b010,
-            key if key == VK_SHIFT.0 => 0b100,
-            _ => return,
-        };
-        match event.transition {
-            Transition::Down => self.shift_mask |= bit,
-            Transition::Up => self.shift_mask &= !bit,
-        }
-    }
-
     fn record_alt_tab_cycle(&mut self, direction: Direction) {
         if let Some((sequence, steps)) = self.pending_alt_tab_replay {
             self.pending_alt_tab_replay =
@@ -344,18 +352,10 @@ impl InputSequence {
     }
 
     fn track_alt(&mut self, event: KeyEvent) {
-        let bit = match event.key {
-            key if key == VK_LMENU.0 => 0b001,
-            key if key == VK_RMENU.0 => 0b010,
-            key if key == VK_MENU.0 => 0b100,
-            _ => return,
-        };
-        match event.transition {
-            Transition::Down => {
-                self.alt_mask |= bit;
-                self.last_alt = event.key;
-            }
-            Transition::Up => self.alt_mask &= !bit,
+        if matches!(event.key, key if key == VK_LMENU.0 || key == VK_RMENU.0)
+            && event.transition == Transition::Down
+        {
+            self.last_alt = event.key;
         }
     }
 
@@ -427,4 +427,16 @@ fn windows_mask(word: usize) -> u64 {
         }
     }
     mask
+}
+
+pub(super) const fn is_physical_keyboard_key(key: u16) -> bool {
+    key <= 255
+        && key != VK_SHIFT.0
+        && key != VK_CONTROL.0
+        && key != VK_MENU.0
+        && key != VK_LBUTTON.0
+        && key != VK_RBUTTON.0
+        && key != VK_MBUTTON.0
+        && key != VK_XBUTTON1.0
+        && key != VK_XBUTTON2.0
 }

@@ -5,11 +5,10 @@ use lotus_windows::WindowHandle;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::DeviceState;
 
-use super::presentation::present_dock_change;
 use crate::app::context_menu::PopupEvent;
 use crate::app::modules::ModuleHost;
 use crate::app::primary_dock::PrimaryDock;
-use crate::app::settings_persistence::SettingsPersistence;
+use crate::app::settings_persistence::{SettingsPersistence, SettingsSaveReason};
 use crate::app::system_actions::{Confirmation, SystemAction, execute_system_action};
 use crate::app::visuals::{AppMenuAction, ContextMenuAction, PopupAction, PowerAction};
 use crate::app::{AppError, DockRuntime, activation};
@@ -18,7 +17,6 @@ pub(super) fn handle_context_menu_event(
     event: PopupEvent,
     primary_dock: &mut PrimaryDock,
     graphics: &mut DeviceState,
-    windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
     settings_persistence: &SettingsPersistence,
@@ -30,7 +28,6 @@ pub(super) fn handle_context_menu_event(
         let mut context = PopupActionContext {
             primary_dock,
             graphics,
-            windows,
             dock_model,
             auxiliary,
             settings_persistence,
@@ -50,7 +47,6 @@ pub(super) fn handle_context_menu_event(
 struct PopupActionContext<'a> {
     primary_dock: &'a mut PrimaryDock,
     graphics: &'a mut DeviceState,
-    windows: &'a [WindowInfo],
     dock_model: &'a mut DockRuntime,
     auxiliary: &'a mut ModuleHost,
     settings_persistence: &'a SettingsPersistence,
@@ -180,30 +176,20 @@ fn execute_app_menu_action(
                 .then(|| context.dock_model.item(source_index))
                 .flatten()
                 .and_then(|item| context.dock_model.registered_application_for_item(item));
-            let changed = match context.dock_model.set_pinned(
-                source_index,
-                !pinned,
-                context.windows,
-                registered,
-                context.settings_persistence,
-            ) {
-                Ok(changed) => changed,
-                Err(error) => {
-                    show_error(
-                        context.primary_dock.window().handle(),
-                        "Lotus",
-                        &format!("Lotus could not save that pin.\n\n{error}"),
-                    );
-                    false
-                }
-            };
-            if changed {
-                present_dock_change(
-                    context.primary_dock,
-                    context.graphics,
-                    context.auxiliary,
-                    context.dock_model,
-                )?;
+            let settings =
+                context
+                    .dock_model
+                    .prepare_pinned(source_index, !pinned, registered);
+            if let Some(settings) = settings
+                && let Err(error) = context
+                    .settings_persistence
+                    .request_save(SettingsSaveReason::Pin, settings)
+            {
+                show_error(
+                    context.primary_dock.window().handle(),
+                    "Lotus",
+                    error.message(),
+                );
             }
         }
         AppMenuAction::Close => {

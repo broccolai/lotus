@@ -1,16 +1,18 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, RegisterWindowMessageW};
+use windows::Win32::Foundation::{HANDLE, HWND};
+use windows::Win32::UI::WindowsAndMessaging::{
+    RegisterWindowMessageW, RemovePropW, SetPropW,
+};
 use windows::core::{PCWSTR, w};
 
 pub const CONFIG_MESSAGE_NAME: PCWSTR = w!("Lotus.ExplorerBridge.Configure.v2");
-pub const ACK_MESSAGE_NAME: PCWSTR = w!("Lotus.ExplorerBridge.Acknowledge.v2");
+pub const ACK_PROPERTY_NAME: PCWSTR = w!("Lotus.ExplorerBridge.Acknowledged.v2");
 pub const OWNER_PROPERTY_NAME: PCWSTR = w!("Lotus.ExplorerBridge.Owner.v2");
+pub const LEASE_PROPERTY_NAME: PCWSTR = w!("Lotus.ExplorerBridge.Lease.v3");
 pub const HOOK_EXPORT_NAME: &[u8] = b"lotus_explorer_bridge_hook\0";
 
 static CONFIG_MESSAGE: AtomicU32 = AtomicU32::new(0);
-static ACK_MESSAGE: AtomicU32 = AtomicU32::new(0);
 
 pub(crate) fn config_message() -> u32 {
     registered_message(&CONFIG_MESSAGE, CONFIG_MESSAGE_NAME)
@@ -26,17 +28,21 @@ pub(crate) fn acknowledge(owner: usize, configuration: isize, success: bool) {
     if owner == 0 {
         return;
     }
-    let message = registered_message(&ACK_MESSAGE, ACK_MESSAGE_NAME);
-    if message == 0 {
+    let owner = HWND(std::ptr::with_exposed_provenance_mut(owner));
+    if !success {
+        let _ = unsafe { RemovePropW(owner, ACK_PROPERTY_NAME) };
         return;
     }
-    let owner = HWND(std::ptr::with_exposed_provenance_mut(owner));
+    let Ok(acknowledgement) = usize::try_from(configuration) else {
+        return;
+    };
     let _ = unsafe {
-        PostMessageW(
-            Some(owner),
-            message,
-            WPARAM(usize::from(success)),
-            LPARAM(configuration),
+        SetPropW(
+            owner,
+            ACK_PROPERTY_NAME,
+            Some(HANDLE(std::ptr::with_exposed_provenance_mut(
+                acknowledgement,
+            ))),
         )
     };
 }

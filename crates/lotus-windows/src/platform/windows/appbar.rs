@@ -22,12 +22,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::w;
 
 use crate::NativeError;
-use crate::exclusive_taskbar::{ExclusiveTaskbarError, ExclusiveTaskbarGuard};
+use crate::exclusive_taskbar::{
+    ExclusiveTaskbarError, ExclusiveTaskbarGuard, ExclusiveTaskbarStart,
+};
 use crate::explorer_bridge::ExplorerBridgeLease;
 use crate::messages::FULLSCREEN_NOTIFICATION as FULLSCREEN_NOTIFICATION_MESSAGE;
 use crate::taskbar_state::{TaskbarStateError, TaskbarStateGuard};
 use crate::window::{AppBarLayout, DockWindow};
 const RESERVATION_SUBCLASS_ID: usize = 0x4C4F_5455;
+const TASKBAR_REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 static TASKBAR_CREATED_MESSAGE: AtomicU32 = AtomicU32::new(0);
 static RECOVERY_QUEUED: AtomicBool = AtomicBool::new(false);
 static RECOVERY_WAKE_FAILED: AtomicBool = AtomicBool::new(false);
@@ -36,6 +39,7 @@ static RECOVERY_SOURCE: AtomicU32 = AtomicU32::new(0);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShellIntegrationHealth {
     Disabled,
+    Starting,
     Healthy,
     Degraded,
 }
@@ -113,6 +117,7 @@ pub struct ShellIntegration {
     taskbar_created_message: u32,
     recovery_enabled: bool,
     active: Option<ActiveShellIntegration>,
+    pending_exclusive_start: Option<PendingExclusiveStart>,
     health: ShellIntegrationHealth,
 }
 
@@ -123,6 +128,7 @@ impl ShellIntegration {
             taskbar_created_message,
             recovery_enabled: enabled,
             active: None,
+            pending_exclusive_start: None,
             health: ShellIntegrationHealth::Disabled,
         };
         if enabled {
@@ -136,17 +142,66 @@ impl ShellIntegration {
     }
 
     pub const fn requires_maintenance(&self) -> bool {
-        self.active.is_some()
+        self.active.is_some() || self.pending_exclusive_start.is_some()
+    }
+
+    /// Renews shell takeover only from a UI-owned heartbeat after the caller has established
+    /// that the relevant presentation is usable. It performs no external waiting.
+    pub fn report_ui_progress(&mut self, takeover_allowed: bool) {
+        let takeover_allowed =
+            takeover_allowed && self.health == ShellIntegrationHealth::Healthy;
+        if let Some(active) = self.active.as_mut() {
+            active.report_ui_progress(takeover_allowed);
+        }
     }
 
     /// Performs the bounded liveness check that keeps a lost exclusive guardian fail-open.
     pub fn maintain(&mut self, settings: &DockSettings, dock: &DockWindow) -> bool {
-        let lost = self
+        if let Some(pending) = self.pending_exclusive_start.as_ref()
+            && let Some(result) = pending.start.try_complete()
+        {
+            let source = pending.source;
+            self.pending_exclusive_start = None;
+            match result {
+                Ok(guard) => {
+                    self.active =
+                        Some(ActiveShellIntegration::start_exclusive(dock, guard));
+                    self.finish_recovery(settings, dock, source);
+                }
+                Err(error) => {
+                    self.record_recovery_failure(settings, dock, source, &error.into());
+                }
+            }
+            return true;
+        }
+        let guardian_lost = self
             .active
             .as_mut()
-            .is_some_and(|active| !active.is_healthy());
-        if !lost {
+            .is_some_and(ActiveShellIntegration::guardian_lost);
+        if !guardian_lost {
             let previous_health = self.health;
+            if let Some(active) = self.active.as_mut()
+                && !active.is_healthy()
+            {
+                active.require_taskbar_refresh();
+            }
+            if self
+                .active
+                .as_ref()
+                .is_some_and(ActiveShellIntegration::taskbar_refresh_expired)
+            {
+                crate::diagnostics::record_diagnostic(
+                    "shell_integration.bridge_recovery_timed_out",
+                    "native taskbar takeover was revoked after the fixed recovery deadline",
+                );
+                self.release_to_normal_placement(
+                    settings,
+                    dock,
+                    "bridge_recovery_timed_out",
+                );
+                self.health = ShellIntegrationHealth::Degraded;
+                return true;
+            }
             if let Some(active) = self.active.as_mut()
                 && active.taskbar_needs_refresh
             {
@@ -156,7 +211,7 @@ impl ShellIntegration {
                     .map_or(Ok(false), |taskbar| taskbar.reassert(dock))
                 {
                     Ok(true) => {
-                        active.taskbar_needs_refresh = false;
+                        active.accept_taskbar_health();
                         self.health = if self.taskbar_created_message != 0 {
                             ShellIntegrationHealth::Healthy
                         } else {
@@ -240,7 +295,27 @@ impl ShellIntegration {
         }
 
         if self.active.is_none() {
-            match ActiveShellIntegration::start(settings, dock) {
+            if settings.exclusive_taskbar_replacement {
+                if self.pending_exclusive_start.is_none() {
+                    match ExclusiveTaskbarGuard::start_async() {
+                        Ok(start) => {
+                            self.pending_exclusive_start =
+                                Some(PendingExclusiveStart { start, source });
+                            self.health = ShellIntegrationHealth::Starting;
+                        }
+                        Err(error) => {
+                            self.record_recovery_failure(
+                                settings,
+                                dock,
+                                source,
+                                &error.into(),
+                            );
+                        }
+                    }
+                }
+                return;
+            }
+            match ActiveShellIntegration::start_autohide() {
                 Ok(active) => self.active = Some(active),
                 Err(error) => {
                     self.record_recovery_failure(settings, dock, source, &error);
@@ -248,6 +323,15 @@ impl ShellIntegration {
                 }
             }
         }
+        self.finish_recovery(settings, dock, source);
+    }
+
+    fn finish_recovery(
+        &mut self,
+        settings: &DockSettings,
+        dock: &DockWindow,
+        source: ShellRecoverySource,
+    ) {
         let outcome = self
             .active
             .as_mut()
@@ -307,6 +391,10 @@ impl ShellIntegration {
         dock: &DockWindow,
         reason: &str,
     ) {
+        self.pending_exclusive_start = None;
+        if let Some(active) = self.active.as_mut() {
+            active.revoke_takeover();
+        }
         drop(self.active.take());
         crate::exclusive_taskbar::restore_verified_taskbars();
         dock.clear_appbar_ownership();
@@ -321,6 +409,11 @@ impl ShellIntegration {
             );
         }
     }
+}
+
+struct PendingExclusiveStart {
+    start: ExclusiveTaskbarStart,
+    source: ShellRecoverySource,
 }
 
 fn register_taskbar_created_message() -> u32 {
@@ -383,42 +476,84 @@ struct ActiveShellIntegration {
     appbar: Option<AppBarController>,
     taskbar: Option<TaskbarOwnership>,
     taskbar_needs_refresh: bool,
+    taskbar_refresh_started: Option<std::time::Instant>,
 }
 
 impl ActiveShellIntegration {
-    fn start(
-        settings: &DockSettings,
-        dock: &DockWindow,
-    ) -> Result<Self, ShellIntegrationError> {
-        let mut taskbar = if settings.exclusive_taskbar_replacement {
-            let bridge = ExplorerBridgeLease::attach(dock.hwnd());
-            if bridge.is_none() {
-                crate::diagnostics::record_diagnostic(
-                    "shell_integration.bridge_attachment_failed",
-                    "mode=exclusive",
-                );
-            }
-            TaskbarOwnership::Exclusive {
-                bridge,
-                guard: ExclusiveTaskbarGuard::start()?,
-            }
-        } else {
-            TaskbarOwnership::Autohide {
-                guard: TaskbarStateGuard::enable_autohide()?,
-            }
+    fn start_autohide() -> Result<Self, ShellIntegrationError> {
+        let mut taskbar = TaskbarOwnership::Autohide {
+            guard: TaskbarStateGuard::enable_autohide()?,
         };
         let taskbar_needs_refresh = !taskbar.is_healthy();
         Ok(Self {
             appbar: None,
             taskbar: Some(taskbar),
             taskbar_needs_refresh,
+            taskbar_refresh_started: taskbar_needs_refresh.then(std::time::Instant::now),
         })
+    }
+
+    fn start_exclusive(dock: &DockWindow, guard: ExclusiveTaskbarGuard) -> Self {
+        let bridge = ExplorerBridgeLease::attach(dock.hwnd());
+        if bridge.is_none() {
+            crate::diagnostics::record_diagnostic(
+                "shell_integration.bridge_attachment_failed",
+                "mode=exclusive",
+            );
+        }
+        let mut taskbar = TaskbarOwnership::Exclusive {
+            bridge,
+            guard: Box::new(guard),
+        };
+        let taskbar_needs_refresh = !taskbar.is_healthy();
+        Self {
+            appbar: None,
+            taskbar: Some(taskbar),
+            taskbar_needs_refresh,
+            taskbar_refresh_started: taskbar_needs_refresh.then(std::time::Instant::now),
+        }
     }
 
     fn is_healthy(&mut self) -> bool {
         self.taskbar
             .as_mut()
             .is_some_and(TaskbarOwnership::is_healthy)
+    }
+
+    fn guardian_lost(&mut self) -> bool {
+        self.taskbar
+            .as_mut()
+            .is_some_and(TaskbarOwnership::guardian_lost)
+    }
+
+    fn require_taskbar_refresh(&mut self) {
+        self.taskbar_needs_refresh = true;
+        self.taskbar_refresh_started
+            .get_or_insert_with(std::time::Instant::now);
+    }
+
+    fn accept_taskbar_health(&mut self) {
+        self.taskbar_needs_refresh = false;
+        self.taskbar_refresh_started = None;
+    }
+
+    fn taskbar_refresh_expired(&self) -> bool {
+        self.taskbar_needs_refresh
+            && self
+                .taskbar_refresh_started
+                .is_some_and(|started| started.elapsed() >= TASKBAR_REFRESH_TIMEOUT)
+    }
+
+    fn report_ui_progress(&mut self, takeover_allowed: bool) {
+        if let Some(taskbar) = self.taskbar.as_ref() {
+            taskbar.report_ui_progress(takeover_allowed);
+        }
+    }
+
+    fn revoke_takeover(&self) {
+        if let Some(taskbar) = self.taskbar.as_ref() {
+            taskbar.revoke_takeover();
+        }
     }
 
     fn recover(
@@ -435,21 +570,29 @@ impl ActiveShellIntegration {
                 .taskbar
                 .as_mut()
                 .map_or(Ok(false), |taskbar| taskbar.reassert(dock))?;
-            self.taskbar_needs_refresh = !healthy;
+            if healthy {
+                self.accept_taskbar_health();
+            } else {
+                self.require_taskbar_refresh();
+            }
             return Ok(healthy);
         }
         if let Some(appbar) = self.appbar.as_mut() {
             appbar.release_for_recovery(source)?;
             drop(self.appbar.take());
             dock.clear_appbar_ownership();
-            self.taskbar_needs_refresh = true;
+            self.require_taskbar_refresh();
         }
         let ownership_healthy = if self.taskbar_needs_refresh {
             let healthy = self
                 .taskbar
                 .as_mut()
                 .map_or(Ok(false), |taskbar| taskbar.refresh(dock))?;
-            self.taskbar_needs_refresh = !healthy;
+            if healthy {
+                self.accept_taskbar_health();
+            } else {
+                self.require_taskbar_refresh();
+            }
             healthy
         } else {
             self.is_healthy()
@@ -465,11 +608,31 @@ enum TaskbarOwnership {
     },
     Exclusive {
         bridge: Option<ExplorerBridgeLease>,
-        guard: ExclusiveTaskbarGuard,
+        guard: Box<ExclusiveTaskbarGuard>,
     },
 }
 
 impl TaskbarOwnership {
+    fn report_ui_progress(&self, takeover_allowed: bool) {
+        if let Self::Exclusive { bridge, guard } = self {
+            if let Some(bridge) = bridge.as_ref() {
+                bridge.report_ui_progress(takeover_allowed);
+            }
+            if takeover_allowed {
+                guard.report_ui_progress();
+            }
+        }
+    }
+
+    fn revoke_takeover(&self) {
+        if let Self::Exclusive { bridge, guard } = self {
+            if let Some(bridge) = bridge.as_ref() {
+                bridge.revoke_takeover();
+            }
+            guard.revoke_takeover();
+        }
+    }
+
     fn is_healthy(&mut self) -> bool {
         match self {
             Self::Autohide { guard } => match guard.ensure_autohide() {
@@ -489,6 +652,13 @@ impl TaskbarOwnership {
         }
     }
 
+    fn guardian_lost(&mut self) -> bool {
+        match self {
+            Self::Autohide { .. } => false,
+            Self::Exclusive { guard, .. } => !guard.is_alive().unwrap_or(false),
+        }
+    }
+
     fn refresh(&mut self, dock: &DockWindow) -> Result<bool, ShellIntegrationError> {
         match self {
             Self::Autohide { guard } => {
@@ -496,14 +666,17 @@ impl TaskbarOwnership {
                 Ok(true)
             }
             Self::Exclusive { bridge, guard } => {
-                let identity_valid =
-                    bridge.as_ref().is_some_and(ExplorerBridgeLease::is_usable);
-                let configured = if identity_valid {
-                    bridge.as_ref().is_some_and(ExplorerBridgeLease::reassert)
-                } else {
+                let configured = if bridge
+                    .as_ref()
+                    .is_none_or(ExplorerBridgeLease::should_replace)
+                {
                     drop(bridge.take());
                     *bridge = ExplorerBridgeLease::attach(dock.hwnd());
                     bridge.as_ref().is_some_and(ExplorerBridgeLease::is_usable)
+                } else {
+                    bridge
+                        .as_ref()
+                        .is_some_and(|bridge| bridge.reassert() && bridge.is_usable())
                 };
                 guard.reassert_hidden()?;
                 if bridge.is_none() {
@@ -525,14 +698,17 @@ impl TaskbarOwnership {
             }
             Self::Exclusive { bridge, guard } => {
                 guard.reassert_hidden()?;
-                let identity_valid =
-                    bridge.as_ref().is_some_and(ExplorerBridgeLease::is_usable);
-                let configured = if identity_valid {
-                    bridge.as_ref().is_some_and(ExplorerBridgeLease::reassert)
-                } else {
+                let configured = if bridge
+                    .as_ref()
+                    .is_none_or(ExplorerBridgeLease::should_replace)
+                {
                     drop(bridge.take());
                     *bridge = ExplorerBridgeLease::attach(dock.hwnd());
                     bridge.as_ref().is_some_and(ExplorerBridgeLease::is_usable)
+                } else {
+                    bridge
+                        .as_ref()
+                        .is_some_and(|bridge| bridge.reassert() && bridge.is_usable())
                 };
                 Ok(configured && guard.is_alive()?)
             }
@@ -543,6 +719,7 @@ impl TaskbarOwnership {
 const fn health_name(health: ShellIntegrationHealth) -> &'static str {
     match health {
         ShellIntegrationHealth::Disabled => "disabled",
+        ShellIntegrationHealth::Starting => "starting",
         ShellIntegrationHealth::Healthy => "healthy",
         ShellIntegrationHealth::Degraded => "degraded",
     }

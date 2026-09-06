@@ -9,7 +9,7 @@ mod report;
 mod snapshot;
 
 const HISTOGRAM_BUCKETS: usize = 8;
-const UI_PHASES: usize = 9;
+const UI_PHASES: usize = 13;
 const TRACKER_UI_PHASES: usize = 5;
 const CACHE_CLASSES: usize = 7;
 const LAYOUT_OPERATIONS: usize = 10;
@@ -38,6 +38,10 @@ pub enum UiMessagePhase {
     Wake,
     MonitorSync,
     Frame,
+    Integration,
+    GraphicsRecovery,
+    Persistence,
+    Asset,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -203,6 +207,11 @@ struct ApplicationMetricsSnapshot {
     catalog_duplicate_merges: u64,
     catalog_ambiguous_aliases: u64,
     catalog_build_max_us: u64,
+    catalog_lock_calls: u64,
+    catalog_lock_wait_total_us: u64,
+    catalog_lock_wait_max_us: u64,
+    catalog_lock_hold_total_us: u64,
+    catalog_lock_hold_max_us: u64,
     window_fact_hits: u64,
     window_fact_misses: u64,
     window_fact_max_us: u64,
@@ -245,6 +254,10 @@ impl UiMessagePhase {
             Self::Wake => 6,
             Self::MonitorSync => 7,
             Self::Frame => 8,
+            Self::Integration => 9,
+            Self::GraphicsRecovery => 10,
+            Self::Persistence => 11,
+            Self::Asset => 12,
         }
     }
 
@@ -259,6 +272,10 @@ impl UiMessagePhase {
             Self::Wake => "wake",
             Self::MonitorSync => "monitor_sync",
             Self::Frame => "frame",
+            Self::Integration => "integration",
+            Self::GraphicsRecovery => "graphics_recovery",
+            Self::Persistence => "persistence",
+            Self::Asset => "asset",
         }
     }
 }
@@ -391,6 +408,17 @@ pub struct ResponsivenessMetrics {
     application_catalog_duplicate_merges: AtomicU64,
     application_catalog_ambiguous_aliases: AtomicU64,
     application_catalog_build_max_us: AtomicU64,
+    application_catalog_lock_calls: AtomicU64,
+    application_catalog_lock_wait_total_us: AtomicU64,
+    application_catalog_lock_wait_max_us: AtomicU64,
+    application_catalog_lock_hold_total_us: AtomicU64,
+    application_catalog_lock_hold_max_us: AtomicU64,
+    tracked_window_registry_lock_calls: AtomicU64,
+    tracked_window_registry_lock_total_us: AtomicU64,
+    tracked_window_registry_lock_max_us: AtomicU64,
+    activation_calls: AtomicU64,
+    activation_total_us: AtomicU64,
+    activation_max_us: AtomicU64,
     window_identity_fact_hits: AtomicU64,
     window_identity_fact_misses: AtomicU64,
     window_identity_fact_max_us: AtomicU64,
@@ -431,6 +459,12 @@ pub struct ResponsivenessMetrics {
     flyout_superseded: AtomicU64,
     switcher_requests: AtomicU64,
     switcher_results: AtomicU64,
+    icon_source_discovery_calls: AtomicU64,
+    icon_source_discovery_total_us: AtomicU64,
+    icon_source_discovery_max_us: AtomicU64,
+    icon_raster_calls: AtomicU64,
+    icon_raster_total_us: AtomicU64,
+    icon_raster_max_us: AtomicU64,
     cache_entries: [AtomicU64; CACHE_CLASSES],
     cache_bytes: [AtomicU64; CACHE_CLASSES],
     cache_budgets: [AtomicU64; CACHE_CLASSES],
@@ -515,6 +549,12 @@ pub struct ResponsivenessSnapshot {
     pub flyout_attempts: u64,
     pub flyout_max_us: u64,
     pub flyout_histogram: [u64; HISTOGRAM_BUCKETS],
+    pub icon_source_discovery_calls: u64,
+    pub icon_source_discovery_total_us: u64,
+    pub icon_source_discovery_max_us: u64,
+    pub icon_raster_calls: u64,
+    pub icon_raster_total_us: u64,
+    pub icon_raster_max_us: u64,
     pub flyout_worker_start_max_us: u64,
     pub flyout_discovery_wait_max_us: u64,
     pub flyout_bridge_configuration_max_us: u64,
@@ -525,6 +565,12 @@ pub struct ResponsivenessSnapshot {
     pub switcher_requests: u64,
     pub switcher_results: u64,
     pub caches: [CacheSnapshot; CACHE_CLASSES],
+    pub tracked_window_registry_lock_calls: u64,
+    pub tracked_window_registry_lock_total_us: u64,
+    pub tracked_window_registry_lock_max_us: u64,
+    pub activation_calls: u64,
+    pub activation_total_us: u64,
+    pub activation_max_us: u64,
 }
 
 impl ResponsivenessMetrics {
@@ -608,6 +654,17 @@ impl ResponsivenessMetrics {
             application_catalog_duplicate_merges: AtomicU64::new(0),
             application_catalog_ambiguous_aliases: AtomicU64::new(0),
             application_catalog_build_max_us: AtomicU64::new(0),
+            application_catalog_lock_calls: AtomicU64::new(0),
+            application_catalog_lock_wait_total_us: AtomicU64::new(0),
+            application_catalog_lock_wait_max_us: AtomicU64::new(0),
+            application_catalog_lock_hold_total_us: AtomicU64::new(0),
+            application_catalog_lock_hold_max_us: AtomicU64::new(0),
+            tracked_window_registry_lock_calls: AtomicU64::new(0),
+            tracked_window_registry_lock_total_us: AtomicU64::new(0),
+            tracked_window_registry_lock_max_us: AtomicU64::new(0),
+            activation_calls: AtomicU64::new(0),
+            activation_total_us: AtomicU64::new(0),
+            activation_max_us: AtomicU64::new(0),
             window_identity_fact_hits: AtomicU64::new(0),
             window_identity_fact_misses: AtomicU64::new(0),
             window_identity_fact_max_us: AtomicU64::new(0),
@@ -648,6 +705,12 @@ impl ResponsivenessMetrics {
             flyout_superseded: AtomicU64::new(0),
             switcher_requests: AtomicU64::new(0),
             switcher_results: AtomicU64::new(0),
+            icon_source_discovery_calls: AtomicU64::new(0),
+            icon_source_discovery_total_us: AtomicU64::new(0),
+            icon_source_discovery_max_us: AtomicU64::new(0),
+            icon_raster_calls: AtomicU64::new(0),
+            icon_raster_total_us: AtomicU64::new(0),
+            icon_raster_max_us: AtomicU64::new(0),
             cache_entries: [const { AtomicU64::new(0) }; CACHE_CLASSES],
             cache_bytes: [const { AtomicU64::new(0) }; CACHE_CLASSES],
             cache_budgets: [const { AtomicU64::new(0) }; CACHE_CLASSES],

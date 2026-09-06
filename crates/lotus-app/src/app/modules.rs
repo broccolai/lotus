@@ -8,6 +8,7 @@ mod presentation;
 mod settings;
 mod status;
 
+pub(in crate::app) use lifecycle::ModuleHostServices;
 use lotus_windows::WindowHandle;
 use lotus_windows::window::SignedPoint;
 

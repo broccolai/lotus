@@ -7,13 +7,14 @@ mod visibility_transaction;
 
 use std::path::PathBuf;
 use std::process::Child;
+use std::sync::mpsc::{self, TryRecvError};
 use std::time::{Duration, Instant};
 use std::{fs, thread};
 
 use guardian::{READY_FILE, REFRESH_FILE, START_TIMEOUT};
 use thiserror::Error;
 
-use super::taskbar_state::{TaskbarStateError, TaskbarStateSnapshot};
+use super::taskbar_state::TaskbarStateError;
 use crate::NativeError;
 
 #[derive(Debug, Error)]
@@ -43,16 +44,43 @@ pub struct ExclusiveTaskbarGuard {
     child: Child,
     control_directory: PathBuf,
     cancellation: guardian::CancellationEvent,
-    taskbar_baseline: TaskbarStateSnapshot,
+    progress: guardian::ProgressEvent,
+}
+
+// SAFETY: this guard contains process/event handles and value snapshots only. Its methods never
+// access a Lotus HWND; UI-affine AppBar and placement work remains in the caller.
+unsafe impl Send for ExclusiveTaskbarGuard {}
+
+/// External guardian launch/readiness coordination. Poll it from the UI without waiting; the
+/// worker owns filesystem polling and child-process waits until it can return a guard.
+pub struct ExclusiveTaskbarStart {
+    completion: mpsc::Receiver<Result<ExclusiveTaskbarGuard, ExclusiveTaskbarError>>,
 }
 
 impl ExclusiveTaskbarGuard {
-    pub fn start() -> Result<Self, ExclusiveTaskbarError> {
+    pub fn start_async() -> Result<ExclusiveTaskbarStart, ExclusiveTaskbarError> {
+        let (sender, completion) = mpsc::sync_channel(1);
+        thread::Builder::new()
+            .name("lotus-taskbar-guardian-start".into())
+            .spawn(move || {
+                let _ = sender.send(Self::start());
+            })
+            .map_err(ExclusiveTaskbarError::Io)?;
+        Ok(ExclusiveTaskbarStart { completion })
+    }
+
+    fn start() -> Result<Self, ExclusiveTaskbarError> {
         let control_directory = guardian::control_directory();
         fs::create_dir(&control_directory)?;
-        let taskbar_baseline = TaskbarStateSnapshot::capture()?;
         let cancellation = match guardian::CancellationEvent::create() {
             Ok(cancellation) => cancellation,
+            Err(error) => {
+                guardian::cleanup_control_directory(&control_directory);
+                return Err(error);
+            }
+        };
+        let progress = match guardian::ProgressEvent::create() {
+            Ok(progress) => progress,
             Err(error) => {
                 guardian::cleanup_control_directory(&control_directory);
                 return Err(error);
@@ -62,6 +90,7 @@ impl ExclusiveTaskbarGuard {
             std::process::id(),
             &control_directory,
             cancellation.name(),
+            progress.name(),
         ) {
             Ok(child) => child,
             Err(error) => {
@@ -74,8 +103,6 @@ impl ExclusiveTaskbarGuard {
         loop {
             if child.try_wait()?.is_some() {
                 guardian::cleanup_control_directory(&control_directory);
-                restore_verified_taskbars();
-                let _ = taskbar_baseline.restore_exclusive_fallback();
                 return Err(ExclusiveTaskbarError::GuardianStopped);
             }
             if control_directory.join(READY_FILE).is_file() {
@@ -83,15 +110,13 @@ impl ExclusiveTaskbarGuard {
                     child,
                     control_directory,
                     cancellation,
-                    taskbar_baseline,
+                    progress,
                 });
             }
             if started.elapsed() >= START_TIMEOUT {
                 if stop_guardian(&mut child, &cancellation) {
                     guardian::cleanup_control_directory(&control_directory);
                 }
-                restore_verified_taskbars();
-                let _ = taskbar_baseline.restore_exclusive_fallback();
                 return Err(ExclusiveTaskbarError::GuardianTimedOut);
             }
 
@@ -108,32 +133,46 @@ impl ExclusiveTaskbarGuard {
         Ok(())
     }
 
+    /// Records actual UI-owned progress. The guardian will not hide taskbars until this
+    /// permission is observed, and it restores them when fresh UI progress expires.
+    pub fn report_ui_progress(&self) {
+        self.progress.report();
+    }
+
+    /// Revokes takeover before any native restoration path. This is intentionally the same
+    /// cooperative signal used for shutdown: a stale session must not resume hiding taskbars.
+    pub fn revoke_takeover(&self) {
+        self.cancellation.signal();
+    }
+
     pub fn is_alive(&mut self) -> Result<bool, ExclusiveTaskbarError> {
         Ok(self.child.try_wait()?.is_none())
     }
 }
 
+impl ExclusiveTaskbarStart {
+    /// Returns a completed launch without sleeping or joining. A disconnected worker is a
+    /// fail-open error rather than a reason to wait on the UI thread.
+    pub fn try_complete(
+        &self,
+    ) -> Option<Result<ExclusiveTaskbarGuard, ExclusiveTaskbarError>> {
+        match self.completion.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                Some(Err(ExclusiveTaskbarError::GuardianStopped))
+            }
+        }
+    }
+}
+
 impl Drop for ExclusiveTaskbarGuard {
     fn drop(&mut self) {
-        let stopped = stop_guardian(&mut self.child, &self.cancellation);
-        restore_verified_taskbars();
-        let fallback_restored = self
-            .taskbar_baseline
-            .restore_exclusive_fallback()
-            .unwrap_or(false);
+        self.revoke_takeover();
         crate::diagnostics::record_state(
             "exclusive_taskbar.guardian_owner_shutdown",
-            &[
-                ("guardian_stopped", u64::from(stopped)),
-                (
-                    "taskbar_state_fallback_restored",
-                    u64::from(fallback_restored),
-                ),
-            ],
+            &[("guardian_stop_requested", 1)],
         );
-        if stopped {
-            guardian::cleanup_control_directory(&self.control_directory);
-        }
     }
 }
 
@@ -175,10 +214,17 @@ fn stop_guardian(child: &mut Child, cancellation: &guardian::CancellationEvent) 
 /// Runs the recovery guardian instead of the normal application when requested.
 pub fn run_guardian_if_requested() -> Result<bool, ExclusiveTaskbarError> {
     let request = guardian::request(std::env::args_os().skip(1))?;
-    let Some((parent_process_id, control_directory, cancellation_event)) = request else {
+    let Some((parent_process_id, control_directory, cancellation_event, progress_event)) =
+        request
+    else {
         return Ok(false);
     };
 
-    guardian::run(parent_process_id, &control_directory, &cancellation_event)?;
+    guardian::run(
+        parent_process_id,
+        &control_directory,
+        &cancellation_event,
+        &progress_event,
+    )?;
     Ok(true)
 }

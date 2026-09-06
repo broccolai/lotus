@@ -20,20 +20,24 @@ use crate::app::settings::SettingsRuntime;
 use crate::app::status::StatusRuntime;
 use crate::app::switcher::SwitcherRuntime;
 
+pub(in crate::app) struct ModuleHostServices {
+    pub(in crate::app) usage: SearchUsage,
+    pub(in crate::app) usage_store: SearchUsageStore,
+    pub(in crate::app) applications: ApplicationServices,
+}
+
 impl ModuleHost {
     pub(in crate::app) fn create(
         dock: &DockWindow,
         dock_model: &mut DockRuntime,
-        usage: SearchUsage,
-        usage_store: SearchUsageStore,
+        services: ModuleHostServices,
         modules_active: bool,
         shell_effects_allowed: bool,
         updates_allowed: bool,
     ) -> Result<Self, AppError> {
         let mut search_window = dock.create_search_window()?;
         search_window.set_outside_click_allowed(shell_effects_allowed);
-        let applications = ApplicationServices::new()?;
-        dock_model.attach_icon_hydrator(applications.dock_icon_client());
+        dock_model.attach_icon_hydrator(services.applications.dock_icon_client());
         lotus_windows::backdrop::apply_search_settings(
             search_window.handle(),
             dock_model.settings(),
@@ -42,15 +46,16 @@ impl ModuleHost {
             search_window,
             dock_model.settings().clone(),
             &theme_for(dock_model.settings()),
-            usage,
-            usage_store,
-            applications.launcher_icon_client(),
+            services.usage,
+            services.usage_store,
+            services.applications.launcher_icon_client(),
         );
         let settings = SettingsRuntime::new(
             dock.create_settings_window()?,
             dock_model.settings().clone(),
             updates_allowed && is_installed().unwrap_or(false),
             updates_allowed,
+            services.applications.settings_icon_client(),
         )?;
         let context_menu_window = dock.create_context_menu_window()?;
         lotus_windows::backdrop::apply_context_menu_settings(
@@ -70,7 +75,8 @@ impl ModuleHost {
             switcher_window,
             dock_model.settings(),
             &theme_for(dock_model.settings()),
-            applications.switcher_icon_client(),
+            services.applications.switcher_icon_client(),
+            services.applications.view(),
         );
         let status = StatusRuntime::new(
             [dock.create_status_window()?, dock.create_status_window()?],
@@ -79,7 +85,7 @@ impl ModuleHost {
 
         let mut host = Self {
             lifecycle: ModuleLifecycle::new(),
-            applications,
+            applications: services.applications,
             launcher,
             settings,
             context_menu,
@@ -144,6 +150,8 @@ pub(super) struct ModuleLifecycle {
     input_config: Option<InputConfig>,
     input: Option<InputController>,
     input_unavailable: bool,
+    search_presentation_ready: bool,
+    switcher_presentation_ready: bool,
 }
 
 struct LifecycleTransition {
@@ -168,6 +176,8 @@ impl ModuleLifecycle {
             input_config: None,
             input: None,
             input_unavailable: false,
+            search_presentation_ready: false,
+            switcher_presentation_ready: false,
         }
     }
 
@@ -207,6 +217,50 @@ impl ModuleLifecycle {
         self.input.as_ref()
     }
 
+    pub(super) fn set_search_presentation_ready(&mut self, ready: bool) {
+        self.search_presentation_ready = ready;
+        self.publish_input_readiness();
+    }
+
+    pub(super) fn set_switcher_presentation_ready(&mut self, ready: bool) {
+        self.switcher_presentation_ready = ready;
+        self.publish_input_readiness();
+    }
+
+    pub(super) fn mark_presentations_unavailable(&mut self) {
+        self.search_presentation_ready = false;
+        self.switcher_presentation_ready = false;
+        self.publish_input_readiness();
+    }
+
+    pub(super) fn runtime_capabilities_ready(&self) -> bool {
+        !self.input_unavailable
+            && self.input.as_ref().is_none_or(InputController::is_healthy)
+            && self.input_config.is_none_or(|config| {
+                (!config.windows_key_search || self.search_presentation_ready)
+                    && (!config.custom_alt_tab || self.switcher_presentation_ready)
+            })
+    }
+
+    pub(super) fn search_takeover_requested(&self) -> bool {
+        self.input_config
+            .is_some_and(|config| config.windows_key_search)
+    }
+
+    pub(super) fn switcher_takeover_requested(&self) -> bool {
+        self.input_config
+            .is_some_and(|config| config.custom_alt_tab)
+    }
+
+    fn publish_input_readiness(&self) {
+        if let Some(input) = &self.input {
+            input.set_capability_readiness(
+                self.search_presentation_ready,
+                self.switcher_presentation_ready,
+            );
+        }
+    }
+
     fn reconcile_input(
         &mut self,
         settings: &DockSettings,
@@ -239,6 +293,10 @@ impl ModuleLifecycle {
 
         match InputController::start(config) {
             Ok(controller) => {
+                controller.set_capability_readiness(
+                    self.search_presentation_ready,
+                    self.switcher_presentation_ready,
+                );
                 self.input = Some(controller);
                 self.input_config = Some(config);
             }

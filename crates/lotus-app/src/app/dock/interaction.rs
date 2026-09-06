@@ -153,13 +153,10 @@ impl DockRuntime {
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        let icon = self
-            .assets
-            .picker_icon(self.model.settings(), item, size)
-            .map_or(
-                DockIcon::Embedded(EmbeddedIcon::FluentOpen),
-                DockIcon::Raster,
-            );
+        let icon = self.assets.picker_icon(item, size).map_or(
+            DockIcon::Embedded(EmbeddedIcon::FluentOpen),
+            DockIcon::Raster,
+        );
         ordered
             .into_iter()
             .map(|window| {
@@ -187,7 +184,7 @@ impl DockRuntime {
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        self.assets.preview_icon(self.model.settings(), item, size)
+        self.assets.preview_icon(item, size)
     }
 
     pub(in crate::app) fn record_window_activation(
@@ -238,7 +235,7 @@ impl DockRuntime {
             .iter()
             .enumerate()
             .find(|(_, item)| {
-                media_source_matches_item(source_id, item, &self.application_catalog)
+                media_source_matches_item(source_id, item, self.applications.catalog())
             })
             .map(|(index, item)| {
                 let preferred = self.recent_windows.get(&item.id).and_then(|recent| {

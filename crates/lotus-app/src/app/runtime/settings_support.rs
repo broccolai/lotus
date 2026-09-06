@@ -4,6 +4,7 @@ use lotus_windows::startup as startup_registration;
 
 use super::settings_commit::restart_current_process;
 use super::settings_events::SettingsEventContext;
+use crate::app::settings_persistence::PersistenceOutcome;
 
 pub(super) fn export_settings(context: &mut SettingsEventContext<'_>) {
     let owner = context.auxiliary.settings_owner();
@@ -119,10 +120,24 @@ pub(super) fn reset_lotus(context: &mut SettingsEventContext<'_>) {
         return;
     }
 
-    let reset = match context.settings_persistence.reset() {
-        Ok(reset) => reset,
-        Err(error) => {
-            lotus_windows::diagnostics::record_error("settings.reset_failed", &error);
+    if let Err(error) = context.settings_persistence.request_reset() {
+        lotus_windows::diagnostics::record_message(
+            "settings.reset_request_rejected",
+            error.message(),
+        );
+        show_error(owner, "Reset Lotus safely", error.message());
+    }
+}
+
+pub(super) fn complete_reset_lotus(
+    outcome: PersistenceOutcome,
+    context: &mut SettingsEventContext<'_>,
+) {
+    let owner = context.auxiliary.settings_owner();
+    let reset = match outcome {
+        PersistenceOutcome::Reset(reset) => *reset,
+        PersistenceOutcome::Failed(error) => {
+            lotus_windows::diagnostics::record_message("settings.reset_failed", &error);
             show_error(
                 owner,
                 "Reset Lotus safely",
@@ -130,6 +145,7 @@ pub(super) fn reset_lotus(context: &mut SettingsEventContext<'_>) {
             );
             return;
         }
+        PersistenceOutcome::Saved => return,
     };
     lotus_windows::diagnostics::record_diagnostic(
         "settings.reset_persisted",

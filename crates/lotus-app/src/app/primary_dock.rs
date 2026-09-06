@@ -16,6 +16,7 @@ use crate::app::visuals::surface_size;
 pub(super) struct PrimaryDock {
     window: DockWindow,
     surface: ScheduledSurface<CompositionSurfaceState>,
+    presentation_ready: bool,
 }
 
 impl PrimaryDock {
@@ -34,6 +35,7 @@ impl PrimaryDock {
         Ok(Self {
             window,
             surface: ScheduledSurface::new(surface),
+            presentation_ready: false,
         })
     }
 
@@ -41,8 +43,8 @@ impl PrimaryDock {
         &self.window
     }
 
-    pub(super) fn drain_events(&mut self) -> Vec<DockEvent> {
-        self.window.drain_events().collect()
+    pub(super) fn drain_events_up_to(&mut self, limit: usize) -> Vec<DockEvent> {
+        self.window.drain_events_up_to(limit).collect()
     }
 
     pub(super) fn resize_for_model(
@@ -61,6 +63,7 @@ impl PrimaryDock {
         graphics: &mut DeviceState,
         size: SurfaceSize,
     ) -> Result<(), AppError> {
+        self.presentation_ready = false;
         match self.surface.value_mut().resize(size) {
             Ok(()) => Ok(()),
             Err(SurfaceError::DeviceLost(loss)) => {
@@ -86,6 +89,7 @@ impl PrimaryDock {
             )
             .map(|outcome| outcome.with_animation_allowed(animation_allowed))
         })?;
+        self.presentation_ready = graphics.ready().is_some() && !self.surface.is_dirty();
         Ok(())
     }
 
@@ -105,10 +109,15 @@ impl PrimaryDock {
         self.surface.is_animating()
     }
 
+    pub(super) const fn presentation_ready(&self) -> bool {
+        self.presentation_ready
+    }
+
     pub(super) fn recover_surface(
         &mut self,
         device: &lotus_windows::graphics::GraphicsDevice,
     ) -> Result<(), AppError> {
+        self.presentation_ready = false;
         self.surface.value_mut().recover(device)?;
         Ok(())
     }

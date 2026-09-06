@@ -1,6 +1,8 @@
 use std::ffi::c_void;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem::size_of;
 use std::ptr::NonNull;
+use std::time::{Duration, Instant};
 
 use lotus_core::window::TrackedWindowKey;
 use lotus_ui::icon::RasterIcon;
@@ -24,6 +26,7 @@ use windows::core::{Error, PCWSTR};
 use super::{CacheKey, NativeIconError};
 
 const BYTES_PER_PIXEL: u32 = 4;
+const WINDOW_ICON_BUDGET: Duration = Duration::from_millis(120);
 
 pub(super) fn extract_icon(
     path: &std::path::Path,
@@ -37,36 +40,69 @@ pub(super) fn extract_icon(
 
     rasterize_icon(
         icon.get(),
-        format!("native:{}@{}px", key.normalized_path, key.size),
+        &format!("native:{}@{}px", key.normalized_path, key.size),
         key.size,
     )
     .map(Some)
 }
 
 pub(super) fn copy_window_icon(window: TrackedWindowKey) -> Option<OwnedIcon> {
-    crate::window_tracker::with_live_tracked_window(window, |hwnd| {
-        let icon = window_icon(hwnd, usize::try_from(ICON_SMALL2).ok()?)
-            .or_else(|| window_icon(hwnd, usize::try_from(ICON_SMALL).ok()?))
-            .or_else(|| window_icon(hwnd, usize::try_from(ICON_BIG).ok()?))
-            .or_else(|| class_icon(hwnd, GCLP_HICONSM))
-            .or_else(|| class_icon(hwnd, GCLP_HICON));
-        icon.and_then(copy_icon)
+    let deadline = Instant::now() + WINDOW_ICON_BUDGET;
+    let window_requests = [
+        usize::try_from(ICON_SMALL2).ok()?,
+        usize::try_from(ICON_SMALL).ok()?,
+        usize::try_from(ICON_BIG).ok()?,
+    ];
+    for kind in window_requests {
+        if !crate::window_tracker::is_current_tracked_window(window) {
+            return None;
+        }
+        let remaining = deadline.checked_duration_since(Instant::now())?;
+        let timeout = u32::try_from(remaining.as_millis().max(1)).unwrap_or(u32::MAX);
+        let icon = crate::window_tracker::with_live_tracked_window(window, |hwnd| {
+            window_icon(hwnd, kind, timeout).and_then(copy_icon)
+        })
+        .flatten();
+        if let Some(icon) = icon {
+            return Some(icon);
+        }
+    }
+
+    if !crate::window_tracker::is_current_tracked_window(window) {
+        return None;
+    }
+    [GCLP_HICONSM, GCLP_HICON].into_iter().find_map(|index| {
+        crate::window_tracker::with_live_tracked_window(window, |hwnd| {
+            class_icon(hwnd, index).and_then(copy_icon)
+        })
+        .flatten()
     })
-    .flatten()
 }
 
 pub(super) fn rasterize_icon(
     icon: HICON,
-    identity: String,
+    identity: &str,
     size: u32,
 ) -> Result<RasterIcon, NativeIconError> {
     let black = render_icon(icon, size, 0)?;
     let white = render_icon(icon, size, u8::MAX)?;
     let pixels = compose_premultiplied_bgra(&black, &white);
-    RasterIcon::new(identity, size, size, pixels).map_err(NativeIconError::from)
+    let mut hasher = DefaultHasher::new();
+    pixels.hash(&mut hasher);
+    RasterIcon::new(
+        format!("{identity}#{:016x}", hasher.finish()),
+        size,
+        size,
+        pixels,
+    )
+    .map_err(NativeIconError::from)
 }
 
-fn window_icon(hwnd: windows::Win32::Foundation::HWND, kind: usize) -> Option<HICON> {
+fn window_icon(
+    hwnd: windows::Win32::Foundation::HWND,
+    kind: usize,
+    timeout_ms: u32,
+) -> Option<HICON> {
     let mut result = usize::default();
     let sent = unsafe {
         SendMessageTimeoutW(
@@ -75,7 +111,7 @@ fn window_icon(hwnd: windows::Win32::Foundation::HWND, kind: usize) -> Option<HI
             windows::Win32::Foundation::WPARAM(kind),
             windows::Win32::Foundation::LPARAM(0),
             SMTO_ABORTIFHUNG,
-            100,
+            timeout_ms,
             Some(&raw mut result),
         )
     };

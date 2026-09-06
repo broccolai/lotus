@@ -10,9 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use assets::DockAssets;
-use lotus_core::application::{
-    ApplicationKey, PinnedApplicationAssignment, WindowApplicationAssignments,
-};
+use lotus_core::application::{ApplicationKey, PinnedApplicationAssignment};
 use lotus_core::dock::DockItem;
 use lotus_core::notification::NotificationSource;
 use lotus_core::settings::DockSettings;
@@ -25,19 +23,17 @@ use lotus_settings::appearance::theme_for;
 use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_windows::WindowHandle;
 use lotus_windows::icon_hydrator::{DockIconClient, HydratedDockIcon};
-use lotus_windows::search_catalog::{
-    ApplicationAssociations, ApplicationCatalogSnapshot, ApplicationResolver,
-};
+use lotus_windows::search_catalog::ApplicationCatalogSnapshot;
 use mascot::Mascot;
 use projection::{departure_transition, projected_items};
 pub(super) use projection::{dock_anchor, metrics, popup_overlap, status_popup_center};
 pub(super) use status_observation::{docked_status_items, status_items};
 
 use crate::app::AppError;
+use crate::app::applications::ApplicationView;
 use crate::app::monitors::{
     MonitorPresentationInput, MonitorReplicaInput, MonitorReplicaTarget,
 };
-use crate::app::settings_persistence::SettingsPersistence;
 use crate::app::visuals::{
     DockIcon, DockItem as SceneDockItem, DockMetrics, DockScene, MediaItem,
 };
@@ -62,10 +58,7 @@ pub(super) struct DockRuntime {
     revision: u64,
     presenter: DockPresenter,
     mascot: Mascot,
-    application_resolver: ApplicationResolver,
-    application_catalog: Arc<ApplicationCatalogSnapshot>,
-    application_assignments: WindowApplicationAssignments,
-    adopted_catalog_generation: u64,
+    applications: Arc<ApplicationView>,
 }
 
 impl DockRuntime {
@@ -73,27 +66,18 @@ impl DockRuntime {
         status_owner: WindowHandle,
         settings: DockSettings,
         windows: &[WindowInfo],
+        applications: Arc<ApplicationView>,
         dpi: u32,
         drag_threshold: (u32, u32),
     ) -> Result<Self, AppError> {
         let metrics = metrics(&settings)?;
-        let application_catalog = Arc::new(ApplicationCatalogSnapshot::new(0, Vec::new()));
-        let mut application_resolver = ApplicationResolver::default();
-        let associations =
-            ApplicationAssociations::from_pins(&settings.pinned_apps, &application_catalog);
-        let application_assignments = application_resolver.resolve_all(
-            windows,
-            &application_catalog,
-            &associations,
-            0,
-        );
         let pinned_applications =
-            pinned_application_assignments(&settings, &application_catalog);
+            pinned_application_assignments(&settings, applications.catalog());
         let items = projected_items(
             &settings,
             windows,
-            &application_assignments,
-            &application_catalog.applications,
+            applications.assignments(),
+            &applications.catalog().applications,
             &pinned_applications,
         );
         let mut scene = Self::configured_scene(dpi, &settings, metrics)
@@ -114,10 +98,7 @@ impl DockRuntime {
             revision: 0,
             presenter: DockPresenter::default(),
             mascot: Mascot::default(),
-            application_resolver,
-            application_catalog,
-            application_assignments,
-            adopted_catalog_generation: 0,
+            applications,
         };
         runtime.reset_mascot_animation();
         runtime.refresh_scene_items();
@@ -145,11 +126,9 @@ impl DockRuntime {
     pub(super) fn rebuild(
         &mut self,
         windows: &[WindowInfo],
-        catalog: Arc<ApplicationCatalogSnapshot>,
+        applications: Arc<ApplicationView>,
     ) {
-        let settings = self.model.settings().clone();
-        self.resolve_application_assignments(&settings, windows, &catalog);
-        self.application_catalog = catalog;
+        self.applications = applications;
         let previous_model = self.model.items().to_vec();
         let previous_scene = self.scene.items().to_vec();
         let mut items = self.projected_items(windows);
@@ -175,86 +154,19 @@ impl DockRuntime {
         self.request_native_window_icons();
     }
 
-    pub(in crate::app) fn adopt_catalogue_pins(
-        &mut self,
-        catalog: &ApplicationCatalogSnapshot,
-        persistence: &SettingsPersistence,
-    ) -> Result<(), AppError> {
-        if catalog.generation == 0 || self.adopted_catalog_generation == catalog.generation
-        {
-            return Ok(());
-        }
-        let assignments = pinned_application_assignments(self.model.settings(), catalog);
-        let safe_aliases = assignments
-            .iter()
-            .zip(&self.model.settings().pinned_apps)
-            .map(|(assignment, pin)| {
-                let mut aliases = assignment
-                    .registered_index
-                    .and_then(|index| catalog.application(index))
-                    .map(|application| catalog.safe_executable_aliases(application))
-                    .unwrap_or_default();
-                aliases.extend(
-                    pin.match_executables
-                        .iter()
-                        .filter(|alias| catalog.is_safe_executable_alias(alias))
-                        .cloned(),
-                );
-                aliases.sort();
-                aliases.dedup();
-                aliases
-            })
-            .collect::<Vec<_>>();
-        if let Some(settings) = self.model.prepared_catalogue_pin_repair(
-            &assignments,
-            &catalog.applications,
-            &safe_aliases,
-        ) {
-            persistence.save(&settings)?;
-            self.model.commit_settings_only(settings);
-        }
-        self.adopted_catalog_generation = catalog.generation;
-        Ok(())
-    }
-
     pub(in crate::app) fn registered_application_for_item(
         &self,
         item: &DockItem,
     ) -> Option<lotus_core::application::RegisteredApplication> {
-        self.application_catalog
+        self.applications
+            .catalog()
             .application_index_for_key(&item.application_key)
-            .and_then(|index| self.application_catalog.application(index))
+            .and_then(|index| self.applications.catalog().application(index))
             .cloned()
     }
 
     fn projected_items(&self, windows: &[WindowInfo]) -> Vec<DockItem> {
         self.projected_items_for(self.model.settings(), windows)
-    }
-
-    fn resolve_application_assignments(
-        &mut self,
-        settings: &DockSettings,
-        windows: &[WindowInfo],
-        catalog: &ApplicationCatalogSnapshot,
-    ) {
-        let associations =
-            ApplicationAssociations::from_pins(&settings.pinned_apps, catalog);
-        self.application_assignments = self.application_resolver.resolve_all(
-            windows,
-            catalog,
-            &associations,
-            self.revision.saturating_add(1),
-        );
-    }
-
-    pub(in crate::app) fn resolve_current_applications(&mut self, windows: &[WindowInfo]) {
-        let settings = self.model.settings().clone();
-        let catalog = Arc::clone(&self.application_catalog);
-        self.resolve_application_assignments(&settings, windows, &catalog);
-    }
-
-    pub(in crate::app) fn application_assignments(&self) -> &WindowApplicationAssignments {
-        &self.application_assignments
     }
 
     fn projected_items_for(
@@ -263,13 +175,13 @@ impl DockRuntime {
         windows: &[WindowInfo],
     ) -> Vec<DockItem> {
         let pinned_applications =
-            pinned_application_assignments(settings, &self.application_catalog);
+            pinned_application_assignments(settings, self.applications.catalog());
         let started = Instant::now();
         let items = projected_items(
             settings,
             windows,
-            &self.application_assignments,
-            &self.application_catalog.applications,
+            self.applications.assignments(),
+            &self.applications.catalog().applications,
             &pinned_applications,
         );
         lotus_windows::responsiveness::METRICS.record_dock_projection(started.elapsed());
@@ -324,7 +236,7 @@ impl DockRuntime {
             &icons,
             self.model.settings(),
             &self.notifications,
-            &self.application_catalog,
+            self.applications.catalog(),
         )
     }
 
@@ -394,19 +306,15 @@ impl DockRuntime {
         self.model.items()
     }
 
-    pub(in crate::app) fn persist_reorder(
+    pub(in crate::app) fn prepare_reorder(
         &mut self,
         request: &DockReorderRequest,
-        persistence: &SettingsPersistence,
-    ) -> Result<bool, AppError> {
+    ) -> Option<DockSettings> {
         let Some(reorder) = self.model.prepare_reorder(request) else {
             self.refresh_scene_items();
-            return Ok(false);
+            return None;
         };
-        persistence.save(reorder.settings())?;
-        self.model.commit_reorder(reorder);
-        self.refresh_scene_items();
-        Ok(true)
+        Some(reorder.settings().clone())
     }
     pub(super) const fn scene(&self) -> &DockScene {
         &self.scene
@@ -423,11 +331,23 @@ impl DockRuntime {
         (presentation, needs_animation || departure_pending)
     }
 
-    pub(super) fn apply_settings(
+    pub(super) fn prepare_settings(
+        &self,
+        next: DockSettings,
+    ) -> Result<Option<DockSettings>, AppError> {
+        let next = next.normalized();
+        let _metrics = metrics(&next)?;
+        Ok(self
+            .model
+            .prepare_settings(next, self.model.items().to_vec())
+            .map(|change| change.settings().clone()))
+    }
+
+    pub(super) fn commit_persisted_settings(
         &mut self,
         next: DockSettings,
         windows: &[WindowInfo],
-        persistence: &SettingsPersistence,
+        applications: Arc<ApplicationView>,
     ) -> Result<SettingsImpact, AppError> {
         let next = next.normalized();
         let metrics = metrics(&next)?;
@@ -439,10 +359,9 @@ impl DockRuntime {
                 restart_required: false,
             });
         };
-        persistence.save(change.settings())?;
         let impact = self.model.commit_settings(change);
         if impact.changed {
-            self.resolve_current_applications(windows);
+            self.applications = applications;
             let next_items = self.projected_items(windows);
             self.model.rebuild(next_items);
             self.assets.clear_custom_images();
@@ -524,8 +443,7 @@ impl DockRuntime {
             .media_artwork(
                 snapshot,
                 self.model.items(),
-                self.model.settings(),
-                &self.application_catalog,
+                self.applications.catalog(),
                 self.scene
                     .icon_size_pixels()
                     .saturating_mul(NATIVE_ICON_SAMPLE_SCALE),
@@ -542,7 +460,12 @@ impl DockRuntime {
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        let changed = self.assets.drain(self.model.items(), icon_size, results);
+        let changed = self.assets.drain(
+            self.model.items(),
+            self.model.settings(),
+            icon_size,
+            results,
+        );
         if changed {
             self.refresh_scene_items();
         }
@@ -563,7 +486,8 @@ impl DockRuntime {
             .scene
             .icon_size_pixels()
             .saturating_mul(NATIVE_ICON_SAMPLE_SCALE);
-        self.assets.retain(self.model.items(), pixel_size);
+        self.assets
+            .retain(self.model.items(), self.model.settings(), pixel_size);
     }
 
     pub(in crate::app) fn attach_icon_hydrator(&mut self, icon_hydrator: DockIconClient) {

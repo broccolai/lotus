@@ -119,8 +119,8 @@ impl SettingsSurface {
         Ok(())
     }
 
-    pub(super) fn drain_events(&mut self) -> Vec<SettingsEvent> {
-        self.window.drain_events().collect()
+    pub(super) fn drain_events_up_to(&mut self, limit: usize) -> Vec<SettingsEvent> {
+        self.window.drain_events_up_to(limit).collect()
     }
 
     pub(super) fn has_pending_events(&self) -> bool {

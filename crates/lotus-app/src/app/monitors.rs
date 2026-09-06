@@ -39,6 +39,7 @@ pub(super) enum DockAction {
 pub(super) struct MonitorDockEventDrain {
     pub(super) actions: Vec<DockAction>,
     pub(super) had_events: bool,
+    pub(super) drained_events: usize,
 }
 
 pub(super) struct MonitorPresentationInput {
@@ -283,15 +284,25 @@ impl MonitorDocks {
         Ok(())
     }
 
-    pub(super) fn drain_events(
+    pub(super) fn drain_events_up_to(
         &mut self,
         graphics: &mut DeviceState,
+        limit: usize,
     ) -> Result<MonitorDockEventDrain, AppError> {
         let mut actions = Vec::new();
         let mut refresh = false;
         let mut had_events = false;
+        let mut drained = 0;
         for replica in &mut self.docks {
-            let events = replica.window.drain_events().collect::<Vec<_>>();
+            let remaining = limit.saturating_sub(drained);
+            if remaining == 0 {
+                break;
+            }
+            let events = replica
+                .window
+                .drain_events_up_to(remaining)
+                .collect::<Vec<_>>();
+            drained += events.len();
             had_events |= !events.is_empty();
             for event in events {
                 match event {
@@ -335,6 +346,7 @@ impl MonitorDocks {
         Ok(MonitorDockEventDrain {
             actions,
             had_events,
+            drained_events: drained,
         })
     }
 

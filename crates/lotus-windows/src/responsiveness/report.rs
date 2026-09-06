@@ -181,6 +181,10 @@ impl ResponsivenessSnapshot {
             UiMessagePhase::Wake,
             UiMessagePhase::MonitorSync,
             UiMessagePhase::Frame,
+            UiMessagePhase::Integration,
+            UiMessagePhase::GraphicsRecovery,
+            UiMessagePhase::Persistence,
+            UiMessagePhase::Asset,
         ] {
             let index = phase.index();
             let _ = writeln!(
@@ -321,6 +325,26 @@ impl ResponsivenessSnapshot {
                 self.application.catalog_build_max_us,
             ),
             (
+                "application_catalog_lock_calls",
+                self.application.catalog_lock_calls,
+            ),
+            (
+                "application_catalog_lock_wait_total_us",
+                self.application.catalog_lock_wait_total_us,
+            ),
+            (
+                "application_catalog_lock_wait_max_us",
+                self.application.catalog_lock_wait_max_us,
+            ),
+            (
+                "application_catalog_lock_hold_total_us",
+                self.application.catalog_lock_hold_total_us,
+            ),
+            (
+                "application_catalog_lock_hold_max_us",
+                self.application.catalog_lock_hold_max_us,
+            ),
+            (
                 "window_identity_fact_hits",
                 self.application.window_fact_hits,
             ),
@@ -396,6 +420,24 @@ impl ResponsivenessSnapshot {
     fn write_process_resource_metrics(&self, output: &mut String) {
         let _ = writeln!(
             output,
+            "tracked_window_registry_lock_calls={}",
+            self.tracked_window_registry_lock_calls
+        );
+        let _ = writeln!(
+            output,
+            "tracked_window_registry_lock_total_us={}",
+            self.tracked_window_registry_lock_total_us
+        );
+        let _ = writeln!(
+            output,
+            "tracked_window_registry_lock_max_us={}",
+            self.tracked_window_registry_lock_max_us
+        );
+        let _ = writeln!(output, "activation_calls={}", self.activation_calls);
+        let _ = writeln!(output, "activation_total_us={}", self.activation_total_us);
+        let _ = writeln!(output, "activation_max_us={}", self.activation_max_us);
+        let _ = writeln!(
+            output,
             "process_resources_success={}",
             self.process_resources.success
         );
@@ -452,6 +494,24 @@ impl ResponsivenessSnapshot {
         let _ = writeln!(output, "flyout_attempts={}", self.flyout_attempts);
         let _ = writeln!(output, "flyout_max_us={}", self.flyout_max_us);
         write_histogram(output, "flyout_histogram", &self.flyout_histogram);
+        let _ = writeln!(
+            output,
+            "icon_source_discovery_calls={}",
+            self.icon_source_discovery_calls
+        );
+        let _ = writeln!(
+            output,
+            "icon_source_discovery_total_us={}",
+            self.icon_source_discovery_total_us
+        );
+        let _ = writeln!(
+            output,
+            "icon_source_discovery_max_us={}",
+            self.icon_source_discovery_max_us
+        );
+        let _ = writeln!(output, "icon_raster_calls={}", self.icon_raster_calls);
+        let _ = writeln!(output, "icon_raster_total_us={}", self.icon_raster_total_us);
+        let _ = writeln!(output, "icon_raster_max_us={}", self.icon_raster_max_us);
         let _ = writeln!(
             output,
             "flyout_worker_start_max_us={}",

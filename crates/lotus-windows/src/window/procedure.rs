@@ -104,8 +104,11 @@ impl WindowState {
         self.pending.push_search_context_request(request);
     }
 
-    pub(super) fn drain_events<E: QueuedEvent>(&self) -> std::collections::VecDeque<E> {
-        self.pending.drain()
+    pub(super) fn drain_events_up_to<E: QueuedEvent>(
+        &self,
+        limit: usize,
+    ) -> std::collections::VecDeque<E> {
+        self.pending.drain_up_to(limit)
     }
     pub(super) fn push_pointer(&self, event: PointerEvent) {
         match self.kind() {

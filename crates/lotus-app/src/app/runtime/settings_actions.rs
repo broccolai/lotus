@@ -113,18 +113,17 @@ pub(super) fn execute_settings_action(
             Ok(())
         }
         SettingsAction::Apply(next) => {
-            apply_changed_settings(*next, context, SettingsApplyMode::Ordinary)
+            apply_changed_settings(*next, context, SettingsApplyMode::Ordinary).map(|_| ())
         }
         SettingsAction::CompleteOnboarding(next) => {
             let initial_setup = context.auxiliary.onboarding_required_for_close();
-            context.auxiliary.end_onboarding();
             let mode = if initial_setup {
                 SettingsApplyMode::OnboardingRestart
             } else {
                 SettingsApplyMode::Ordinary
             };
-            apply_changed_settings(*next, context, mode)?;
-            if !initial_setup {
+            let started = apply_changed_settings(*next, context, mode)?;
+            if !initial_setup && started {
                 context.auxiliary.hide_settings();
             }
             Ok(())

@@ -88,6 +88,12 @@ impl IntegrationRecovery {
         self.shell_effects_allowed && self.shell.requires_maintenance()
     }
 
+    pub(super) fn report_ui_progress(&mut self, takeover_allowed: bool) {
+        if self.shell_effects_allowed {
+            self.shell.report_ui_progress(takeover_allowed);
+        }
+    }
+
     pub(super) fn maintain(
         &mut self,
         settings: &lotus_core::settings::DockSettings,

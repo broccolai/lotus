@@ -4,10 +4,10 @@ use std::time::Instant;
 
 use lotus_core::application::{
     ApplicationKey, ApplicationPresentation, ApplicationPresentationIcon,
-    ApplicationResolution, LaunchSpec, RegisteredApplication, ResolutionEvidence,
-    WindowApplicationAssignments, WindowApplicationFacts, application_provider_keys,
-    is_reliable_registered_id, is_shared_host_executable, normalized_executable_name,
-    normalized_path, normalized_value,
+    ApplicationResolution, LaunchSpec, PinEligibility, RegisteredApplication,
+    ResolutionEvidence, WindowApplicationAssignments, WindowApplicationFacts,
+    application_provider_keys, is_reliable_registered_id, is_shared_host_executable,
+    normalized_executable_name, normalized_path, normalized_value,
 };
 use lotus_core::search::ApplicationEntry;
 use lotus_core::settings::PinnedApp;
@@ -433,6 +433,7 @@ impl ApplicationResolver {
         self.cache
             .retain(|key, _| windows.iter().any(|window| window.key() == *key));
         let mut by_window = HashMap::with_capacity(windows.len());
+        let mut pin_eligibility_by_window = HashMap::with_capacity(windows.len());
         let mut presentation_by_window = HashMap::with_capacity(windows.len());
         for window in windows {
             let key = window.key();
@@ -461,6 +462,14 @@ impl ApplicationResolver {
             let presentation = application_presentation(window, &resolution, catalog);
             METRICS.record_application_resolution(was_cached, &resolution);
             by_window.insert(key, resolution);
+            pin_eligibility_by_window.insert(
+                key,
+                if window.application_facts.prevent_pinning {
+                    PinEligibility::Prevented
+                } else {
+                    PinEligibility::Allowed
+                },
+            );
             presentation_by_window.insert(key, presentation);
         }
         METRICS.record_application_resolution_batch(started.elapsed());
@@ -468,6 +477,7 @@ impl ApplicationResolver {
             catalog_generation: catalog.generation,
             window_revision,
             by_window,
+            pin_eligibility_by_window,
             presentation_by_window,
         }
     }
@@ -557,8 +567,7 @@ fn registered_presentation<'a>(
         ApplicationResolution::Associated { key } => catalog
             .application_index_for_key(key)
             .and_then(|index| catalog.application(index)),
-        ApplicationResolution::Prevented
-        | ApplicationResolution::Ambiguous { .. }
+        ApplicationResolution::Ambiguous { .. }
         | ApplicationResolution::Unregistered { .. } => None,
     }
 }
@@ -595,9 +604,6 @@ fn resolve_window(
     associations: &ApplicationAssociations,
 ) -> ApplicationResolution {
     let facts = &window.application_facts;
-    if facts.prevent_pinning {
-        return ApplicationResolution::Prevented;
-    }
     let window_id = reliable_id(facts.window_app_user_model_id.as_deref());
     let process_id = reliable_id(facts.process_app_user_model_id.as_deref());
     if let Some(id) = window_id.as_deref().or(process_id.as_deref()) {

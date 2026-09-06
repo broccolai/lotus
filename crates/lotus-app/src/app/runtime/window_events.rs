@@ -1,6 +1,5 @@
 use std::time::Instant;
 
-use lotus_core::window::WindowInfo;
 use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth};
 use lotus_windows::interaction::NativeMessage;
 use lotus_windows::responsiveness::{METRICS, TrackerUiPhase};
@@ -17,17 +16,22 @@ use crate::app::{AppError, DockRuntime};
 pub(super) struct WindowDrainOutcome {
     pub(super) animation_tick: bool,
     pub(super) had_events: bool,
+    pub(super) drained_events: usize,
 }
 
 pub(super) fn drain_window_events(
     primary_dock: &mut PrimaryDock,
     graphics: &mut DeviceState,
-    windows: &[WindowInfo],
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
     settings_persistence: &SettingsPersistence,
+    limit: usize,
 ) -> Result<WindowDrainOutcome, AppError> {
-    let events = primary_dock.drain_events();
+    const SOURCE_QUANTUM: usize = 8;
+
+    let mut drained_events = 0;
+    let events = primary_dock.drain_events_up_to(limit.min(SOURCE_QUANTUM));
+    drained_events += events.len();
     let mut had_events = !events.is_empty();
     let animation_tick = events
         .iter()
@@ -45,24 +49,30 @@ pub(super) fn drain_window_events(
             graphics,
         )?;
     }
-    had_events |= complete_after_graphics_loss(
-        search_events::drain_search_events(
+    let remaining = limit.saturating_sub(drained_events);
+    let search_events = complete_after_graphics_loss(
+        search_events::drain_search_events_up_to(
             primary_dock.window(),
             graphics,
             dock_model,
             auxiliary,
+            remaining.min(SOURCE_QUANTUM),
         ),
         graphics,
     )?
-    .unwrap_or(false);
-    for event in auxiliary.drain_context_menu_events() {
+    .unwrap_or_default();
+    drained_events += search_events;
+    had_events |= search_events != 0;
+
+    let remaining = limit.saturating_sub(drained_events);
+    for event in auxiliary.drain_context_menu_events_up_to(remaining.min(SOURCE_QUANTUM)) {
+        drained_events += 1;
         had_events = true;
         complete_after_graphics_loss(
             popup_events::handle_context_menu_event(
                 event,
                 primary_dock,
                 graphics,
-                windows,
                 dock_model,
                 auxiliary,
                 settings_persistence,
@@ -70,7 +80,10 @@ pub(super) fn drain_window_events(
             graphics,
         )?;
     }
-    for (zone, event) in auxiliary.drain_status_events() {
+    let remaining = limit.saturating_sub(drained_events);
+    for (zone, event) in auxiliary.drain_status_events_up_to(remaining.min(SOURCE_QUANTUM))
+    {
+        drained_events += 1;
         had_events = true;
         auxiliary.hide_launcher_on_status_press(&event);
         let activation = complete_after_graphics_loss(
@@ -98,6 +111,7 @@ pub(super) fn drain_window_events(
     Ok(WindowDrainOutcome {
         animation_tick,
         had_events,
+        drained_events,
     })
 }
 
@@ -163,11 +177,13 @@ pub(super) fn handle_tracker_message(
         let previous_size = context.dock_model.scene().desired_size();
         let windows = context.window_tracker.current_windows();
         context.dock_model.prune_recent_windows(windows);
-        let application_catalog = context.auxiliary.application_snapshot();
+        let applications = context.auxiliary.reconcile_application_view(
+            windows,
+            context.dock_model.settings(),
+            context.window_tracker.window_revision(),
+        );
         measure_tracker_ui_phase(TrackerUiPhase::DockModelRebuildForegroundUpdate, || {
-            context
-                .dock_model
-                .rebuild(windows, application_catalog.clone());
+            context.dock_model.rebuild(windows, applications.clone());
             context
                 .dock_model
                 .record_foreground(lotus_windows::activation::foreground_window());
@@ -176,8 +192,7 @@ pub(super) fn handle_tracker_message(
             complete_after_graphics_loss(
                 context.auxiliary.reconcile_switcher_windows(
                     windows,
-                    application_catalog,
-                    context.dock_model.application_assignments(),
+                    applications,
                     context.graphics,
                 ),
                 context.graphics,

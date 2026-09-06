@@ -1,8 +1,6 @@
-use lotus_core::application::WindowApplicationAssignments;
 use lotus_core::window::{WindowId, WindowInfo};
 use lotus_windows::WindowHandle;
 use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth};
-use lotus_windows::search_catalog::ApplicationCatalogSnapshot;
 use lotus_windows::window::{DismissReason, PopupAlignment, SignedPoint};
 
 use super::ModuleHost;
@@ -33,24 +31,20 @@ impl ModuleHost {
     pub(in crate::app) fn reconcile_switcher_windows(
         &mut self,
         windows: &[WindowInfo],
-        application_catalog: std::sync::Arc<ApplicationCatalogSnapshot>,
-        application_assignments: &WindowApplicationAssignments,
+        applications: std::sync::Arc<crate::app::applications::ApplicationView>,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        self.switcher.reconcile_windows(
-            windows,
-            application_catalog,
-            application_assignments,
-            graphics,
-        )
+        self.switcher
+            .reconcile_windows(windows, applications, graphics)
     }
 
-    pub(in crate::app) fn drain_switcher_events(
+    pub(in crate::app) fn drain_switcher_events_up_to(
         &mut self,
         graphics: &mut DeviceState,
-    ) -> bool {
-        let events = self.switcher.drain_events();
-        let had_events = !events.is_empty();
+        limit: usize,
+    ) -> usize {
+        let events = self.switcher.drain_events_up_to(limit);
+        let drained = events.len();
         for event in events {
             if let Err(error) = self.switcher.handle_window_event(event, graphics) {
                 if error.mark_graphics_lost(graphics)
@@ -62,15 +56,18 @@ impl ModuleHost {
                 self.switcher.abandon();
             }
         }
-        had_events
+        drained
     }
 
     pub(in crate::app) fn has_pending_switcher_events(&self) -> bool {
         self.switcher.window.has_pending_events()
     }
 
-    pub(in crate::app) fn drain_context_menu_events(&mut self) -> Vec<PopupEvent> {
-        self.context_menu.drain_events()
+    pub(in crate::app) fn drain_context_menu_events_up_to(
+        &mut self,
+        limit: usize,
+    ) -> Vec<PopupEvent> {
+        self.context_menu.drain_events_up_to(limit)
     }
 
     pub(in crate::app) fn handle_context_menu_event(
@@ -111,6 +108,7 @@ impl ModuleHost {
                 identity: item.id.clone(),
                 running_windows: item.windows.len(),
                 pinned: item.is_pinned,
+                pin_eligible: item.is_pinned || item.pin_eligible,
                 shift_held,
             },
             graphics,

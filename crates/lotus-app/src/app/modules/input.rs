@@ -5,7 +5,6 @@ use lotus_windows::window_tracker::WindowTracker;
 
 use super::ModuleHost;
 use crate::app::DockRuntime;
-use crate::app::switcher::SwitcherApplicationContext;
 
 pub(in crate::app) enum InputDrainOutcome {
     NoPresentationChange,
@@ -29,6 +28,14 @@ impl ModuleHost {
 
     pub(in crate::app) fn heartbeat_input(&self) {
         self.lifecycle.heartbeat_input();
+    }
+
+    pub(in crate::app) fn runtime_capabilities_ready(&self) -> bool {
+        self.lifecycle.runtime_capabilities_ready()
+    }
+
+    pub(in crate::app) fn mark_presentations_unavailable(&mut self) {
+        self.lifecycle.mark_presentations_unavailable();
     }
 
     pub(in crate::app) fn handle_input_actions(
@@ -81,10 +88,7 @@ impl ModuleHost {
                         foreground,
                         tracker.current_windows(),
                         dock_model.settings(),
-                        SwitcherApplicationContext {
-                            catalog: self.applications.snapshot(),
-                            assignments: dock_model.application_assignments(),
-                        },
+                        self.applications.view(),
                         graphics,
                     ) {
                         lotus_windows::diagnostics::record_error("alt_tab.begin", &error);

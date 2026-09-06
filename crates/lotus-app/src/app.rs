@@ -41,8 +41,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use applications::ApplicationServices;
 use dock::DockRuntime;
-use lotus_core::search::SearchUsage;
 use lotus_core::settings::{
     CURRENT_ONBOARDING_VERSION, DockSettings, NotificationBadgeStyle, SettingsDecodeError,
     SettingsLoadSource, SettingsStore, SettingsStoreError, decode_settings,
@@ -57,7 +57,7 @@ use lotus_windows::startup::{
 };
 use lotus_windows::taskbar_badges::TaskbarBadgeController;
 use lotus_windows::window_tracker::WindowTracker;
-use modules::ModuleHost;
+use modules::{ModuleHost, ModuleHostServices};
 use primary_dock::PrimaryDock;
 use runtime::{flush_frame, run_message_loop};
 use search_usage::SearchUsageStore;
@@ -96,6 +96,8 @@ pub enum AppError {
     SettingsDecode(#[from] SettingsDecodeError),
     #[error(transparent)]
     SettingsStore(#[from] SettingsStoreError),
+    #[error("Lotus could not start its settings persistence worker: {0}")]
+    SettingsPersistenceWorker(#[source] std::io::Error),
     #[error(transparent)]
     StartupArgs(#[from] StartupArgsError),
     #[error(transparent)]
@@ -124,6 +126,7 @@ enum RestartError {
 
 struct RuntimeServices<'a> {
     settings_persistence: SettingsPersistence,
+    post_install_health: Option<lotus_windows::update::PostInstallHealthCheck>,
     taskbar_badges: Option<&'a TaskbarBadgeController>,
     onboarding_required: bool,
     startup_mode: StartupMode,
@@ -135,6 +138,7 @@ struct PreparedSettings {
     settings: DockSettings,
     store: SettingsStore,
     onboarding_required: bool,
+    post_install_health: Option<lotus_windows::update::PostInstallHealthCheck>,
 }
 
 #[derive(Clone, Copy)]
@@ -252,8 +256,9 @@ pub fn run() -> Result<(), AppError> {
         settings,
         store: settings_store,
         onboarding_required,
+        post_install_health,
     } = prepared;
-    let settings_persistence = SettingsPersistence::new(settings_store);
+    let settings_persistence = SettingsPersistence::new(settings_store)?;
     let usage_store = SearchUsageStore::new(settings_persistence.directory());
     let usage = usage_store.load().unwrap_or_default();
     startup_phases.settings = startup_phases.complete();
@@ -262,10 +267,16 @@ pub fn run() -> Result<(), AppError> {
     startup_phases.graphics_window = startup_phases.complete();
     let mut window_tracker = WindowTracker::start(startup.mode)?;
     startup_phases.initial_window_tracking = startup_phases.complete();
+    let applications = ApplicationServices::new(
+        window_tracker.current_windows(),
+        &settings,
+        window_tracker.window_revision(),
+    )?;
     let mut dock_model = DockRuntime::new(
         primary_dock.window().handle(),
         settings,
         window_tracker.current_windows(),
+        applications.view(),
         primary_dock.window().dpi(),
         primary_dock.window().drag_threshold(),
     )?;
@@ -278,8 +289,11 @@ pub fn run() -> Result<(), AppError> {
     let mut auxiliary = create_auxiliary_windows(
         primary_dock.window(),
         &mut dock_model,
-        usage,
-        usage_store,
+        ModuleHostServices {
+            usage,
+            usage_store,
+            applications,
+        },
         !onboarding_required,
         shell_effects_allowed,
         environment.mode.allows_update_operations(),
@@ -306,6 +320,11 @@ pub fn run() -> Result<(), AppError> {
         shell_effects_allowed,
         &mut initial_windows,
     )?;
+    auxiliary.prepare_input_presentations(
+        primary_dock.window(),
+        &dock_model,
+        &mut graphics,
+    );
     startup_phases.shell_integration_placement = startup_phases.complete();
     let first_frame_started = Instant::now();
     flush_frame(
@@ -318,6 +337,7 @@ pub fn run() -> Result<(), AppError> {
     startup_phases.record_after_first_frame(first_frame_started.elapsed());
     let mut runtime = RuntimeServices {
         settings_persistence,
+        post_install_health,
         taskbar_badges: taskbar_badges.as_ref(),
         onboarding_required,
         startup_mode: environment.mode,
@@ -427,6 +447,7 @@ fn prepare_settings(
     } else {
         None
     };
+    let mut pending_post_install_health = None;
     if environment.manages_installed_update_state {
         std::thread::spawn(|| {
             for error in lotus_windows::update::cleanup_stale_staging() {
@@ -445,7 +466,7 @@ fn prepare_settings(
                     "Lotus could not complete its post-install health check. Native shell integration was not started.\n\n{error}\n\nPlease re-run the Lotus installer and choose Repair."
                 );
                 if let Err(journal_error) =
-                    lotus_windows::update::complete_post_install_health(false, &message)
+                    lotus_windows::update::fail_post_install_health(&message)
                 {
                     lotus_windows::diagnostics::record_error(
                         "update.post_install_health_journal",
@@ -458,17 +479,20 @@ fn prepare_settings(
                 );
                 return Ok(None);
             }
-            if let Err(error) =
-                lotus_windows::update::complete_post_install_health(true, "")
-            {
-                lotus_windows::diagnostics::record_error(
-                    "update.post_install_health_journal",
-                    &error,
-                );
-            }
+            pending_post_install_health =
+                match lotus_windows::update::prepare_post_install_health() {
+                    Ok(health) => Some(health),
+                    Err(error) => {
+                        lotus_windows::diagnostics::record_error(
+                            "update.post_install_health_journal",
+                            &error,
+                        );
+                        None
+                    }
+                };
             lotus_windows::diagnostics::record_message(
-                "update.post_install_health",
-                "installed executable, bridge DLLs, settings, and startup registration are healthy",
+                "update.post_install_preflight",
+                "installed executable, bridge DLLs, settings, and startup registration passed preflight",
             );
         }
     }
@@ -484,6 +508,7 @@ fn prepare_settings(
         settings,
         store,
         onboarding_required,
+        post_install_health: pending_post_install_health,
     }))
 }
 
@@ -534,8 +559,7 @@ fn prepare_initial_windows(
 fn create_auxiliary_windows(
     dock: &lotus_windows::window::DockWindow,
     dock_model: &mut DockRuntime,
-    usage: SearchUsage,
-    usage_store: SearchUsageStore,
+    services: ModuleHostServices,
     modules_active: bool,
     shell_effects_allowed: bool,
     updates_allowed: bool,
@@ -543,8 +567,7 @@ fn create_auxiliary_windows(
     ModuleHost::create(
         dock,
         dock_model,
-        usage,
-        usage_store,
+        services,
         modules_active,
         shell_effects_allowed,
         updates_allowed,

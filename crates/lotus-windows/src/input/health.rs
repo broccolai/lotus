@@ -96,7 +96,7 @@ pub(super) fn try_recover_from_fail_open(shared: &Shared) {
     }
 }
 
-fn request_pressed_key_resync(shared: &Shared) {
+pub(super) fn request_pressed_key_resync(shared: &Shared) {
     shared
         .pressed_resync_requested
         .store(true, Ordering::Release);

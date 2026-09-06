@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{
@@ -21,23 +21,26 @@ pub(super) const READY_FILE: &str = "ready";
 pub(super) const REFRESH_FILE: &str = "refresh";
 pub(super) const START_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL_MILLISECONDS: u32 = 100;
+const UI_PROGRESS_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) fn spawn(
     parent_process_id: u32,
     control_directory: &Path,
     cancellation_event: &str,
+    progress_event: &str,
 ) -> Result<Child, std::io::Error> {
     Command::new(std::env::current_exe()?)
         .arg(GUARDIAN_ARGUMENT)
         .arg(parent_process_id.to_string())
         .arg(control_directory)
         .arg(cancellation_event)
+        .arg(progress_event)
         .spawn()
 }
 
 pub(super) fn request<I, S>(
     arguments: I,
-) -> Result<Option<(u32, PathBuf, String)>, ExclusiveTaskbarError>
+) -> Result<Option<(u32, PathBuf, String, String)>, ExclusiveTaskbarError>
 where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
@@ -63,27 +66,70 @@ where
         .and_then(|value| value.into_string().ok())
         .filter(|value| !value.is_empty())
         .ok_or(ExclusiveTaskbarError::InvalidGuardianArguments)?;
+    let progress_event = arguments
+        .next()
+        .and_then(|value| value.into_string().ok())
+        .filter(|value| !value.is_empty())
+        .ok_or(ExclusiveTaskbarError::InvalidGuardianArguments)?;
     if arguments.next().is_some() {
         return Err(ExclusiveTaskbarError::InvalidGuardianArguments);
     }
 
-    Ok(Some((process_id, directory, cancellation_event)))
+    Ok(Some((
+        process_id,
+        directory,
+        cancellation_event,
+        progress_event,
+    )))
 }
 
 pub(super) fn run(
     parent_process_id: u32,
     control_directory: &Path,
     cancellation_event: &str,
+    progress_event: &str,
 ) -> Result<(), ExclusiveTaskbarError> {
     let parent = ProcessHandle::open(parent_process_id)?;
     let cancellation = CancellationEvent::open(cancellation_event)?;
-    let mut taskbar_state = TaskbarStateGuard::enable_autohide()?;
-    let mut event_observer = TaskbarEventObserver::start()?;
+    let progress = ProgressEvent::open(progress_event)?;
     fs::write(control_directory.join(READY_FILE), [])?;
+
+    let mut taskbar_state = None;
+    let mut event_observer = None;
+    let mut last_ui_progress = None;
 
     loop {
         if cancellation.is_signalled()? {
             break;
+        }
+        if progress.was_reported()? {
+            last_ui_progress = Some(Instant::now());
+            if event_observer.is_none() {
+                taskbar_state = Some(TaskbarStateGuard::enable_autohide()?);
+                event_observer = Some(TaskbarEventObserver::start()?);
+            }
+        }
+        if event_observer.as_ref().is_some_and(|_| {
+            last_ui_progress
+                .is_none_or(|progress| progress.elapsed() >= UI_PROGRESS_TIMEOUT)
+        }) {
+            let observer_stopped = event_observer
+                .as_mut()
+                .is_none_or(TaskbarEventObserver::shutdown);
+            event_observer = None;
+            restore_verified_taskbars();
+            let restored = taskbar_state
+                .as_mut()
+                .is_none_or(|state| state.restore().is_ok());
+            taskbar_state = None;
+            last_ui_progress = None;
+            crate::diagnostics::record_state(
+                "exclusive_taskbar.guardian_lease_expired",
+                &[
+                    ("observer_stopped", u64::from(observer_stopped)),
+                    ("taskbar_state_restored", u64::from(restored)),
+                ],
+            );
         }
         // SAFETY: `parent` owns a live synchronization handle. The bounded wait keeps the
         // guardian responsive to its independent cancellation event and taskbar recreation.
@@ -93,9 +139,14 @@ pub(super) fn run(
                 let refresh = control_directory.join(REFRESH_FILE);
                 if refresh.exists() {
                     let _ = fs::remove_file(refresh);
-                    event_observer.reassert_hidden();
+                    if let Some(observer) = event_observer.as_ref() {
+                        observer.reassert_hidden();
+                    }
                 }
-                if event_observer.is_finished() {
+                if event_observer
+                    .as_ref()
+                    .is_some_and(TaskbarEventObserver::is_finished)
+                {
                     return Err(ExclusiveTaskbarError::EventObserverStopped);
                 }
             }
@@ -103,9 +154,11 @@ pub(super) fn run(
         }
     }
 
-    let observer_stopped = event_observer.shutdown();
+    let observer_stopped = event_observer
+        .as_mut()
+        .is_none_or(TaskbarEventObserver::shutdown);
     restore_verified_taskbars();
-    let restored = taskbar_state.restore().is_ok();
+    let restored = taskbar_state.is_none_or(|mut state| state.restore().is_ok());
     crate::diagnostics::record_state(
         "exclusive_taskbar.guardian_shutdown",
         &[
@@ -115,6 +168,65 @@ pub(super) fn run(
     );
     cleanup_control_directory(control_directory);
     Ok(())
+}
+
+pub(super) struct ProgressEvent {
+    handle: HANDLE,
+    name: String,
+}
+
+impl ProgressEvent {
+    pub(super) fn create() -> Result<Self, ExclusiveTaskbarError> {
+        let name = format!(
+            "Local\\Lotus.TaskbarProgress.{}.{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos())
+        );
+        let wide = HSTRING::from(&name);
+        let handle = unsafe { CreateEventW(None, false, false, PCWSTR(wide.as_ptr())) }
+            .map_err(|error| ExclusiveTaskbarError::ParentProcess(error.into()))?;
+        Ok(Self { handle, name })
+    }
+
+    fn open(name: &str) -> Result<Self, ExclusiveTaskbarError> {
+        let wide = HSTRING::from(name);
+        let handle = unsafe {
+            OpenEventW(
+                EVENT_MODIFY_STATE | SYNCHRONIZATION_ACCESS_RIGHTS(PROCESS_SYNCHRONIZE.0),
+                false,
+                PCWSTR(wide.as_ptr()),
+            )
+        }
+        .map_err(|error| ExclusiveTaskbarError::ParentProcess(error.into()))?;
+        Ok(Self {
+            handle,
+            name: name.to_owned(),
+        })
+    }
+
+    pub(super) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(super) fn report(&self) {
+        let _ = unsafe { SetEvent(self.handle) };
+    }
+
+    fn was_reported(&self) -> Result<bool, ExclusiveTaskbarError> {
+        match unsafe { WaitForSingleObject(self.handle, 0) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(ExclusiveTaskbarError::ParentWait),
+        }
+    }
+}
+
+impl Drop for ProgressEvent {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.handle) };
+    }
 }
 
 pub(super) fn control_directory() -> PathBuf {

@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use minhook::{MH_STATUS, MinHook};
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::WindowsAndMessaging::{
     CWPSTRUCT, GetPropW, GetWindowThreadProcessId, SET_WINDOW_POS_FLAGS, SW_HIDE,
     SWP_HIDEWINDOW, SWP_SHOWWINDOW,
@@ -11,7 +12,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::BOOL;
 
 use crate::protocol::{
-    OWNER_PROPERTY_NAME, acknowledge, config_message, decode_configuration,
+    LEASE_PROPERTY_NAME, OWNER_PROPERTY_NAME, acknowledge, config_message,
+    decode_configuration,
 };
 use crate::{target, worker};
 
@@ -258,6 +260,21 @@ pub(crate) fn owner_is_live() -> bool {
         && unsafe { GetPropW(hwnd, OWNER_PROPERTY_NAME) }.0.addr() == token
 }
 
+fn owner_allows_takeover() -> bool {
+    let owner = owner();
+    if owner == 0 || !owner_is_live() {
+        return false;
+    }
+    let hwnd = HWND(std::ptr::with_exposed_provenance_mut(owner));
+    let encoded = unsafe { GetPropW(hwnd, LEASE_PROPERTY_NAME) }.0.addr();
+    let Ok(encoded) = u64::try_from(encoded) else {
+        return false;
+    };
+    let enabled = encoded & 1 != 0;
+    let expires_at = encoded >> 1;
+    enabled && unsafe { GetTickCount64() } < expires_at
+}
+
 unsafe extern "system" fn hooked_show_window(window: HWND, command: i32) -> BOOL {
     call_show_window(&ORIGINAL_SHOW_WINDOW, window, command)
 }
@@ -274,6 +291,7 @@ fn call_show_window(original: &AtomicUsize, window: HWND, command: i32) -> BOOL 
     let original: ShowWindowFn = unsafe { std::mem::transmute(original) };
 
     if ENABLED.load(Ordering::Acquire)
+        && owner_allows_takeover()
         && command != SW_HIDE.0
         && target::is_taskbar_window(window)
     {
@@ -298,7 +316,10 @@ unsafe extern "system" fn hooked_set_window_pos(
     }
     let original: SetWindowPosFn = unsafe { std::mem::transmute(original) };
 
-    if ENABLED.load(Ordering::Acquire) && target::is_taskbar_window(window) {
+    if ENABLED.load(Ordering::Acquire)
+        && owner_allows_takeover()
+        && target::is_taskbar_window(window)
+    {
         flags.0 = (flags.0 & !SWP_SHOWWINDOW.0) | SWP_HIDEWINDOW.0;
     }
 

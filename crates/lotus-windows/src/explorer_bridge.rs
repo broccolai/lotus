@@ -1,24 +1,27 @@
 use std::env;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
     FreeLibrary, HANDLE, HINSTANCE, HMODULE, HWND, LPARAM, WPARAM,
 };
 use windows::Win32::System::Com::CoCreateGuid;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetClassNameW, GetPropW, GetWindowThreadProcessId, HHOOK, HOOKPROC, MSG,
-    PM_REMOVE, PeekMessageW, RegisterWindowMessageW, RemovePropW,
-    SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_ABORTIFHUNG, SendMessageTimeoutW, SetPropW,
-    SetWindowsHookExW, UnhookWindowsHookEx, WH_CALLWNDPROC,
+    FindWindowW, GetClassNameW, GetPropW, GetWindowThreadProcessId, HHOOK, HOOKPROC,
+    RegisterWindowMessageW, RemovePropW, SendNotifyMessageW, SetPropW, SetWindowsHookExW,
+    UnhookWindowsHookEx, WH_CALLWNDPROC,
 };
 use windows::core::{HSTRING, PCSTR, PCWSTR, w};
 
 const CONFIG_MESSAGE_NAME: PCWSTR = w!("Lotus.ExplorerBridge.Configure.v2");
-const ACK_MESSAGE_NAME: PCWSTR = w!("Lotus.ExplorerBridge.Acknowledge.v2");
+const ACK_PROPERTY_NAME: PCWSTR = w!("Lotus.ExplorerBridge.Acknowledged.v2");
 const OWNER_PROPERTY_NAME: PCWSTR = w!("Lotus.ExplorerBridge.Owner.v2");
+const LEASE_PROPERTY_NAME: PCWSTR = w!("Lotus.ExplorerBridge.Lease.v3");
 const HOOK_EXPORT_NAME: &[u8] = b"lotus_explorer_bridge_hook\0";
-const MESSAGE_TIMEOUT_MILLISECONDS: u32 = 500;
+const UI_PROGRESS_LEASE_MILLISECONDS: u64 = 2_000;
+const CONFIGURATION_DEADLINE: Duration = Duration::from_secs(1);
 
 pub(crate) struct ExplorerBridgeLease {
     module: HMODULE,
@@ -28,8 +31,8 @@ pub(crate) struct ExplorerBridgeLease {
     explorer_thread: u32,
     owner: HWND,
     message: u32,
-    acknowledgement: u32,
     token: usize,
+    configured_at: Instant,
 }
 
 impl ExplorerBridgeLease {
@@ -64,8 +67,7 @@ impl ExplorerBridgeLease {
         };
 
         let message = unsafe { RegisterWindowMessageW(CONFIG_MESSAGE_NAME) };
-        let acknowledgement = unsafe { RegisterWindowMessageW(ACK_MESSAGE_NAME) };
-        if message == 0 || acknowledgement == 0 {
+        if message == 0 {
             release_controller_module(hook, module);
             return None;
         }
@@ -86,6 +88,7 @@ impl ExplorerBridgeLease {
             release_controller_module(hook, module);
             return None;
         }
+        let _ = unsafe { RemovePropW(owner, ACK_PROPERTY_NAME) };
         let lease = Self {
             module,
             hook,
@@ -94,9 +97,12 @@ impl ExplorerBridgeLease {
             explorer_thread,
             owner,
             message,
-            acknowledgement,
             token,
+            configured_at: Instant::now(),
         };
+        // The hook may be configured now, but suppression remains fail-open until the UI owns
+        // a usable presentation and explicitly grants its first short lease.
+        lease.report_ui_progress(false);
         lease.configure(true).then_some(lease)
     }
 
@@ -104,27 +110,50 @@ impl ExplorerBridgeLease {
         self.configure(true)
     }
 
+    /// Renews the short lease only from UI-owned progress. The injected bridge reads this
+    /// property directly, so a responsive helper cannot conceal a stalled UI thread.
+    pub(crate) fn report_ui_progress(&self, takeover_allowed: bool) {
+        let value = lease_value(takeover_allowed);
+        let _ = unsafe {
+            SetPropW(
+                self.owner,
+                LEASE_PROPERTY_NAME,
+                Some(HANDLE(std::ptr::with_exposed_provenance_mut(value))),
+            )
+        };
+    }
+
+    /// Stops suppression immediately before the caller restores native taskbars.
+    pub(crate) fn revoke_takeover(&self) {
+        self.report_ui_progress(false);
+        let _ = self.configure(false);
+    }
+
     pub(crate) fn is_usable(&self) -> bool {
-        trusted_explorer_identity(self.taskbar).is_some_and(|(process, thread)| {
-            process == self.explorer_process && thread == self.explorer_thread
-        })
+        self.has_current_explorer_identity()
+            && unsafe { GetPropW(self.owner, ACK_PROPERTY_NAME) }.0.addr()
+                == configuration_value(self.token, true)
+    }
+
+    pub(crate) fn should_replace(&self) -> bool {
+        !self.has_current_explorer_identity()
+            || (!self.is_usable() && self.configured_at.elapsed() >= CONFIGURATION_DEADLINE)
     }
 
     fn configure(&self, enabled: bool) -> bool {
-        send_configuration(
-            self.taskbar,
-            self.owner,
-            self.message,
-            self.acknowledgement,
-            enabled,
-            self.token,
-        )
+        send_configuration(self.taskbar, self.owner, self.message, enabled, self.token)
+    }
+
+    fn has_current_explorer_identity(&self) -> bool {
+        trusted_explorer_identity(self.taskbar).is_some_and(|(process, thread)| {
+            process == self.explorer_process && thread == self.explorer_thread
+        })
     }
 }
 
 impl Drop for ExplorerBridgeLease {
     fn drop(&mut self) {
-        let _ = self.configure(false);
+        self.revoke_takeover();
         if unsafe { GetPropW(self.owner, OWNER_PROPERTY_NAME) }
             .0
             .addr()
@@ -132,6 +161,8 @@ impl Drop for ExplorerBridgeLease {
         {
             let _ = unsafe { RemovePropW(self.owner, OWNER_PROPERTY_NAME) };
         }
+        let _ = unsafe { RemovePropW(self.owner, LEASE_PROPERTY_NAME) };
+        let _ = unsafe { RemovePropW(self.owner, ACK_PROPERTY_NAME) };
         let _ = release_controller_module(self.hook, self.module);
     }
 }
@@ -140,45 +171,31 @@ fn send_configuration(
     taskbar: HWND,
     owner: HWND,
     message: u32,
-    acknowledgement_message: u32,
     enabled: bool,
     token: usize,
 ) -> bool {
-    let configuration = ((token << 1) | usize::from(enabled)).cast_signed();
-    let outcome = unsafe {
-        SendMessageTimeoutW(
+    let configuration = configuration_value(token, enabled).cast_signed();
+    unsafe {
+        SendNotifyMessageW(
             taskbar,
             message,
             WPARAM(owner.0.addr()),
             LPARAM(configuration),
-            SEND_MESSAGE_TIMEOUT_FLAGS(SMTO_ABORTIFHUNG.0),
-            MESSAGE_TIMEOUT_MILLISECONDS,
-            None,
         )
-    };
-    if outcome.0 == 0 {
-        return false;
     }
+    .is_ok()
+}
 
-    loop {
-        let mut acknowledgement = MSG::default();
-        if !unsafe {
-            PeekMessageW(
-                &raw mut acknowledgement,
-                Some(owner),
-                acknowledgement_message,
-                acknowledgement_message,
-                PM_REMOVE,
-            )
-        }
-        .as_bool()
-        {
-            return false;
-        }
-        if acknowledgement.lParam.0 == configuration {
-            return acknowledgement.wParam.0 == 1;
-        }
-    }
+fn configuration_value(token: usize, enabled: bool) -> usize {
+    (token << 1) | usize::from(enabled)
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn lease_value(takeover_allowed: bool) -> usize {
+    let expires_at =
+        unsafe { GetTickCount64() }.saturating_add(UI_PROGRESS_LEASE_MILLISECONDS);
+    let encoded = (expires_at << 1) | u64::from(takeover_allowed);
+    usize::try_from(encoded).unwrap_or(0)
 }
 
 #[allow(clippy::cast_possible_truncation)]

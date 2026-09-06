@@ -250,8 +250,14 @@ impl StatusWindow {
         self.window.is_visible()
     }
 
-    pub fn drain_events(&mut self) -> impl Iterator<Item = StatusEvent> + '_ {
-        self.window.state_mut().drain_events().into_iter()
+    pub fn drain_events_up_to(
+        &mut self,
+        limit: usize,
+    ) -> impl Iterator<Item = StatusEvent> + '_ {
+        self.window
+            .state_mut()
+            .drain_events_up_to(limit)
+            .into_iter()
     }
 
     pub fn has_pending_events(&self) -> bool {
@@ -302,8 +308,15 @@ impl DockReplicaWindow {
     pub fn is_visible(&self) -> bool {
         self.0.is_visible()
     }
-    pub fn drain_events(&mut self) -> impl Iterator<Item = DockEvent> + '_ {
-        self.0.window.state_mut().drain_events().into_iter()
+    pub fn drain_events_up_to(
+        &mut self,
+        limit: usize,
+    ) -> impl Iterator<Item = DockEvent> + '_ {
+        self.0
+            .window
+            .state_mut()
+            .drain_events_up_to(limit)
+            .into_iter()
     }
     pub fn has_pending_events(&self) -> bool {
         self.0.has_pending_events()

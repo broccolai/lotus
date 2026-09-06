@@ -6,7 +6,7 @@ use crate::app::PresentationSurface;
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct MessageTiming {
-    phase_us: [u64; 9],
+    phase_us: [u64; 13],
     pub(super) accounted_us: u64,
 }
 
@@ -28,6 +28,10 @@ impl MessageTiming {
             UiMessagePhase::Wake,
             UiMessagePhase::MonitorSync,
             UiMessagePhase::Frame,
+            UiMessagePhase::Integration,
+            UiMessagePhase::GraphicsRecovery,
+            UiMessagePhase::Persistence,
+            UiMessagePhase::Asset,
         ]
         .into_iter()
         .map(|phase| (phase, self.phase_us[phase.index()]))

@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::resource_cache::BoundedResourceCache;
-use crate::responsiveness::CacheClass;
+use crate::responsiveness::{CacheClass, METRICS};
 
 const MAX_DIMENSION: u32 = 512;
 const CUSTOM_IMAGE_CACHE_BYTES: usize = 4 * 1024 * 1024;
@@ -109,7 +109,10 @@ impl CustomImageCache {
             return Ok(image.clone());
         }
 
-        let image = load_custom_image(path)?;
+        let decode_started = std::time::Instant::now();
+        let image = load_custom_image(path);
+        METRICS.record_icon_raster(decode_started.elapsed());
+        let image = image?;
         let _ = self
             .images
             .insert(path.to_path_buf(), image.clone(), image.pixels().len());

@@ -18,41 +18,41 @@ pub(super) fn refresh_catalog(
     primary_dock: &mut PrimaryDock,
     graphics: &mut DeviceState,
     windows: &[WindowInfo],
+    window_revision: u64,
     dock_model: &mut DockRuntime,
     auxiliary: &mut ModuleHost,
-    settings_persistence: &SettingsPersistence,
+    _settings_persistence: &SettingsPersistence,
 ) -> Result<bool, AppError> {
     if !auxiliary.launcher_catalog_refresh_pending() {
         return Ok(false);
     }
-    let application_catalog = auxiliary.application_snapshot();
-    dock_model.adopt_catalogue_pins(&application_catalog, settings_persistence)?;
-    dock_model.rebuild(windows, application_catalog.clone());
     let catalog_changed =
         auxiliary.refresh_catalog(primary_dock.window(), dock_model, graphics)?;
     if !catalog_changed {
         return Ok(false);
     }
-    auxiliary.reconcile_switcher_windows(
+    let applications = auxiliary.reconcile_application_view(
         windows,
-        application_catalog,
-        dock_model.application_assignments(),
-        graphics,
-    )?;
+        dock_model.settings(),
+        window_revision,
+    );
+    dock_model.rebuild(windows, applications.clone());
+    auxiliary.reconcile_switcher_windows(windows, applications, graphics)?;
     present_dock_change(primary_dock, graphics, auxiliary, dock_model)?;
     auxiliary.refresh_open_application_manager(dock_model.items());
     auxiliary.invalidate_launcher_surface();
     Ok(true)
 }
 
-pub(super) fn drain_search_events(
+pub(super) fn drain_search_events_up_to(
     dock: &DockWindow,
     graphics: &mut DeviceState,
     dock_model: &DockRuntime,
     auxiliary: &mut ModuleHost,
-) -> Result<bool, AppError> {
-    let events = auxiliary.drain_launcher_events();
-    let had_events = !events.is_empty();
+    limit: usize,
+) -> Result<usize, AppError> {
+    let events = auxiliary.drain_launcher_events_up_to(limit);
+    let drained = events.len();
     for event in events {
         let outcome =
             match auxiliary.handle_launcher_event(event, dock, graphics, dock_model) {
@@ -80,7 +80,7 @@ pub(super) fn drain_search_events(
             }
         }
     }
-    Ok(had_events)
+    Ok(drained)
 }
 
 fn paste_search_clipboard(

@@ -16,6 +16,7 @@ use crate::app::surface_render::frame_outcome;
 pub(super) struct LauncherSurface {
     window: SearchWindow,
     surface: Option<ScheduledSurface<LauncherCompositionSurfaceState>>,
+    presentation_ready: bool,
     visible: bool,
     last_applied_size: Option<SurfaceSize>,
     child_popup_open: bool,
@@ -26,6 +27,7 @@ impl LauncherSurface {
         Self {
             window,
             surface: None,
+            presentation_ready: false,
             visible: false,
             last_applied_size: None,
             child_popup_open: false,
@@ -38,6 +40,10 @@ impl LauncherSurface {
 
     pub(super) fn has_graphics_surface(&self) -> bool {
         self.surface.is_some()
+    }
+
+    pub(super) const fn presentation_ready(&self) -> bool {
+        self.presentation_ready
     }
 
     pub(super) fn diagnostic_state(&self) -> (bool, bool, bool) {
@@ -69,21 +75,18 @@ impl LauncherSurface {
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         let size = surface_size(size)?;
-        if let Some(surface) = &mut self.surface {
-            resize_surface(graphics, surface.value_mut(), size)?;
-        } else {
-            let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            self.surface = Some(ScheduledSurface::new(
-                LauncherCompositionSurfaceState::create(
-                    device,
-                    self.window.handle(),
-                    size,
-                )?,
-            ));
-        }
+        self.ensure_surface(size, graphics)?;
         self.visible = true;
         self.last_applied_size = Some(size);
         Ok(())
+    }
+
+    pub(super) fn prepare_hidden(
+        &mut self,
+        size: lotus_search::scene::LauncherSize,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        self.ensure_surface(surface_size(size)?, graphics)
     }
 
     pub(super) fn correct_open_geometry(
@@ -189,6 +192,7 @@ impl LauncherSurface {
     }
 
     pub(super) fn recover(&mut self, device: &GraphicsDevice) -> Result<(), AppError> {
+        self.presentation_ready = false;
         if let Some(surface) = &mut self.surface {
             surface.value_mut().recover(device)?;
         }
@@ -205,7 +209,7 @@ impl LauncherSurface {
             .surface
             .as_mut()
             .ok_or(AppError::InvalidLauncherScene)?;
-        pass.render(surface, |surface| {
+        let result = pass.render(surface, |surface| {
             let content = scene.render_presentation(EmbeddedIcon::FluentSearch);
             let motion = scene.presentation();
             let result = surface.render_scene(
@@ -215,15 +219,36 @@ impl LauncherSurface {
                 scene.needs_animation(),
             );
             frame_outcome(graphics, result)
-        })
+        });
+        self.presentation_ready =
+            result.is_ok() && graphics.ready().is_some() && !surface.is_dirty();
+        result
     }
 
-    pub(super) fn drain_events(&mut self) -> Vec<SearchEvent> {
-        self.window.drain_events().collect()
+    pub(super) fn drain_events_up_to(&mut self, limit: usize) -> Vec<SearchEvent> {
+        self.window.drain_events_up_to(limit).collect()
     }
 
     pub(super) fn has_pending_events(&self) -> bool {
         self.window.has_pending_events()
+    }
+
+    fn ensure_surface(
+        &mut self,
+        size: SurfaceSize,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        if let Some(surface) = &mut self.surface {
+            resize_surface(graphics, surface.value_mut(), size)?;
+            return Ok(());
+        }
+
+        let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
+        self.surface = Some(ScheduledSurface::new(
+            LauncherCompositionSurfaceState::create(device, self.window.handle(), size)?,
+        ));
+        self.presentation_ready = false;
+        Ok(())
     }
 }
 

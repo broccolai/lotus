@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
@@ -20,6 +21,7 @@ use crate::native_icon::NativeIconCache;
 use crate::responsiveness::METRICS;
 
 const START_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_PENDING_RESULTS: usize = 128;
 
 #[derive(Clone, Debug)]
 pub struct LauncherIconRequest {
@@ -45,10 +47,20 @@ pub struct SwitcherIconRequest {
 #[derive(Clone, Debug)]
 pub struct DockIconRequest {
     pub identity: String,
-    pub window: TrackedWindowKey,
+    pub window: Option<TrackedWindowKey>,
     pub executable_path: PathBuf,
     pub presentation_icon: ApplicationPresentationIcon,
+    pub custom_image_path: Option<PathBuf>,
     pub pixel_size: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct SettingsIconRequest {
+    pub identity: String,
+    pub icon_source: PathBuf,
+    pub custom_image_path: Option<PathBuf>,
+    pub pixel_size: u32,
+    pub settings_revision: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -74,8 +86,21 @@ pub struct HydratedSwitcherIcon {
 #[derive(Clone, Debug)]
 pub struct HydratedDockIcon {
     pub identity: String,
-    pub window: TrackedWindowKey,
+    pub window: Option<TrackedWindowKey>,
+    pub executable_path: PathBuf,
+    pub presentation_icon: ApplicationPresentationIcon,
+    pub custom_image_path: Option<PathBuf>,
     pub pixel_size: u32,
+    pub icon: Option<RasterIcon>,
+}
+
+#[derive(Clone, Debug)]
+pub struct HydratedSettingsIcon {
+    pub identity: String,
+    pub icon_source: PathBuf,
+    pub custom_image_path: Option<PathBuf>,
+    pub pixel_size: u32,
+    pub settings_revision: u64,
     pub icon: Option<RasterIcon>,
 }
 
@@ -84,6 +109,7 @@ pub enum IconHydrationResult {
     Launcher(HydratedLauncherIcon),
     Switcher(HydratedSwitcherIcon),
     Dock(HydratedDockIcon),
+    Settings(HydratedSettingsIcon),
 }
 
 #[derive(Debug, Error)]
@@ -108,6 +134,7 @@ enum Consumer {
     Launcher,
     Switcher,
     Dock,
+    Settings,
 }
 
 #[derive(Clone)]
@@ -117,6 +144,11 @@ pub struct SwitcherIconClient {
 
 #[derive(Clone)]
 pub struct DockIconClient {
+    shared: Arc<SharedState>,
+}
+
+#[derive(Clone)]
+pub struct SettingsIconClient {
     shared: Arc<SharedState>,
 }
 
@@ -141,8 +173,10 @@ struct State {
     launcher: Option<Vec<LauncherIconRequest>>,
     switcher: Option<Vec<SwitcherIconRequest>>,
     dock: Option<Vec<DockIconRequest>>,
+    settings: Option<Vec<SettingsIconRequest>>,
+    epochs: [u64; 4],
     next: Consumer,
-    results: Vec<IconHydrationResult>,
+    results: VecDeque<IconHydrationResult>,
 }
 
 enum WorkerStartupError {
@@ -156,8 +190,10 @@ impl IconHydrator {
                 launcher: None,
                 switcher: None,
                 dock: None,
+                settings: None,
+                epochs: [0; 4],
                 next: Consumer::Launcher,
-                results: Vec::new(),
+                results: VecDeque::new(),
             }),
             wake: Condvar::new(),
             owner_thread: unsafe { GetCurrentThreadId() },
@@ -176,20 +212,12 @@ impl IconHydrator {
             });
 
         match ready_receiver.recv_timeout(START_TIMEOUT) {
-            Ok(Ok(())) => Ok(Self {
-                shared,
-                worker: {
-                    worker.set_join_policy(WorkerJoinPolicy::Always);
-                    worker
-                },
-            }),
+            Ok(Ok(())) => Ok(Self { shared, worker }),
             Ok(Err(WorkerStartupError::ComUnavailable)) => {
-                worker.set_join_policy(WorkerJoinPolicy::Always);
                 worker.shutdown();
                 Err(IconHydratorError::ComUnavailable)
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                worker.set_join_policy(WorkerJoinPolicy::Always);
                 worker.shutdown();
                 Err(IconHydratorError::WorkerExitedBeforeReady)
             }
@@ -219,10 +247,16 @@ impl IconHydrator {
         }
     }
 
+    pub fn settings_client(&self) -> SettingsIconClient {
+        SettingsIconClient {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
     pub fn drain(&self) -> Vec<IconHydrationResult> {
         self.shared.wake_queued.store(false, Ordering::Release);
         let mut state = lock(&self.shared.state);
-        std::mem::take(&mut state.results)
+        state.results.drain(..).collect()
     }
 }
 
@@ -242,7 +276,7 @@ fn stop_icon_hydrator(shared: &SharedState) {
 
 impl LauncherIconClient {
     pub fn request_launcher(&self, requests: Vec<LauncherIconRequest>) {
-        self.request(Work::Launcher(requests));
+        self.request(Work::Launcher { requests, epoch: 0 });
     }
 
     fn request(&self, work: Work) {
@@ -252,7 +286,7 @@ impl LauncherIconClient {
 
 impl SwitcherIconClient {
     pub fn request_switcher(&self, requests: Vec<SwitcherIconRequest>) {
-        self.request(Work::Switcher(requests));
+        self.request(Work::Switcher { requests, epoch: 0 });
     }
 
     fn request(&self, work: Work) {
@@ -262,11 +296,17 @@ impl SwitcherIconClient {
 
 impl DockIconClient {
     pub fn request_dock(&self, requests: Vec<DockIconRequest>) {
-        self.request(Work::Dock(requests));
+        self.request(Work::Dock { requests, epoch: 0 });
     }
 
     fn request(&self, work: Work) {
         request(&self.shared, work);
+    }
+}
+
+impl SettingsIconClient {
+    pub fn request_settings(&self, requests: Vec<SettingsIconRequest>) {
+        request(&self.shared, Work::Settings { requests, epoch: 0 });
     }
 }
 
@@ -276,25 +316,47 @@ fn request(shared: &SharedState, work: Work) {
         return;
     }
     match work {
-        Work::Launcher(requests) => {
+        Work::Launcher { requests, .. } => {
+            state.epochs[0] = state.epochs[0].wrapping_add(1);
             state.launcher = (!requests.is_empty()).then_some(requests);
         }
-        Work::Switcher(requests) => {
+        Work::Switcher { requests, .. } => {
+            state.epochs[1] = state.epochs[1].wrapping_add(1);
             if !requests.is_empty() {
                 METRICS.record_switcher_requests(requests.len());
             }
             state.switcher = (!requests.is_empty()).then_some(requests);
         }
-        Work::Dock(requests) => state.dock = (!requests.is_empty()).then_some(requests),
+        Work::Dock { requests, .. } => {
+            state.epochs[2] = state.epochs[2].wrapping_add(1);
+            state.dock = (!requests.is_empty()).then_some(requests);
+        }
+        Work::Settings { requests, .. } => {
+            state.epochs[3] = state.epochs[3].wrapping_add(1);
+            state.settings = (!requests.is_empty()).then_some(requests);
+        }
     }
     drop(state);
     shared.wake.notify_one();
 }
 
 enum Work {
-    Launcher(Vec<LauncherIconRequest>),
-    Switcher(Vec<SwitcherIconRequest>),
-    Dock(Vec<DockIconRequest>),
+    Launcher {
+        requests: Vec<LauncherIconRequest>,
+        epoch: u64,
+    },
+    Switcher {
+        requests: Vec<SwitcherIconRequest>,
+        epoch: u64,
+    },
+    Dock {
+        requests: Vec<DockIconRequest>,
+        epoch: u64,
+    },
+    Settings {
+        requests: Vec<SettingsIconRequest>,
+        epoch: u64,
+    },
 }
 
 fn hydrate_icons(
@@ -313,35 +375,69 @@ fn hydrate_icons(
     let mut custom_images = CustomImageCache::default();
 
     while let Some(work) = next_work(shared) {
-        let results = match work {
-            Work::Launcher(requests) => requests
-                .iter()
-                .map(|request| {
-                    IconHydrationResult::Launcher(hydrate_launcher_icon(
-                        request,
-                        &mut native_icons,
-                        &mut custom_images,
-                    ))
-                })
-                .collect(),
-            Work::Switcher(requests) => requests
-                .iter()
-                .map(|request| {
-                    IconHydrationResult::Switcher(hydrate_switcher_icon(
-                        request,
-                        &mut native_icons,
-                        &mut custom_images,
-                    ))
-                })
-                .collect(),
-            Work::Dock(requests) => requests
-                .iter()
-                .map(|request| {
-                    IconHydrationResult::Dock(hydrate_dock_icon(request, &mut native_icons))
-                })
-                .collect(),
+        let (results, consumer, epoch) = match work {
+            Work::Launcher { requests, epoch } => (
+                requests
+                    .iter()
+                    .filter(|_| current_epoch(shared, Consumer::Launcher) == Some(epoch))
+                    .map(|request| {
+                        IconHydrationResult::Launcher(hydrate_launcher_icon(
+                            request,
+                            &mut native_icons,
+                            &mut custom_images,
+                        ))
+                    })
+                    .collect(),
+                Consumer::Launcher,
+                epoch,
+            ),
+            Work::Switcher { requests, epoch } => (
+                requests
+                    .iter()
+                    .filter(|_| current_epoch(shared, Consumer::Switcher) == Some(epoch))
+                    .map(|request| {
+                        IconHydrationResult::Switcher(hydrate_switcher_icon(
+                            request,
+                            &mut native_icons,
+                            &mut custom_images,
+                        ))
+                    })
+                    .collect(),
+                Consumer::Switcher,
+                epoch,
+            ),
+            Work::Dock { requests, epoch } => (
+                requests
+                    .iter()
+                    .filter(|_| current_epoch(shared, Consumer::Dock) == Some(epoch))
+                    .map(|request| {
+                        IconHydrationResult::Dock(hydrate_dock_icon(
+                            request,
+                            &mut native_icons,
+                            &mut custom_images,
+                        ))
+                    })
+                    .collect(),
+                Consumer::Dock,
+                epoch,
+            ),
+            Work::Settings { requests, epoch } => (
+                requests
+                    .iter()
+                    .filter(|_| current_epoch(shared, Consumer::Settings) == Some(epoch))
+                    .map(|request| {
+                        IconHydrationResult::Settings(hydrate_settings_icon(
+                            request,
+                            &mut native_icons,
+                            &mut custom_images,
+                        ))
+                    })
+                    .collect(),
+                Consumer::Settings,
+                epoch,
+            ),
         };
-        publish(results, shared);
+        publish(results, shared, consumer, epoch);
     }
 }
 
@@ -351,28 +447,61 @@ fn next_work(shared: &SharedState) -> Option<Work> {
         if shared.stopping.load(Ordering::Acquire) {
             return None;
         }
+        let epochs = state.epochs;
         let work = match state.next {
-            Consumer::Launcher => state
-                .launcher
-                .take()
-                .map(Work::Launcher)
-                .or_else(|| state.switcher.take().map(Work::Switcher))
-                .or_else(|| take_dock_quantum(&mut state)),
-            Consumer::Switcher => state
-                .switcher
-                .take()
-                .map(Work::Switcher)
+            Consumer::Launcher => take_quantum(&mut state.launcher, epochs[0])
+                .map(|(requests, epoch)| Work::Launcher { requests, epoch })
+                .or_else(|| {
+                    take_quantum(&mut state.switcher, epochs[1])
+                        .map(|(requests, epoch)| Work::Switcher { requests, epoch })
+                })
                 .or_else(|| take_dock_quantum(&mut state))
-                .or_else(|| state.launcher.take().map(Work::Launcher)),
+                .or_else(|| {
+                    take_quantum(&mut state.settings, epochs[3])
+                        .map(|(requests, epoch)| Work::Settings { requests, epoch })
+                }),
+            Consumer::Switcher => take_quantum(&mut state.switcher, epochs[1])
+                .map(|(requests, epoch)| Work::Switcher { requests, epoch })
+                .or_else(|| take_dock_quantum(&mut state))
+                .or_else(|| {
+                    take_quantum(&mut state.launcher, epochs[0])
+                        .map(|(requests, epoch)| Work::Launcher { requests, epoch })
+                })
+                .or_else(|| {
+                    take_quantum(&mut state.settings, epochs[3])
+                        .map(|(requests, epoch)| Work::Settings { requests, epoch })
+                }),
             Consumer::Dock => take_dock_quantum(&mut state)
-                .or_else(|| state.launcher.take().map(Work::Launcher))
-                .or_else(|| state.switcher.take().map(Work::Switcher)),
+                .or_else(|| {
+                    take_quantum(&mut state.launcher, epochs[0])
+                        .map(|(requests, epoch)| Work::Launcher { requests, epoch })
+                })
+                .or_else(|| {
+                    take_quantum(&mut state.switcher, epochs[1])
+                        .map(|(requests, epoch)| Work::Switcher { requests, epoch })
+                })
+                .or_else(|| {
+                    take_quantum(&mut state.settings, epochs[3])
+                        .map(|(requests, epoch)| Work::Settings { requests, epoch })
+                }),
+            Consumer::Settings => take_quantum(&mut state.settings, epochs[3])
+                .map(|(requests, epoch)| Work::Settings { requests, epoch })
+                .or_else(|| {
+                    take_quantum(&mut state.launcher, epochs[0])
+                        .map(|(requests, epoch)| Work::Launcher { requests, epoch })
+                })
+                .or_else(|| {
+                    take_quantum(&mut state.switcher, epochs[1])
+                        .map(|(requests, epoch)| Work::Switcher { requests, epoch })
+                })
+                .or_else(|| take_dock_quantum(&mut state)),
         };
         if let Some(work) = work {
             state.next = match work {
-                Work::Launcher(_) => Consumer::Switcher,
-                Work::Switcher(_) => Consumer::Dock,
-                Work::Dock(_) => Consumer::Launcher,
+                Work::Launcher { .. } => Consumer::Switcher,
+                Work::Switcher { .. } => Consumer::Dock,
+                Work::Dock { .. } => Consumer::Settings,
+                Work::Settings { .. } => Consumer::Launcher,
             };
             return Some(work);
         }
@@ -384,27 +513,75 @@ fn next_work(shared: &SharedState) -> Option<Work> {
 }
 
 fn take_dock_quantum(state: &mut State) -> Option<Work> {
-    let mut requests = state.dock.take()?;
+    take_quantum(&mut state.dock, state.epochs[2])
+        .map(|(requests, epoch)| Work::Dock { requests, epoch })
+}
+
+fn take_quantum<T>(slot: &mut Option<Vec<T>>, epoch: u64) -> Option<(Vec<T>, u64)> {
+    let mut requests = slot.take()?;
     let remainder = requests.split_off(1);
-    state.dock = (!remainder.is_empty()).then_some(remainder);
-    Some(Work::Dock(requests))
+    *slot = (!remainder.is_empty()).then_some(remainder);
+    Some((requests, epoch))
+}
+
+fn current_epoch(shared: &SharedState, consumer: Consumer) -> Option<u64> {
+    if shared.stopping.load(Ordering::Acquire) {
+        return None;
+    }
+    let state = lock(&shared.state);
+    Some(state.epochs[consumer as usize])
 }
 
 fn hydrate_dock_icon(
     request: &DockIconRequest,
     native_icons: &mut NativeIconCache,
+    custom_images: &mut CustomImageCache,
 ) -> HydratedDockIcon {
-    let icon = hydrate_presentation_icon(
-        request.window,
-        &request.executable_path,
-        Some(&request.presentation_icon),
-        request.pixel_size,
-        native_icons,
-    );
+    let icon = request
+        .custom_image_path
+        .as_deref()
+        .and_then(|path| custom_images.image(path).ok())
+        .or_else(|| match request.window {
+            Some(window) => hydrate_presentation_icon(
+                window,
+                &request.executable_path,
+                Some(&request.presentation_icon),
+                request.pixel_size,
+                native_icons,
+            ),
+            None => source_icon(
+                native_icons,
+                request.presentation_icon.fallback_path().as_ref(),
+                request.pixel_size,
+            ),
+        });
     HydratedDockIcon {
         identity: request.identity.clone(),
         window: request.window,
+        executable_path: request.executable_path.clone(),
+        presentation_icon: request.presentation_icon.clone(),
+        custom_image_path: request.custom_image_path.clone(),
         pixel_size: request.pixel_size,
+        icon,
+    }
+}
+
+fn hydrate_settings_icon(
+    request: &SettingsIconRequest,
+    native_icons: &mut NativeIconCache,
+    custom_images: &mut CustomImageCache,
+) -> HydratedSettingsIcon {
+    let icon = request
+        .custom_image_path
+        .as_deref()
+        .and_then(|path| custom_images.image(path).ok())
+        .or_else(|| source_icon(native_icons, &request.icon_source, request.pixel_size));
+    HydratedSettingsIcon {
+        identity: request.identity.clone(),
+        icon_source: request.icon_source.clone(),
+        custom_image_path: request.custom_image_path.clone(),
+        pixel_size: request.pixel_size,
+        settings_revision: request.settings_revision,
         icon,
     }
 }
@@ -516,7 +693,12 @@ fn window_icon(window: TrackedWindowKey, pixel_size: u32) -> Option<RasterIcon> 
         .flatten()
 }
 
-fn publish(results: Vec<IconHydrationResult>, shared: &SharedState) {
+fn publish(
+    results: Vec<IconHydrationResult>,
+    shared: &SharedState,
+    consumer: Consumer,
+    epoch: u64,
+) {
     if results.is_empty() || shared.stopping.load(Ordering::Acquire) {
         return;
     }
@@ -527,7 +709,20 @@ fn publish(results: Vec<IconHydrationResult>, shared: &SharedState) {
     if switcher_results != 0 {
         METRICS.record_switcher_results(switcher_results);
     }
-    lock(&shared.state).results.extend(results);
+    let mut state = lock(&shared.state);
+    if state.epochs[consumer as usize] != epoch {
+        return;
+    }
+    for result in results {
+        state
+            .results
+            .retain(|existing| !same_request(existing, &result));
+        if state.results.len() == MAX_PENDING_RESULTS {
+            let _discarded = state.results.pop_front();
+        }
+        state.results.push_back(result);
+    }
+    drop(state);
     if !shared.wake_queued.swap(true, Ordering::AcqRel)
         && unsafe {
             PostThreadMessageW(
@@ -540,6 +735,39 @@ fn publish(results: Vec<IconHydrationResult>, shared: &SharedState) {
         .is_err()
     {
         shared.wake_queued.store(false, Ordering::Release);
+    }
+}
+
+fn same_request(left: &IconHydrationResult, right: &IconHydrationResult) -> bool {
+    match (left, right) {
+        (IconHydrationResult::Launcher(left), IconHydrationResult::Launcher(right)) => {
+            left.generation == right.generation
+                && left.identity == right.identity
+                && left.pixel_size == right.pixel_size
+                && left.settings_revision == right.settings_revision
+        }
+        (IconHydrationResult::Switcher(left), IconHydrationResult::Switcher(right)) => {
+            left.generation == right.generation
+                && left.window == right.window
+                && left.pixel_size == right.pixel_size
+                && left.settings_revision == right.settings_revision
+        }
+        (IconHydrationResult::Dock(left), IconHydrationResult::Dock(right)) => {
+            left.identity == right.identity
+                && left.window == right.window
+                && left.executable_path == right.executable_path
+                && left.presentation_icon == right.presentation_icon
+                && left.custom_image_path == right.custom_image_path
+                && left.pixel_size == right.pixel_size
+        }
+        (IconHydrationResult::Settings(left), IconHydrationResult::Settings(right)) => {
+            left.identity == right.identity
+                && left.icon_source == right.icon_source
+                && left.custom_image_path == right.custom_image_path
+                && left.pixel_size == right.pixel_size
+                && left.settings_revision == right.settings_revision
+        }
+        _ => false,
     }
 }
 

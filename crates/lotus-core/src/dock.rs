@@ -7,7 +7,7 @@ use crate::application::{
     WindowApplicationAssignments, is_reliable_application_identity, normalized_path,
 };
 use crate::settings::PinnedApp;
-use crate::window::WindowInfo;
+use crate::window::{TrackedWindowKey, WindowInfo};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DockItem {
@@ -21,6 +21,8 @@ pub struct DockItem {
     pub presentation_icon: ApplicationPresentationIcon,
     pub app_user_model_id: Option<String>,
     pub is_pinned: bool,
+    pub pin_eligible: bool,
+    pub pin_source: Option<TrackedWindowKey>,
     pub windows: Vec<WindowInfo>,
 }
 
@@ -147,6 +149,8 @@ pub fn project_dock(windows: &[WindowInfo], settings: DockProjection<'_>) -> Vec
                 }),
             executable_path,
             is_pinned: true,
+            pin_eligible: true,
+            pin_source: None,
             windows: matches,
         });
     }
@@ -194,9 +198,16 @@ fn append_unpinned(
 
     items.extend(groups.into_iter().map(|(key, registered_index, windows)| {
         let registered = registered_index.and_then(|index| applications.get(index));
-        let unregistered_launch = windows.iter().find_map(|window| {
+        let pin_source = registered_index.is_none().then(|| {
+            windows
+                .iter()
+                .find(|window| assignments.can_pin(window.key()))
+                .map(WindowInfo::key)
+        });
+        let pin_source = pin_source.flatten();
+        let unregistered_launch = pin_source.and_then(|key| {
             let ApplicationResolution::Unregistered { launch, .. } =
-                assignments.by_window.get(&window.key())?
+                assignments.by_window.get(&key)?
             else {
                 return None;
             };
@@ -243,6 +254,8 @@ fn append_unpinned(
                 }),
             executable_path,
             is_pinned: false,
+            pin_eligible: registered_index.is_some() || pin_source.is_some(),
+            pin_source,
             windows,
         }
     }));
@@ -258,10 +271,9 @@ fn window_key(
             | ApplicationResolution::Associated { key }
             | ApplicationResolution::Unregistered { key, .. },
         ) => key.clone(),
-        Some(
-            ApplicationResolution::Prevented | ApplicationResolution::Ambiguous { .. },
-        )
-        | None => ApplicationKey::Ephemeral(window.key()),
+        Some(ApplicationResolution::Ambiguous { .. }) | None => {
+            ApplicationKey::Ephemeral(window.key())
+        }
     }
 }
 
@@ -279,10 +291,9 @@ fn window_assignment(
             ApplicationResolution::Associated { key }
             | ApplicationResolution::Unregistered { key, .. },
         ) => (key.clone(), None),
-        Some(
-            ApplicationResolution::Prevented | ApplicationResolution::Ambiguous { .. },
-        )
-        | None => (ApplicationKey::Ephemeral(window.key()), None),
+        Some(ApplicationResolution::Ambiguous { .. }) | None => {
+            (ApplicationKey::Ephemeral(window.key()), None)
+        }
     }
 }
 

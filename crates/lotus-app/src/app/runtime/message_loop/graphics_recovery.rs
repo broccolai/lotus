@@ -28,6 +28,7 @@ impl MessageLoop<'_, '_> {
         if self.graphics.health() != GraphicsDeviceHealth::Lost {
             return;
         }
+        self.auxiliary.mark_presentations_unavailable();
         match self.graphics_recovery.schedule() {
             GraphicsRecoverySchedule::Scheduled { attempt } => {
                 lotus_windows::diagnostics::record_diagnostic(
@@ -82,8 +83,16 @@ impl MessageLoop<'_, '_> {
     }
 
     fn recover_surfaces(&mut self) -> Result<(), AppError> {
-        let device = self.graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-        self.primary_dock.recover_surface(device)?;
-        self.auxiliary.recover_surfaces(device)
+        {
+            let device = self.graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
+            self.primary_dock.recover_surface(device)?;
+            self.auxiliary.recover_surfaces(device)?;
+        }
+        self.auxiliary.prepare_input_presentations(
+            self.primary_dock.window(),
+            self.dock_model,
+            self.graphics,
+        );
+        Ok(())
     }
 }

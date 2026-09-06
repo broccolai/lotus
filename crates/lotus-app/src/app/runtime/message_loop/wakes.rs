@@ -5,6 +5,7 @@ use lotus_windows::taskbar_badges::is_taskbar_badge_wake;
 use lotus_windows::update::is_update_wake;
 
 use super::MessageLoop;
+use super::timing::MessageTiming;
 use crate::app::runtime::{present_dock_change, search_events, update_events};
 use crate::app::{AppError, RuntimeServices};
 
@@ -38,7 +39,13 @@ impl WakeEvents {
 }
 
 impl MessageLoop<'_, '_> {
-    pub(super) fn process_wakes(&mut self, wakes: WakeEvents) -> Result<bool, AppError> {
+    pub(super) fn process_wakes(
+        &mut self,
+        wakes: WakeEvents,
+        timing: &mut MessageTiming,
+    ) -> Result<bool, AppError> {
+        let wake_started = std::time::Instant::now();
+        let mut specialized = std::time::Duration::ZERO;
         let mut changed = false;
         let mut presented_size = self.dock_model.scene().desired_size();
         if wakes.update {
@@ -69,6 +76,7 @@ impl MessageLoop<'_, '_> {
                 self.primary_dock,
                 self.graphics,
                 self.window_tracker.current_windows(),
+                self.window_tracker.window_revision(),
                 self.dock_model,
                 self.auxiliary,
                 &self.runtime.settings_persistence,
@@ -79,7 +87,14 @@ impl MessageLoop<'_, '_> {
             }
         }
         if wakes.icon_hydration {
+            let started = std::time::Instant::now();
             let hydration = self.auxiliary.drain_hydrated_icons(self.dock_model)?;
+            let elapsed = started.elapsed();
+            timing.record(
+                lotus_windows::responsiveness::UiMessagePhase::Asset,
+                elapsed,
+            );
+            specialized = specialized.saturating_add(elapsed);
             if hydration.dock_presentation_changed() {
                 self.render_dock();
             }
@@ -96,6 +111,10 @@ impl MessageLoop<'_, '_> {
             changed = true;
         }
 
+        timing.record(
+            lotus_windows::responsiveness::UiMessagePhase::Wake,
+            wake_started.elapsed().saturating_sub(specialized),
+        );
         Ok(changed)
     }
 

@@ -14,15 +14,16 @@ use lotus_ui::embedded_icon::EmbeddedIcon;
 use lotus_ui::frame::{FramePass, ScheduledSurface};
 use lotus_ui::geometry::NonZeroPhysicalSize;
 use lotus_ui::icon::RasterIcon;
+use lotus_ui::presentation::Presentation;
 use lotus_ui::theme::Theme;
 use lotus_windows::dialog::show_error;
 use lotus_windows::graphics::switcher_surface::SwitcherCompositionSurfaceState;
 use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError};
 use lotus_windows::icon_hydrator::{SwitcherIconClient, SwitcherIconRequest};
 use lotus_windows::interaction::PointerCursor;
-use lotus_windows::search_catalog::ApplicationCatalogSnapshot;
 use lotus_windows::window::{SwitcherEvent, SwitcherWindow};
 
+use crate::app::applications::ApplicationView;
 use crate::app::surface_render::frame_outcome;
 use crate::app::visuals::{DockIcon, SwitcherHitTarget, SwitcherItem, SwitcherScene};
 use crate::app::{AppError, activation};
@@ -51,15 +52,10 @@ pub(super) struct SwitcherRuntime {
     icon_settings_revision: u64,
     retained_icons: BTreeMap<TrackedWindowKey, RetainedSwitcherIcon>,
     pub(super) name_overrides: BTreeMap<String, String>,
-    application_catalog: Arc<ApplicationCatalogSnapshot>,
-    application_assignments: WindowApplicationAssignments,
+    applications: Arc<ApplicationView>,
     recent_windows: RecentOrder<TrackedWindowKey>,
     theme: Theme,
-}
-
-pub(super) struct SwitcherApplicationContext<'a> {
-    pub catalog: Arc<ApplicationCatalogSnapshot>,
-    pub assignments: &'a WindowApplicationAssignments,
+    presentation_ready: bool,
 }
 
 impl SwitcherRuntime {
@@ -77,6 +73,7 @@ impl SwitcherRuntime {
         settings: &DockSettings,
         theme: &Theme,
         icon_hydrator: SwitcherIconClient,
+        applications: Arc<ApplicationView>,
     ) -> Self {
         Self {
             window,
@@ -89,11 +86,32 @@ impl SwitcherRuntime {
             icon_settings_revision: 0,
             retained_icons: BTreeMap::new(),
             name_overrides: BTreeMap::new(),
-            application_catalog: Arc::new(ApplicationCatalogSnapshot::new(0, Vec::new())),
-            application_assignments: WindowApplicationAssignments::default(),
+            applications,
             recent_windows: RecentOrder::default(),
             theme: *theme,
+            presentation_ready: false,
         }
+    }
+
+    pub(super) fn prepare_presentation(
+        &mut self,
+        graphics: &mut DeviceState,
+    ) -> Result<(), AppError> {
+        if self.surface.is_some() {
+            return Ok(());
+        }
+
+        let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
+        let size = NonZeroPhysicalSize::new(1, 1).expect("warm-up size is nonzero");
+        self.surface = Some(ScheduledSurface::new(
+            SwitcherCompositionSurfaceState::create(device, self.window.handle(), size)?,
+        ));
+        self.presentation_ready = false;
+        Ok(())
+    }
+
+    pub(super) const fn presentation_ready(&self) -> bool {
+        self.presentation_ready
     }
 
     pub(super) fn begin(
@@ -102,7 +120,7 @@ impl SwitcherRuntime {
         foreground: Option<lotus_core::window::WindowId>,
         windows: &[WindowInfo],
         settings: &DockSettings,
-        applications: SwitcherApplicationContext<'_>,
+        applications: Arc<ApplicationView>,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         let windows = windows
@@ -124,9 +142,7 @@ impl SwitcherRuntime {
             return Err(AppError::GraphicsUnavailable);
         }
         self.name_overrides = settings.application_name_overrides.clone();
-        self.application_catalog = applications.catalog;
-        self.application_assignments
-            .clone_from(applications.assignments);
+        self.applications = applications;
         self.icon_settings = settings.clone();
         self.theme = theme_for(settings);
         self.session = Some(session);
@@ -168,13 +184,10 @@ impl SwitcherRuntime {
     pub(super) fn reconcile_windows(
         &mut self,
         windows: &[WindowInfo],
-        application_catalog: Arc<ApplicationCatalogSnapshot>,
-        application_assignments: &WindowApplicationAssignments,
+        applications: Arc<ApplicationView>,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        self.application_catalog = application_catalog;
-        self.application_assignments
-            .clone_from(application_assignments);
+        self.applications = applications;
         let live_windows = windows.iter().map(WindowInfo::key).collect::<BTreeSet<_>>();
         self.retained_icons
             .retain(|window, _| live_windows.contains(window));
@@ -309,8 +322,8 @@ impl SwitcherRuntime {
         self.session = None;
     }
 
-    pub(super) fn drain_events(&mut self) -> Vec<SwitcherEvent> {
-        self.window.drain_events().collect()
+    pub(super) fn drain_events_up_to(&mut self, limit: usize) -> Vec<SwitcherEvent> {
+        self.window.drain_events_up_to(limit).collect()
     }
 
     pub(super) fn handle_window_event(
@@ -400,20 +413,11 @@ impl SwitcherRuntime {
             .items()
             .iter()
             .map(|window| {
-                let (presentation_icon, custom_image_path) = switcher_icon_sources(
-                    window,
-                    &self.icon_settings,
-                    &self.application_catalog,
-                    &self.application_assignments,
-                );
+                let (presentation_icon, custom_image_path) =
+                    switcher_icon_sources(window, &self.icon_settings, &self.applications);
                 SwitcherItem {
                     key: window.key(),
-                    title: switcher_title(
-                        window,
-                        &self.name_overrides,
-                        &self.application_catalog,
-                        &self.application_assignments,
-                    ),
+                    title: switcher_title(window, &self.name_overrides, &self.applications),
                     icon: self
                         .retained_icons
                         .get(&window.key())
@@ -517,6 +521,7 @@ impl SwitcherRuntime {
         &mut self,
         device: &GraphicsDevice,
     ) -> Result<(), AppError> {
+        self.presentation_ready = false;
         if let Some(surface) = &mut self.surface {
             surface.value_mut().recover(device)?;
         }
@@ -529,18 +534,34 @@ impl SwitcherRuntime {
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         if self.session.is_none() {
-            if let Some(surface) = &mut self.surface {
+            let Some(surface) = &mut self.surface else {
+                return Ok(());
+            };
+            if self.presentation_ready && !surface.is_dirty() {
                 surface.stop_animation();
+                return Ok(());
             }
-            return Ok(());
+
+            let presentation = Presentation::new(self.theme.canvas.with_alpha(0.0));
+            let result = pass.render(surface, |surface| {
+                frame_outcome(graphics, surface.render_scene(&presentation))
+            });
+            self.presentation_ready =
+                result.is_ok() && graphics.ready().is_some() && !surface.is_dirty();
+            return result;
         }
-        let (Some(scene), Some(surface)) = (&self.scene, &mut self.surface) else {
-            return Ok(());
-        };
+        let scene = self.scene.as_ref().ok_or(AppError::InvalidSwitcherScene)?;
+        let surface = self
+            .surface
+            .as_mut()
+            .ok_or(AppError::InvalidSwitcherScene)?;
         let presentation = scene.presentation(EmbeddedIcon::FluentDismiss);
-        pass.render(surface, |surface| {
+        let result = pass.render(surface, |surface| {
             frame_outcome(graphics, surface.render_scene(&presentation))
-        })
+        });
+        self.presentation_ready =
+            result.is_ok() && graphics.ready().is_some() && !surface.is_dirty();
+        result
     }
 }
 
@@ -555,12 +576,8 @@ impl SwitcherRuntime {
             .visible_range_with_margin(2)
             .filter_map(|index| {
                 let window = session.items().get(index)?;
-                let (presentation_icon, custom_image_path) = switcher_icon_sources(
-                    window,
-                    &self.icon_settings,
-                    &self.application_catalog,
-                    &self.application_assignments,
-                );
+                let (presentation_icon, custom_image_path) =
+                    switcher_icon_sources(window, &self.icon_settings, &self.applications);
                 if self.retained_icons.get(&window.key()).is_some_and(|icon| {
                     icon.matches(
                         pixel_size,
@@ -604,14 +621,14 @@ impl RetainedSwitcherIcon {
 fn switcher_icon_sources(
     window: &WindowInfo,
     settings: &DockSettings,
-    catalog: &ApplicationCatalogSnapshot,
-    assignments: &WindowApplicationAssignments,
+    applications: &ApplicationView,
 ) -> (Option<ApplicationPresentationIcon>, Option<PathBuf>) {
-    let presentation_icon = assignments
+    let presentation_icon = applications
+        .assignments()
         .presentation_by_window
         .get(&window.key())
         .map(|presentation| presentation.icon.clone());
-    let identity = window_override_identity(window, catalog, assignments);
+    let identity = window_override_identity(window, applications);
     let custom_image_path =
         crate::app::icon_override::application_icon_path_for_identity(settings, &identity);
     (presentation_icon, custom_image_path)
@@ -626,12 +643,12 @@ fn sampled_icon_size(dpi: u32) -> u32 {
 fn switcher_title(
     window: &WindowInfo,
     overrides: &BTreeMap<String, String>,
-    catalog: &ApplicationCatalogSnapshot,
-    assignments: &WindowApplicationAssignments,
+    applications: &ApplicationView,
 ) -> String {
-    let key = window_application_key(window, assignments);
+    let key = window_application_key(window, applications.assignments());
     if let Some(name) = overrides.iter().find_map(|(identifier, display_name)| {
-        catalog
+        applications
+            .catalog()
             .key_for_external_identifier(identifier)
             .is_some_and(|candidate| candidate == key)
             .then_some(display_name.trim())
@@ -639,7 +656,8 @@ fn switcher_title(
     }) {
         return name.to_owned();
     }
-    assignments
+    applications
+        .assignments()
         .presentation_by_window
         .get(&window.key())
         .map_or_else(
@@ -666,22 +684,21 @@ fn window_application_key(
             | ApplicationResolution::Associated { key }
             | ApplicationResolution::Unregistered { key, .. },
         ) => key.clone(),
-        Some(
-            ApplicationResolution::Prevented | ApplicationResolution::Ambiguous { .. },
-        )
-        | None => ApplicationKey::Ephemeral(window.key()),
+        Some(ApplicationResolution::Ambiguous { .. }) | None => {
+            ApplicationKey::Ephemeral(window.key())
+        }
     }
 }
 
 fn window_override_identity(
     window: &WindowInfo,
-    catalog: &ApplicationCatalogSnapshot,
-    assignments: &WindowApplicationAssignments,
+    applications: &ApplicationView,
 ) -> ApplicationIdentity {
-    let key = window_application_key(window, assignments);
-    if let Some(application) = catalog
+    let key = window_application_key(window, applications.assignments());
+    if let Some(application) = applications
+        .catalog()
         .application_index_for_key(&key)
-        .and_then(|index| catalog.application(index))
+        .and_then(|index| applications.catalog().application(index))
     {
         return application.application_identity();
     }

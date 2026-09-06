@@ -3,10 +3,10 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryIter};
-use std::time::{Duration, SystemTime};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use atomic_write_file::AtomicWriteFile;
 pub use lotus_core::settings::UpdateChannel;
@@ -27,6 +27,8 @@ const STAGING_MARKER_NAME: &str = "lotus-update.staged";
 const POST_INSTALL_HEALTH_MARKER_NAME: &str = "lotus-health.pending";
 const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{EB208C8B-11C0-4B22-93A9-8113140647AA}_is1";
 const STALE_STAGING_AGE: Duration = Duration::from_hours(24);
+
+static UPDATE_JOURNAL_LOCK: Mutex<()> = Mutex::new(());
 
 pub enum UpdateResult {
     Checked(Result<UpdateStatus, UpdateError>),
@@ -121,6 +123,8 @@ impl Default for UpdateChecker {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct UpdateJournal {
+    #[serde(default)]
+    attempt_id: String,
     target_version: String,
     source_executable: PathBuf,
     staging_directory: PathBuf,
@@ -131,7 +135,14 @@ struct UpdateJournal {
 enum UpdatePhase {
     Prepared,
     InstallerRunning,
+    RuntimeReady,
     Failed,
+}
+
+#[derive(Clone, Debug)]
+pub struct PostInstallHealthCheck {
+    attempt_id: String,
+    expected_version: String,
 }
 
 pub fn is_installed() -> Result<bool, UpdateInstallError> {
@@ -162,7 +173,10 @@ pub fn interrupted_install_health_pending() -> Result<bool, UpdateInstallError> 
         return Ok(false);
     };
     validate_journal(&journal)?;
-    if !matches!(journal.phase, UpdatePhase::InstallerRunning) {
+    if !matches!(
+        journal.phase,
+        UpdatePhase::InstallerRunning | UpdatePhase::RuntimeReady
+    ) {
         return Ok(false);
     }
 
@@ -171,6 +185,11 @@ pub fn interrupted_install_health_pending() -> Result<bool, UpdateInstallError> 
 }
 
 pub fn verify_post_install_target() -> Result<(), UpdateInstallError> {
+    let _journal_guard = lock_update_journal();
+    verify_post_install_target_unlocked()
+}
+
+fn verify_post_install_target_unlocked() -> Result<(), UpdateInstallError> {
     let Some(journal) = read_journal()? else {
         return Ok(());
     };
@@ -191,12 +210,15 @@ pub fn launch_installer(
     staged: &StagedUpdate,
     mode: crate::startup::StartupMode,
 ) -> Result<(), UpdateInstallError> {
+    let _journal_guard = try_lock_update_journal()?;
+
     if !mode.allows_update_operations() {
         return Err(UpdateInstallError::UpdatesUnavailable);
     }
     validate_staging_directory(&staged.directory)?;
     let source = std::env::current_exe().map_err(UpdateInstallError::CurrentExecutable)?;
     let journal = UpdateJournal {
+        attempt_id: update_attempt_id(&staged.version),
         target_version: staged.version.clone(),
         source_executable: source.clone(),
         staging_directory: staged.directory.clone(),
@@ -223,6 +245,8 @@ pub fn launch_installer(
 }
 
 pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
+    let _journal_guard = lock_update_journal();
+
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let Some(installer) = helper_target(&arguments, INSTALL_UPDATE_ARGUMENT)? else {
         return Ok(false);
@@ -256,6 +280,8 @@ pub fn run_helper_if_requested() -> Result<bool, UpdateInstallError> {
 pub fn recover_startup(
     post_install_health: bool,
 ) -> Result<Option<String>, UpdateInstallError> {
+    let _journal_guard = lock_update_journal();
+
     if post_install_health {
         return Ok(None);
     }
@@ -263,6 +289,11 @@ pub fn recover_startup(
         return Ok(None);
     };
     validate_journal(&journal)?;
+    if matches!(journal.phase, UpdatePhase::RuntimeReady) {
+        cleanup_journal_staging(&journal)?;
+        clear_journal()?;
+        return Ok(None);
+    }
     if matches!(journal.phase, UpdatePhase::Failed) {
         return Ok(None);
     }
@@ -281,6 +312,8 @@ pub fn recover_startup(
 pub fn recover_failed_update_notice(
     mode: crate::startup::StartupMode,
 ) -> Result<Option<String>, UpdateInstallError> {
+    let _journal_guard = lock_update_journal();
+
     if !mode.allows_update_operations() {
         return Ok(None);
     }
@@ -303,41 +336,108 @@ pub fn recover_failed_update_notice(
     Ok(diagnostic)
 }
 
-pub fn complete_post_install_health(
-    success: bool,
-    diagnostic: &str,
+pub fn prepare_post_install_health() -> Result<PostInstallHealthCheck, UpdateInstallError> {
+    let _journal_guard = lock_update_journal();
+    verify_post_install_target_unlocked()?;
+    let expected_version = env!("CARGO_PKG_VERSION").to_owned();
+    let marker = post_install_health_marker()?;
+    if marker.exists() {
+        let marker_version =
+            fs::read_to_string(&marker).map_err(UpdateInstallError::HealthMarkerRead)?;
+        let marker_version = marker_version.trim();
+        if marker_version != expected_version {
+            return Err(UpdateInstallError::TargetVersionMismatch {
+                expected: marker_version.to_owned(),
+                actual: expected_version,
+            });
+        }
+    }
+    let attempt_id = read_journal()?
+        .map(|journal| journal.attempt_id)
+        .unwrap_or_default();
+    Ok(PostInstallHealthCheck {
+        attempt_id,
+        expected_version,
+    })
+}
+
+pub fn fail_post_install_health(diagnostic: &str) -> Result<(), UpdateInstallError> {
+    let _journal_guard = lock_update_journal();
+
+    if let Some(mut journal) = read_journal()? {
+        validate_journal(&journal)?;
+        journal.phase = UpdatePhase::Failed;
+        journal.diagnostic = Some(diagnostic.to_owned());
+        write_journal(&journal)?;
+    }
+    Ok(())
+}
+
+pub fn complete_post_install_runtime_readiness(
+    health: PostInstallHealthCheck,
 ) -> Result<(), UpdateInstallError> {
-    if success {
-        verify_post_install_target()?;
+    std::thread::Builder::new()
+        .name("lotus-update-readiness".to_owned())
+        .spawn(move || {
+            if let Err(error) = commit_post_install_runtime_readiness(&health) {
+                crate::diagnostics::record_error(
+                    "update.runtime_readiness_journal",
+                    &error,
+                );
+                return;
+            }
+            crate::diagnostics::record_message(
+                "update.runtime_readiness",
+                "the installed runtime produced a usable frame and made UI progress",
+            );
+        })
+        .map(|_| ())
+        .map_err(UpdateInstallError::RuntimeReadinessThread)
+}
+
+fn commit_post_install_runtime_readiness(
+    health: &PostInstallHealthCheck,
+) -> Result<(), UpdateInstallError> {
+    let _journal_guard = lock_update_journal();
+
+    if health.expected_version != env!("CARGO_PKG_VERSION") {
+        return Err(UpdateInstallError::StaleHealthCompletion);
     }
     if let Some(mut journal) = read_journal()? {
         validate_journal(&journal)?;
-        if success {
-            let installed =
-                std::env::current_exe().map_err(UpdateInstallError::CurrentExecutable)?;
-            if !paths_equal(&journal.source_executable, &installed) {
-                crate::diagnostics::record_message(
-                    "update.portable_migration",
-                    &format!(
-                        "Lotus installed version {} while preserving settings from {}.",
-                        journal.target_version,
-                        journal.source_executable.display()
-                    ),
-                );
-            }
-            cleanup_journal_staging(&journal)?;
-            clear_journal()?;
-        } else {
-            journal.phase = UpdatePhase::Failed;
-            journal.diagnostic = Some(diagnostic.to_owned());
-            write_journal(&journal)?;
+        if journal.target_version != health.expected_version
+            || journal.attempt_id != health.attempt_id
+        {
+            return Err(UpdateInstallError::StaleHealthCompletion);
         }
+        let installed =
+            std::env::current_exe().map_err(UpdateInstallError::CurrentExecutable)?;
+        if !paths_equal(&journal.source_executable, &installed) {
+            crate::diagnostics::record_message(
+                "update.portable_migration",
+                &format!(
+                    "Lotus installed version {} while preserving settings from {}.",
+                    journal.target_version,
+                    journal.source_executable.display()
+                ),
+            );
+        }
+        journal.phase = UpdatePhase::RuntimeReady;
+        journal.diagnostic = None;
+        write_journal(&journal)?;
+        cleanup_journal_staging(&journal)?;
+        clear_journal()?;
+    } else if !health.attempt_id.is_empty() {
+        return Err(UpdateInstallError::StaleHealthCompletion);
     }
-    if success {
-        let marker = post_install_health_marker()?;
-        if marker.exists() {
-            fs::remove_file(marker).map_err(UpdateInstallError::HealthMarkerRemove)?;
+    let marker = post_install_health_marker()?;
+    if marker.exists() {
+        let marker_version =
+            fs::read_to_string(&marker).map_err(UpdateInstallError::HealthMarkerRead)?;
+        if marker_version.trim() != health.expected_version {
+            return Err(UpdateInstallError::StaleHealthCompletion);
         }
+        fs::remove_file(marker).map_err(UpdateInstallError::HealthMarkerRemove)?;
     }
     Ok(())
 }
@@ -357,6 +457,8 @@ pub fn cleanup_stale_staging() -> Vec<UpdateInstallError> {
 }
 
 pub fn cleanup_requested_staging_directory(path: &Path) -> Result<(), UpdateInstallError> {
+    let _journal_guard = lock_update_journal();
+
     let journal = read_journal()?.ok_or(UpdateInstallError::MissingJournal)?;
     validate_journal(&journal)?;
     let directory = named_staging_directory_from_path(path)?;
@@ -467,6 +569,15 @@ fn local_app_data() -> Result<PathBuf, UpdateInstallError> {
         .map(PathBuf::from)
         .ok_or(UpdateInstallError::MissingLocalAppData)
 }
+
+fn update_attempt_id(version: &str) -> String {
+    let created = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{version}-{}-{created}", std::process::id())
+}
+
 fn journal_path() -> Result<PathBuf, UpdateInstallError> {
     local_app_data().map(|directory| directory.join("Lotus").join(UPDATE_STATE_NAME))
 }
@@ -594,6 +705,20 @@ fn remove_staging_directory(directory: &Path) -> Result<(), UpdateInstallError> 
         fs::remove_dir_all(directory).map_err(UpdateInstallError::Cleanup)?;
     }
     Ok(())
+}
+
+fn lock_update_journal() -> MutexGuard<'static, ()> {
+    UPDATE_JOURNAL_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn try_lock_update_journal() -> Result<MutexGuard<'static, ()>, UpdateInstallError> {
+    match UPDATE_JOURNAL_LOCK.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::Poisoned(error)) => Ok(error.into_inner()),
+        Err(TryLockError::WouldBlock) => Err(UpdateInstallError::JournalBusy),
+    }
 }
 fn staging_directory_from_path(path: &Path) -> Result<&Path, UpdateInstallError> {
     if has_staging_path_shape(path) {
@@ -764,4 +889,12 @@ pub enum UpdateInstallError {
     JournalRemove(#[source] std::io::Error),
     #[error("Lotus could not clear its post-install health marker: {0}")]
     HealthMarkerRemove(#[source] std::io::Error),
+    #[error("Lotus could not read its post-install health marker: {0}")]
+    HealthMarkerRead(#[source] std::io::Error),
+    #[error("a stale Lotus process tried to complete another update attempt")]
+    StaleHealthCompletion,
+    #[error("Lotus is still finishing the previous update attempt")]
+    JournalBusy,
+    #[error("Lotus could not start its runtime-readiness writer: {0}")]
+    RuntimeReadinessThread(#[source] std::io::Error),
 }

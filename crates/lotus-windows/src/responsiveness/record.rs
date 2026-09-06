@@ -10,6 +10,23 @@ use super::{
 static LAST_SLOW_EVENT_LOG_MS: AtomicU64 = AtomicU64::new(0);
 
 impl ResponsivenessMetrics {
+    pub fn record_icon_source_discovery(&self, duration: Duration) {
+        record_aggregate_duration(
+            duration,
+            &self.icon_source_discovery_calls,
+            &self.icon_source_discovery_total_us,
+            &self.icon_source_discovery_max_us,
+        );
+    }
+
+    pub fn record_icon_raster(&self, duration: Duration) {
+        record_aggregate_duration(
+            duration,
+            &self.icon_raster_calls,
+            &self.icon_raster_total_us,
+            &self.icon_raster_max_us,
+        );
+    }
     pub fn record_input_callback(&self) {
         saturating_add(&self.input_callbacks, 1);
     }
@@ -192,6 +209,37 @@ impl ResponsivenessMetrics {
             .fetch_max(duration_micros(duration), Ordering::Relaxed);
     }
 
+    pub fn record_application_catalog_lock(&self, wait: Duration, hold: Duration) {
+        record_aggregate_duration(
+            wait,
+            &self.application_catalog_lock_calls,
+            &self.application_catalog_lock_wait_total_us,
+            &self.application_catalog_lock_wait_max_us,
+        );
+        let micros = duration_micros(hold);
+        saturating_add(&self.application_catalog_lock_hold_total_us, micros);
+        self.application_catalog_lock_hold_max_us
+            .fetch_max(micros, Ordering::Relaxed);
+    }
+
+    pub fn record_tracked_window_registry_lock(&self, duration: Duration) {
+        record_aggregate_duration(
+            duration,
+            &self.tracked_window_registry_lock_calls,
+            &self.tracked_window_registry_lock_total_us,
+            &self.tracked_window_registry_lock_max_us,
+        );
+    }
+
+    pub fn record_activation(&self, duration: Duration) {
+        record_aggregate_duration(
+            duration,
+            &self.activation_calls,
+            &self.activation_total_us,
+            &self.activation_max_us,
+        );
+    }
+
     pub fn record_window_identity_fact(&self, cached: bool, duration: Duration) {
         let counter = if cached {
             &self.window_identity_fact_hits
@@ -249,9 +297,6 @@ impl ResponsivenessMetrics {
             }
             ApplicationResolution::Unregistered { .. } => {
                 saturating_add(&self.application_resolution_unregistered, 1);
-            }
-            ApplicationResolution::Prevented => {
-                saturating_add(&self.application_resolution_prevented, 1);
             }
         }
     }
@@ -545,4 +590,16 @@ impl ResponsivenessMetrics {
         self.record_cache_remove(class, entries, bytes);
         saturating_add(&self.cache_clears[class.index()], 1);
     }
+}
+
+fn record_aggregate_duration(
+    duration: Duration,
+    calls: &AtomicU64,
+    total_us: &AtomicU64,
+    max_us: &AtomicU64,
+) {
+    let micros = duration_micros(duration);
+    saturating_add(calls, 1);
+    saturating_add(total_us, micros);
+    max_us.fetch_max(micros, Ordering::Relaxed);
 }
