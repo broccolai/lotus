@@ -1,25 +1,16 @@
-use std::error::Error;
-
 use lotus_core::settings::DockSettings;
-use lotus_dock::scene::DockPresenter;
-use lotus_ui::frame::{FramePass, ScheduledSurface};
-use lotus_ui::geometry::NonZeroPhysicalSize;
+use lotus_ui::frame::FramePass;
 use lotus_windows::WindowHandle;
-use lotus_windows::graphics::{
-    CompositionSurfaceState, DeviceState, GraphicsDevice, SurfaceSize,
-};
-use lotus_windows::responsiveness::{LayoutOperation, METRICS};
-use lotus_windows::window::{
-    DockContextRequest, DockEvent, DockReplicaWindow, DockWindow, PointerEvent,
-    PopupAlignment, SignedPoint,
-};
+use lotus_windows::graphics::{DeviceState, GraphicsDevice};
+use lotus_windows::window::{DockReplicaWindow, DockWindow, PopupAlignment, SignedPoint};
 use lotus_windows::window_tracker::WindowTracker;
 
 use crate::app::AppError;
-use crate::app::dock::{popup_overlap, status_popup_center};
-use crate::app::runtime::resize_surface;
-use crate::app::surface_render::frame_outcome;
-use crate::app::visuals::{DockAnchor, DockHitTarget, DockScene, surface_size};
+use crate::app::visuals::{DockHitTarget, DockScene};
+
+mod replica;
+
+use self::replica::{MonitorDock, ReplicaEventDrain};
 
 #[derive(Clone, Copy)]
 pub(super) enum DockAction {
@@ -98,22 +89,13 @@ pub(super) enum MonitorIntegrationHealth {
     Degraded,
 }
 
-struct MonitorDock {
-    window: DockReplicaWindow,
-    surface: ScheduledSurface<CompositionSurfaceState>,
-    scene: DockScene,
-    presenter: DockPresenter,
-}
-
 impl MonitorDocks {
     pub(super) fn owns_window(&self, window: WindowHandle) -> bool {
-        self.docks.iter().any(|dock| dock.window.handle() == window)
+        self.docks.iter().any(|dock| dock.handle() == window)
     }
 
     pub(super) fn has_pending_events(&self) -> bool {
-        self.docks
-            .iter()
-            .any(|dock| dock.window.has_pending_events())
+        self.docks.iter().any(MonitorDock::has_pending_events)
     }
 
     pub(super) const fn new(fullscreen_occlusion_allowed: bool) -> Self {
@@ -223,18 +205,17 @@ impl MonitorDocks {
     }
 
     pub(super) fn has_visible_dock(&self) -> bool {
-        self.docks
-            .iter()
-            .any(|dock| dock.window.is_visible() && !dock.window.is_fullscreen_occluded())
+        self.docks.iter().any(MonitorDock::is_visible)
     }
 
     pub(super) fn diagnostic_surface_masks(&self) -> (bool, bool, bool) {
         self.docks
             .iter()
             .fold((false, false, false), |state, dock| {
+                let (dirty, animating) = dock.diagnostic_surface_state();
                 (
-                    state.0 || dock.surface.is_dirty(),
-                    state.1 || dock.surface.is_animating(),
+                    state.0 || dirty,
+                    state.1 || animating,
                     state.2 || !self.docks.is_empty(),
                 )
             })
@@ -253,7 +234,7 @@ impl MonitorDocks {
 
     pub(super) fn invalidate(&mut self) {
         for replica in &mut self.docks {
-            replica.surface.invalidate();
+            replica.invalidate();
         }
     }
 
@@ -262,7 +243,7 @@ impl MonitorDocks {
         device: &GraphicsDevice,
     ) -> Result<(), AppError> {
         for replica in &mut self.docks {
-            replica.surface.value_mut().recover(device)?;
+            replica.recover_surface(device)?;
         }
         Ok(())
     }
@@ -274,12 +255,9 @@ impl MonitorDocks {
     ) -> Result<(), AppError> {
         for replica in &mut self.docks {
             let fullscreen = self.fullscreen_occlusion_allowed
-                && tracker.fullscreen_on_same_monitor(replica.window.handle());
+                && tracker.fullscreen_on_same_monitor(replica.handle());
             let occluded = settings.hide_when_fullscreen && fullscreen;
-            replica.window.set_fullscreen_occluded(occluded)?;
-            if occluded {
-                replica.surface.stop_animation();
-            }
+            replica.set_fullscreen_occluded(occluded)?;
         }
         Ok(())
     }
@@ -298,47 +276,16 @@ impl MonitorDocks {
             if remaining == 0 {
                 break;
             }
-            let events = replica
-                .window
-                .drain_events_up_to(remaining)
-                .collect::<Vec<_>>();
-            drained += events.len();
-            had_events |= !events.is_empty();
-            for event in events {
-                match event {
-                    DockEvent::Pointer(pointer) => {
-                        if let Some(action) = replica.handle_pointer(pointer) {
-                            actions.push(action);
-                        }
-                    }
-                    DockEvent::ContextMenuRequested(request) => {
-                        if let Some((target, anchor, alignment)) =
-                            replica.popup_target_anchor(request)
-                        {
-                            actions.push(DockAction::Context {
-                                target,
-                                anchor,
-                                alignment,
-                                shift_held: request.shift_held(),
-                            });
-                        }
-                    }
-                    DockEvent::Resized { width, height } => {
-                        if let Some(size) = SurfaceSize::new(width, height) {
-                            resize_surface(graphics, replica.surface.value_mut(), size)?;
-                        }
-                    }
-                    DockEvent::DpiChanged { .. } | DockEvent::PlacementRefreshRequested => {
-                        refresh = true;
-                    }
-                    DockEvent::RenderRequested => {
-                        replica.surface.invalidate();
-                    }
-                    DockEvent::AnimationFrame
-                    | DockEvent::MascotAnimationDeadline
-                    | DockEvent::StatusRefreshRequested => {}
-                }
-            }
+            let ReplicaEventDrain {
+                actions: replica_actions,
+                had_events: replica_had_events,
+                drained_events: replica_drained,
+                topology_refresh_requested,
+            } = replica.drain_events_up_to(graphics, remaining)?;
+            actions.extend(replica_actions);
+            drained += replica_drained;
+            had_events |= replica_had_events;
+            refresh |= topology_refresh_requested;
         }
         if refresh {
             self.mark_topology_dirty();
@@ -373,24 +320,9 @@ impl MonitorDocks {
         let mut docks = Vec::new();
         for (window, replica_input) in windows.into_iter().zip(inputs) {
             let scene = replica_input.scene;
-            let size = scene.desired_size();
-            let physical = NonZeroPhysicalSize::new(size.width(), size.height())
-                .ok_or(AppError::ZeroSizedSurface)?;
-            dock.place_secondary_dock_window(&window, physical, settings)?;
-            lotus_windows::backdrop::apply_dock_settings(window.handle(), settings);
-            let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            let surface = CompositionSurfaceState::create(
-                device,
-                window.handle(),
-                surface_size(size),
-            )?;
-            let replica = MonitorDock {
-                window,
-                surface: ScheduledSurface::new(surface),
-                scene,
-                presenter: DockPresenter::default(),
-            };
-            docks.push(replica);
+            docks.push(MonitorDock::create(
+                dock, window, scene, settings, graphics,
+            )?);
         }
         self.docks = docks;
         self.topology_dirty = false;
@@ -413,21 +345,12 @@ impl MonitorDocks {
         settings: &DockSettings,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        if !replica_inputs_match(
-            self.docks.iter().map(|replica| replica.window.handle()),
-            &inputs,
-        ) {
+        if !replica_inputs_match(self.docks.iter().map(MonitorDock::handle), &inputs) {
             return Err(AppError::InvalidScene);
         }
 
         for (replica, replica_input) in self.docks.iter_mut().zip(inputs) {
-            replica.scene = replica_input.scene;
-            let size = replica.scene.desired_size();
-            let physical = NonZeroPhysicalSize::new(size.width(), size.height())
-                .ok_or(AppError::ZeroSizedSurface)?;
-            dock.place_secondary_dock_window(&replica.window, physical, settings)?;
-            lotus_windows::backdrop::apply_dock_settings(replica.window.handle(), settings);
-            resize_surface(graphics, replica.surface.value_mut(), surface_size(size))?;
+            replica.refresh(dock, replica_input.scene, settings, graphics)?;
         }
         Ok(())
     }
@@ -436,13 +359,13 @@ impl MonitorDocks {
         self.docks
             .iter()
             .map(|replica| MonitorReplicaTarget {
-                dpi: replica.window.dpi(),
-                owner: replica.window.handle(),
+                dpi: replica.dpi(),
+                owner: replica.handle(),
             })
             .collect()
     }
 
-    fn record_recovery_failure<E: Error + 'static>(&mut self, error: &E) {
+    fn record_recovery_failure<E: std::error::Error + 'static>(&mut self, error: &E) {
         self.health = MonitorIntegrationHealth::Degraded;
         lotus_windows::diagnostics::record_error("monitors.recovery_failed", error);
     }
@@ -457,144 +380,3 @@ fn replica_inputs_match(
             .zip(inputs)
             .all(|(owner, input)| owner == input.owner)
 }
-
-impl MonitorDock {
-    fn handle_pointer(&mut self, event: PointerEvent) -> Option<DockAction> {
-        let (action, scene_changed) = match event {
-            PointerEvent::Moved { x, y } => {
-                let target = hit_test(&self.scene, x, y);
-                (None, self.scene.set_hovered(target))
-            }
-            PointerEvent::Left => (None, self.scene.set_hovered(None)),
-            PointerEvent::LeftButtonPressed { x, y } => {
-                let target = hit_test(&self.scene, x, y);
-                (None, self.scene.set_pressed(target))
-            }
-            PointerEvent::LeftButtonReleased { x, y } => {
-                let target = hit_test(&self.scene, x, y);
-                let pressed = self.scene.interaction().pressed;
-                let changed = self.scene.set_pressed(None);
-                let action = if pressed == target {
-                    target.map(|target| DockAction::Activate {
-                        target,
-                        owner: self.window.handle(),
-                        anchor: self.activation_anchor(target, x, y),
-                    })
-                } else {
-                    None
-                };
-                (action, changed)
-            }
-            PointerEvent::Cancelled => (None, self.scene.set_pressed(None)),
-        };
-        if scene_changed {
-            self.surface.invalidate();
-        }
-        action
-    }
-
-    fn activation_anchor(
-        &self,
-        target: DockHitTarget,
-        pointer_x: i32,
-        pointer_y: i32,
-    ) -> Option<SignedPoint> {
-        let (x, y) = if let DockHitTarget::SystemStatus(kind) = target {
-            let size = self.scene.desired_size();
-            let started = Instant::now();
-            let layout = self.scene.layout(size.width(), size.height());
-            METRICS.record_layout(LayoutOperation::MonitorPopup, started.elapsed());
-            let bounds = layout
-                .status_items
-                .iter()
-                .find(|item| item.kind == kind)?
-                .hit_bounds;
-            (
-                i32::try_from(status_popup_center(&layout.status_items)?).ok()?,
-                i32::try_from(bounds.top)
-                    .ok()?
-                    .saturating_add(popup_overlap(self.scene.dpi())),
-            )
-        } else {
-            (pointer_x, pointer_y)
-        };
-        self.window.client_to_screen(SignedPoint { x, y }).ok()
-    }
-
-    fn popup_target_anchor(
-        &self,
-        request: DockContextRequest,
-    ) -> Option<(DockHitTarget, SignedPoint, PopupAlignment)> {
-        let DockContextRequest::Pointer { screen, client, .. } = request else {
-            return None;
-        };
-        let target = hit_test(&self.scene, client.x, client.y)?;
-        let size = self.scene.desired_size();
-        let started = Instant::now();
-        let layout = self.scene.layout(size.width(), size.height());
-        METRICS.record_layout(LayoutOperation::MonitorPopup, started.elapsed());
-        let bounds = match target {
-            DockHitTarget::Item(source_index) => layout
-                .items
-                .iter()
-                .find(|item| item.source_index == source_index)
-                .map(|item| item.bounds)?,
-            DockHitTarget::Jirachi => layout.jirachi,
-            DockHitTarget::Media(_)
-            | DockHitTarget::SystemStatus(_)
-            | DockHitTarget::ShowDesktop => return None,
-        };
-        let (anchor_x, alignment) = match (target, self.scene.anchor()) {
-            (DockHitTarget::Jirachi, DockAnchor::Left) => (0, PopupAlignment::Start),
-            (DockHitTarget::Jirachi, DockAnchor::Right) => {
-                (size.width(), PopupAlignment::End)
-            }
-            _ => (
-                bounds.left.saturating_add(bounds.width / 2),
-                PopupAlignment::Center,
-            ),
-        };
-        let anchor_x = i32::try_from(anchor_x).ok()?;
-        let overlap = i32::try_from((u64::from(self.scene.dpi()) * 6 + 48) / 96).ok()?;
-        let top = i32::try_from(bounds.top).ok()?;
-        Some((
-            target,
-            SignedPoint {
-                x: screen.x.saturating_sub(client.x).saturating_add(anchor_x),
-                y: screen
-                    .y
-                    .saturating_sub(client.y)
-                    .saturating_add(top)
-                    .saturating_add(overlap),
-            },
-            alignment,
-        ))
-    }
-
-    fn render_frame(
-        &mut self,
-        pass: &mut FramePass,
-        graphics: &mut DeviceState,
-    ) -> Result<(), AppError> {
-        let animation_allowed = !self.window.is_fullscreen_occluded();
-        let size = self.scene.desired_size();
-        let (presentation, animating) =
-            self.presenter
-                .present(&self.scene, size.width(), size.height());
-        pass.render(&mut self.surface, |surface| {
-            frame_outcome(graphics, surface.render_scene(&presentation, animating))
-                .map(|frame| frame.with_animation_allowed(animation_allowed))
-        })
-    }
-}
-
-fn hit_test(scene: &DockScene, x: i32, y: i32) -> Option<DockHitTarget> {
-    let x = u32::try_from(x).ok()?;
-    let y = u32::try_from(y).ok()?;
-    let size = scene.desired_size();
-    let started = Instant::now();
-    let target = scene.layout(size.width(), size.height()).hit_test(x, y);
-    METRICS.record_layout(LayoutOperation::MonitorHitTest, started.elapsed());
-    target
-}
-use std::time::Instant;

@@ -50,7 +50,7 @@ impl ModuleHost {
 
     pub(in crate::app) fn has_pending_window_events(&self) -> bool {
         self.launcher.has_pending_events()
-            || self.context_menu.window.has_pending_events()
+            || self.context_menu.has_pending_events()
             || self.status.has_pending_events()
     }
 

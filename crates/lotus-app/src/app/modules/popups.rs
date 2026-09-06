@@ -12,7 +12,7 @@ use crate::app::dock::DockRuntime;
 
 impl ModuleHost {
     pub(in crate::app) fn switcher_owns_window(&self, window: WindowHandle) -> bool {
-        self.switcher.window.handle() == window
+        self.switcher.owns_window(window)
     }
 
     pub(in crate::app) fn record_switcher_foreground(
@@ -60,7 +60,7 @@ impl ModuleHost {
     }
 
     pub(in crate::app) fn has_pending_switcher_events(&self) -> bool {
-        self.switcher.window.has_pending_events()
+        self.switcher.has_pending_events()
     }
 
     pub(in crate::app) fn drain_context_menu_events_up_to(

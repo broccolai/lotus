@@ -1,13 +1,7 @@
 use lotus_core::settings::{DockSettings, WindowPickerStyle};
-use lotus_dock::popup::PopupSymbol;
 use lotus_settings::appearance::theme_for;
-use lotus_ui::embedded_icon::EmbeddedIcon;
-use lotus_ui::frame::{FramePass, ScheduledSurface};
-use lotus_ui::geometry::NonZeroPhysicalSize;
+use lotus_ui::frame::FramePass;
 use lotus_ui::theme::Theme;
-use lotus_windows::dwm_thumbnail::DwmThumbnailHost;
-use lotus_windows::graphics::context_menu_surface::ContextMenuCompositionSurfaceState;
-use lotus_windows::graphics::surface::FrameResult;
 use lotus_windows::graphics::{DeviceState, GraphicsDevice};
 use lotus_windows::window::{
     ContextMenuEvent, ContextMenuWindow, DismissReason, PopupAlignment, SelectionDirection,
@@ -15,15 +9,16 @@ use lotus_windows::window::{
 };
 
 use crate::app::AppError;
-use crate::app::surface_render::frame_outcome;
 use crate::app::visuals::{ContextMenuScene, NativePickerWindow};
 
+mod surface;
+
+use self::surface::ContextMenuSurface;
+
 pub(super) struct ContextMenuRuntime {
-    pub(super) window: ContextMenuWindow,
-    pub(super) scene: ContextMenuScene,
-    pub(super) surface: Option<ScheduledSurface<ContextMenuCompositionSurfaceState>>,
-    pub(super) visible: bool,
-    thumbnails: DwmThumbnailHost,
+    surface: ContextMenuSurface,
+    scene: ContextMenuScene,
+    visible: bool,
     theme: Theme,
     anchor: Option<SignedPoint>,
     alignment: PopupAlignment,
@@ -87,13 +82,13 @@ pub(super) struct PopupEvent {
 }
 
 impl ContextMenuRuntime {
+    pub(super) fn has_pending_events(&self) -> bool {
+        self.surface.has_pending_events()
+    }
+
     pub(super) fn diagnostic_surface_state(&self) -> (bool, bool, bool) {
-        let surface = self.surface.as_ref();
-        (
-            surface.is_some_and(ScheduledSurface::is_dirty),
-            surface.is_some_and(ScheduledSurface::is_animating),
-            self.visible,
-        )
+        let (dirty, animating) = self.surface.diagnostic_state();
+        (dirty, animating, self.visible)
     }
 
     pub(super) fn new(window: ContextMenuWindow, theme: &Theme) -> Result<Self, AppError> {
@@ -101,10 +96,8 @@ impl ContextMenuRuntime {
             .ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(*theme);
         Ok(Self {
-            thumbnails: DwmThumbnailHost::new(window.handle()),
-            window,
+            surface: ContextMenuSurface::new(window),
             scene,
-            surface: None,
             visible: false,
             theme: *theme,
             anchor: None,
@@ -117,10 +110,7 @@ impl ContextMenuRuntime {
     pub(super) fn apply_settings(&mut self, settings: &DockSettings) {
         let _ = self.scene.set_theme(theme_for(settings));
         self.theme = theme_for(settings);
-        lotus_windows::backdrop::apply_context_menu_settings(
-            self.window.handle(),
-            settings,
-        );
+        self.surface.apply_settings(settings);
     }
 
     pub(super) fn open(
@@ -129,7 +119,7 @@ impl ContextMenuRuntime {
         alignment: PopupAlignment,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        let mut scene = ContextMenuScene::system(self.window.dpi())
+        let mut scene = ContextMenuScene::system(self.surface.dpi())
             .ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
@@ -149,7 +139,7 @@ impl ContextMenuRuntime {
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         let mut scene = ContextMenuScene::app(
-            self.window.dpi(),
+            self.surface.dpi(),
             options.identity,
             options.running_windows,
             options.pinned,
@@ -174,7 +164,7 @@ impl ContextMenuRuntime {
         path: String,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        let mut scene = ContextMenuScene::file_location(self.window.dpi(), path)
+        let mut scene = ContextMenuScene::file_location(self.surface.dpi(), path)
             .ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
@@ -192,7 +182,7 @@ impl ContextMenuRuntime {
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         let anchor = self.anchor.ok_or(AppError::InvalidContextMenuScene)?;
-        let mut scene = ContextMenuScene::power(self.window.dpi())
+        let mut scene = ContextMenuScene::power(self.surface.dpi())
             .ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
@@ -208,7 +198,7 @@ impl ContextMenuRuntime {
         windows: Vec<NativePickerWindow>,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        let mut scene = ContextMenuScene::picker(self.window.dpi(), style, windows)
+        let mut scene = ContextMenuScene::picker(self.surface.dpi(), style, windows)
             .ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
@@ -249,11 +239,12 @@ impl ContextMenuRuntime {
             let _ = self.hide();
             return Ok(());
         };
-        let mut scene = ContextMenuScene::picker(self.window.dpi(), style, windows)
+        let mut scene = ContextMenuScene::picker(self.surface.dpi(), style, windows)
             .ok_or(AppError::InvalidContextMenuScene)?;
         let _ = scene.set_theme(self.theme);
         self.scene = scene;
-        self.prepare_surface(anchor, graphics)?;
+        self.surface
+            .prepare(anchor, self.alignment, &mut self.scene, graphics)?;
         self.invalidate();
         Ok(())
     }
@@ -265,74 +256,37 @@ impl ContextMenuRuntime {
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
         self.anchor = Some(anchor);
-        self.prepare_surface(anchor, graphics)?;
+        self.surface
+            .prepare(anchor, self.alignment, &mut self.scene, graphics)?;
         if let ContextMenuSessionTransition::Begin(owner) = session_transition {
             self.session.open(owner);
         }
         self.visible = true;
         self.invalidate();
-        self.window.show();
-        Ok(())
-    }
-
-    fn prepare_surface(
-        &mut self,
-        anchor: SignedPoint,
-        graphics: &mut DeviceState,
-    ) -> Result<(), AppError> {
-        if self.surface.is_none() && graphics.ready().is_none() {
-            return Err(AppError::GraphicsUnavailable);
-        }
-        let mut desired = self.scene.desired_size();
-        let dpi = self.window.prepare_at(anchor, self.alignment, desired)?;
-        if self.scene.set_dpi(dpi) {
-            desired = self.scene.desired_size();
-            let _dpi = self.window.prepare_at(anchor, self.alignment, desired)?;
-        }
-        if let Some(surface) = &mut self.surface {
-            surface.value_mut().resize(desired)?;
-        } else {
-            let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-            self.surface = Some(ScheduledSurface::new(
-                ContextMenuCompositionSurfaceState::create(
-                    device,
-                    self.window.handle(),
-                    desired,
-                )?,
-            ));
-        }
+        self.surface.show();
         Ok(())
     }
 
     pub(super) fn hide(&mut self) -> Option<PopupOwner> {
         if self.visible {
-            self.window.hide();
+            self.surface.hide();
             self.visible = false;
-            self.thumbnails.clear();
             self.anchor = None;
             self.picker_identity = None;
             let _ = self.scene.pointer_left();
-            if let Some(surface) = &mut self.surface {
-                surface.stop_animation();
-            }
         }
         self.session.close()
     }
 
     pub(super) fn invalidate(&mut self) {
-        if let Some(surface) = &mut self.surface {
-            surface.invalidate();
-        }
+        self.surface.invalidate();
     }
 
     pub(super) fn recover_surface(
         &mut self,
         device: &GraphicsDevice,
     ) -> Result<(), AppError> {
-        if let Some(surface) = &mut self.surface {
-            surface.value_mut().recover(device)?;
-        }
-        Ok(())
+        self.surface.recover(device)
     }
 
     pub(super) fn render_frame(
@@ -340,39 +294,17 @@ impl ContextMenuRuntime {
         pass: &mut FramePass,
         graphics: &mut DeviceState,
     ) -> Result<(), AppError> {
-        if !self.visible {
-            if let Some(surface) = &mut self.surface {
-                surface.stop_animation();
-            }
-            return Ok(());
-        }
-        let surface = self
-            .surface
-            .as_mut()
-            .ok_or(AppError::InvalidContextMenuScene)?;
-        pass.render(surface, |surface| {
-            let presentation = self.scene.presentation(popup_asset);
-            let result = surface.render_scene(&presentation);
-            if matches!(&result, Ok(FrameResult::Presented { .. })) {
-                self.thumbnails.reconcile(&self.scene.picker_previews());
-            }
-            frame_outcome(graphics, result).map(|frame| frame.with_animation_allowed(false))
-        })
+        self.surface
+            .render_frame(pass, graphics, &self.scene, self.visible)
     }
 
     pub(super) fn resize(&mut self, width: u32, height: u32) -> Result<(), AppError> {
-        let Some(size) = NonZeroPhysicalSize::new(width, height) else {
-            return Ok(());
-        };
-        if let Some(surface) = &mut self.surface {
-            surface.value_mut().resize(size)?;
-        }
-        Ok(())
+        self.surface.resize(width, height)
     }
 
     pub(super) fn drain_events_up_to(&mut self, limit: usize) -> Vec<PopupEvent> {
-        let generation = self.window.interaction_generation();
-        self.window
+        let generation = self.surface.interaction_generation();
+        self.surface
             .drain_events_up_to(limit)
             .map(|event| PopupEvent { event, generation })
             .collect()
@@ -382,7 +314,7 @@ impl ContextMenuRuntime {
         &mut self,
         event: PopupEvent,
     ) -> Result<ContextMenuEventOutcome, AppError> {
-        if !self.visible || event.generation != self.window.interaction_generation() {
+        if !self.visible || event.generation != self.surface.interaction_generation() {
             return Ok(ContextMenuEventOutcome {
                 invocation: None,
                 closed_owner: None,
@@ -433,7 +365,7 @@ impl ContextMenuRuntime {
                 None
             }
             ContextMenuEvent::DismissRequested(request) => {
-                if self.window.accepts_dismiss(request) {
+                if self.surface.accepts_dismiss(request) {
                     dismissal_reason = Some(request.reason);
                     closed_owner = self.hide();
                 }
@@ -447,9 +379,7 @@ impl ContextMenuRuntime {
             ContextMenuEvent::DpiChanged { dpi } => {
                 if self.scene.set_dpi(dpi) {
                     let desired = self.scene.desired_size();
-                    if let Some(surface) = &mut self.surface {
-                        surface.value_mut().resize(desired)?;
-                    }
+                    self.surface.resize_to_scene(desired)?;
                 }
                 self.invalidate();
                 None
@@ -483,20 +413,5 @@ impl ContextMenuRuntime {
             let _ = self.hide();
         }
         Some(PopupInvocation { action })
-    }
-}
-
-const fn popup_asset(symbol: PopupSymbol) -> EmbeddedIcon {
-    match symbol {
-        PopupSymbol::Power => EmbeddedIcon::FluentPower,
-        PopupSymbol::Lock => EmbeddedIcon::FluentLock,
-        PopupSymbol::Restart => EmbeddedIcon::FluentRestart,
-        PopupSymbol::Settings => EmbeddedIcon::FluentSettings,
-        PopupSymbol::Quit | PopupSymbol::Close => EmbeddedIcon::FluentDismiss,
-        PopupSymbol::Open | PopupSymbol::Image => EmbeddedIcon::FluentOpen,
-        PopupSymbol::Pin => EmbeddedIcon::FluentPin,
-        PopupSymbol::Unpin => EmbeddedIcon::FluentPinOff,
-        PopupSymbol::Previous => EmbeddedIcon::FluentPrevious,
-        PopupSymbol::Next => EmbeddedIcon::FluentNext,
     }
 }

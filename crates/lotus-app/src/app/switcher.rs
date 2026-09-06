@@ -10,64 +10,42 @@ use lotus_core::settings::DockSettings;
 use lotus_core::window::{TrackedWindowKey, WindowInfo};
 use lotus_settings::appearance::theme_for;
 use lotus_switcher::model::{RecentOrder, ReconcileOutcome, SwitcherSession};
-use lotus_ui::embedded_icon::EmbeddedIcon;
-use lotus_ui::frame::{FramePass, ScheduledSurface};
+use lotus_ui::frame::ScheduledSurface;
 use lotus_ui::geometry::NonZeroPhysicalSize;
-use lotus_ui::icon::RasterIcon;
-use lotus_ui::presentation::Presentation;
 use lotus_ui::theme::Theme;
 use lotus_windows::dialog::show_error;
+use lotus_windows::graphics::DeviceState;
 use lotus_windows::graphics::switcher_surface::SwitcherCompositionSurfaceState;
-use lotus_windows::graphics::{DeviceState, GraphicsDevice, SurfaceError};
-use lotus_windows::icon_hydrator::{SwitcherIconClient, SwitcherIconRequest};
+use lotus_windows::icon_hydrator::SwitcherIconClient;
 use lotus_windows::interaction::PointerCursor;
 use lotus_windows::window::{SwitcherEvent, SwitcherWindow};
 
 use crate::app::applications::ApplicationView;
-use crate::app::surface_render::frame_outcome;
-use crate::app::visuals::{DockIcon, SwitcherHitTarget, SwitcherItem, SwitcherScene};
+use crate::app::visuals::{SwitcherHitTarget, SwitcherItem, SwitcherScene};
 use crate::app::{AppError, activation};
+
+mod assets;
+mod surface;
+
+use self::assets::SwitcherAssets;
 
 const SWITCHER_ICON_DIP: u32 = 38;
 const NATIVE_ICON_SAMPLE_SCALE: u32 = 2;
-const MAX_RETAINED_SWITCHER_ICONS: usize = 128;
-
-#[derive(Clone)]
-struct RetainedSwitcherIcon {
-    pixel_size: u32,
-    settings_revision: u64,
-    presentation_icon: Option<ApplicationPresentationIcon>,
-    custom_image_path: Option<PathBuf>,
-    icon: RasterIcon,
-}
 
 pub(super) struct SwitcherRuntime {
-    pub(super) window: SwitcherWindow,
-    pub(super) surface: Option<ScheduledSurface<SwitcherCompositionSurfaceState>>,
-    pub(super) scene: Option<SwitcherScene>,
-    pub(super) session: Option<SwitcherSession<WindowInfo>>,
-    icon_hydrator: SwitcherIconClient,
-    icon_settings: DockSettings,
-    icon_generation: u64,
-    icon_settings_revision: u64,
-    retained_icons: BTreeMap<TrackedWindowKey, RetainedSwitcherIcon>,
-    pub(super) name_overrides: BTreeMap<String, String>,
+    window: SwitcherWindow,
+    surface: Option<ScheduledSurface<SwitcherCompositionSurfaceState>>,
+    presentation_ready: bool,
+    scene: Option<SwitcherScene>,
+    session: Option<SwitcherSession<WindowInfo>>,
+    assets: SwitcherAssets,
+    name_overrides: BTreeMap<String, String>,
     applications: Arc<ApplicationView>,
     recent_windows: RecentOrder<TrackedWindowKey>,
     theme: Theme,
-    presentation_ready: bool,
 }
 
 impl SwitcherRuntime {
-    pub(super) fn diagnostic_surface_state(&self) -> (bool, bool, bool) {
-        let surface = self.surface.as_ref();
-        (
-            surface.is_some_and(ScheduledSurface::is_dirty),
-            surface.is_some_and(ScheduledSurface::is_animating),
-            self.session.is_some(),
-        )
-    }
-
     pub(super) fn new(
         window: SwitcherWindow,
         settings: &DockSettings,
@@ -78,40 +56,15 @@ impl SwitcherRuntime {
         Self {
             window,
             surface: None,
+            presentation_ready: false,
             scene: None,
             session: None,
-            icon_hydrator,
-            icon_settings: settings.clone(),
-            icon_generation: 0,
-            icon_settings_revision: 0,
-            retained_icons: BTreeMap::new(),
+            assets: SwitcherAssets::new(icon_hydrator, settings),
             name_overrides: BTreeMap::new(),
             applications,
             recent_windows: RecentOrder::default(),
             theme: *theme,
-            presentation_ready: false,
         }
-    }
-
-    pub(super) fn prepare_presentation(
-        &mut self,
-        graphics: &mut DeviceState,
-    ) -> Result<(), AppError> {
-        if self.surface.is_some() {
-            return Ok(());
-        }
-
-        let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-        let size = NonZeroPhysicalSize::new(1, 1).expect("warm-up size is nonzero");
-        self.surface = Some(ScheduledSurface::new(
-            SwitcherCompositionSurfaceState::create(device, self.window.handle(), size)?,
-        ));
-        self.presentation_ready = false;
-        Ok(())
-    }
-
-    pub(super) const fn presentation_ready(&self) -> bool {
-        self.presentation_ready
     }
 
     pub(super) fn begin(
@@ -143,32 +96,12 @@ impl SwitcherRuntime {
         }
         self.name_overrides = settings.application_name_overrides.clone();
         self.applications = applications;
-        self.icon_settings = settings.clone();
+        self.assets.settings = settings.clone();
         self.theme = theme_for(settings);
         self.session = Some(session);
-        self.icon_generation = self.icon_generation.wrapping_add(1);
+        self.assets.next_generation();
         self.rebuild_scene(self.window.dpi())?;
-        let size = self
-            .scene
-            .as_ref()
-            .ok_or(AppError::InvalidSwitcherScene)?
-            .desired_size();
-        let dpi = self.window.show_centered(foreground, size)?;
-        if dpi
-            != self
-                .scene
-                .as_ref()
-                .ok_or(AppError::InvalidSwitcherScene)?
-                .dpi()
-        {
-            self.rebuild_scene(dpi)?;
-            let size = self
-                .scene
-                .as_ref()
-                .ok_or(AppError::InvalidSwitcherScene)?
-                .desired_size();
-            let _dpi = self.window.show_centered(foreground, size)?;
-        }
+        self.show_centered_for_scene(foreground)?;
         self.ensure_surface(graphics)?;
         self.request_visible_icons();
         self.invalidate();
@@ -181,6 +114,14 @@ impl SwitcherRuntime {
         }
     }
 
+    pub(super) fn owns_window(&self, window: lotus_windows::WindowHandle) -> bool {
+        self.window.handle() == window
+    }
+
+    pub(super) fn has_pending_events(&self) -> bool {
+        self.window.has_pending_events()
+    }
+
     pub(super) fn reconcile_windows(
         &mut self,
         windows: &[WindowInfo],
@@ -189,8 +130,7 @@ impl SwitcherRuntime {
     ) -> Result<(), AppError> {
         self.applications = applications;
         let live_windows = windows.iter().map(WindowInfo::key).collect::<BTreeSet<_>>();
-        self.retained_icons
-            .retain(|window, _| live_windows.contains(window));
+        self.assets.retain_live_windows(&live_windows);
         self.recent_windows
             .retain(windows.iter().map(WindowInfo::key));
         let Some(session) = &mut self.session else {
@@ -199,7 +139,7 @@ impl SwitcherRuntime {
         let latest = windows
             .iter()
             .filter(|window| {
-                !executable_is_hidden(window, &self.icon_settings.hidden_executables)
+                !executable_is_hidden(window, &self.assets.settings.hidden_executables)
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -220,7 +160,7 @@ impl SwitcherRuntime {
                         "{removed} Alt+Tab entries disappeared during an active session"
                     ),
                 );
-                self.icon_generation = self.icon_generation.wrapping_add(1);
+                self.assets.next_generation();
                 self.rebuild_scene(self.window.dpi())?;
                 self.recenter_visible_window()?;
                 self.ensure_surface(graphics)?;
@@ -228,7 +168,7 @@ impl SwitcherRuntime {
                 self.invalidate();
             }
             ReconcileOutcome::Refreshed => {
-                self.icon_generation = self.icon_generation.wrapping_add(1);
+                self.assets.next_generation();
                 self.rebuild_scene(self.window.dpi())?;
                 self.recenter_visible_window()?;
                 self.ensure_surface(graphics)?;
@@ -240,20 +180,26 @@ impl SwitcherRuntime {
     }
 
     fn recenter_visible_window(&mut self) -> Result<(), AppError> {
+        let foreground = lotus_windows::activation::foreground_window();
+        self.show_centered_for_scene(foreground)
+    }
+
+    fn show_centered_for_scene(
+        &mut self,
+        foreground: Option<lotus_core::window::WindowId>,
+    ) -> Result<(), AppError> {
         let size = self
             .scene
             .as_ref()
             .ok_or(AppError::InvalidSwitcherScene)?
             .desired_size();
-        let foreground = lotus_windows::activation::foreground_window();
         let dpi = self.window.show_centered(foreground, size)?;
-        if self
+        let current_dpi = self
             .scene
             .as_ref()
             .ok_or(AppError::InvalidSwitcherScene)?
-            .dpi()
-            != dpi
-        {
+            .dpi();
+        if dpi != current_dpi {
             self.rebuild_scene(dpi)?;
             let size = self
                 .scene
@@ -316,8 +262,9 @@ impl SwitcherRuntime {
 
     pub(super) fn abandon(&mut self) {
         self.window.hide();
-        self.icon_hydrator.request_switcher(Vec::new());
         self.surface = None;
+        self.presentation_ready = false;
+        self.assets.cancel();
         self.scene = None;
         self.session = None;
     }
@@ -385,14 +332,8 @@ impl SwitcherRuntime {
                 }
             }
             SwitcherEvent::Resized { width, height } => {
-                if let Some(size) = NonZeroPhysicalSize::new(width, height)
-                    && let Some(surface) = &mut self.surface
-                {
-                    match surface.value_mut().resize(size) {
-                        Ok(()) => {}
-                        Err(SurfaceError::DeviceLost(loss)) => graphics.mark_lost(loss),
-                        Err(error) => return Err(error.into()),
-                    }
+                if let Some(size) = NonZeroPhysicalSize::new(width, height) {
+                    self.resize_surface(size, graphics)?;
                 }
             }
             SwitcherEvent::DpiChanged { dpi } => {
@@ -413,23 +354,20 @@ impl SwitcherRuntime {
             .items()
             .iter()
             .map(|window| {
-                let (presentation_icon, custom_image_path) =
-                    switcher_icon_sources(window, &self.icon_settings, &self.applications);
+                let (presentation_icon, custom_image_path) = switcher_icon_sources(
+                    window,
+                    &self.assets.settings,
+                    &self.applications,
+                );
                 SwitcherItem {
                     key: window.key(),
                     title: switcher_title(window, &self.name_overrides, &self.applications),
-                    icon: self
-                        .retained_icons
-                        .get(&window.key())
-                        .filter(|icon| {
-                            icon.matches(
-                                pixel_size,
-                                self.icon_settings_revision,
-                                presentation_icon.as_ref(),
-                                custom_image_path.as_ref(),
-                            )
-                        })
-                        .map(|icon| DockIcon::Raster(icon.icon.clone())),
+                    icon: self.assets.icon(
+                        window.key(),
+                        pixel_size,
+                        presentation_icon.as_ref(),
+                        custom_image_path.as_ref(),
+                    ),
                 }
             })
             .collect();
@@ -445,9 +383,7 @@ impl SwitcherRuntime {
 
     pub(super) fn apply_settings(&mut self, settings: &DockSettings) {
         self.theme = theme_for(settings);
-        self.icon_settings = settings.clone();
-        self.icon_settings_revision = self.icon_settings_revision.wrapping_add(1);
-        self.retained_icons.clear();
+        self.assets.apply_settings(settings);
         lotus_windows::backdrop::apply_popup_settings(self.window.handle(), settings);
         if let Some(scene) = &mut self.scene {
             let _ = scene.set_theme(self.theme);
@@ -459,162 +395,21 @@ impl SwitcherRuntime {
         &mut self,
         results: impl IntoIterator<Item = lotus_windows::icon_hydrator::HydratedSwitcherIcon>,
     ) -> bool {
-        let mut changed = false;
-
-        for result in results {
-            if result.settings_revision != self.icon_settings_revision {
-                continue;
-            }
-            let Some(icon) = result.icon else {
-                continue;
-            };
-            self.retained_icons.insert(
-                result.window,
-                RetainedSwitcherIcon {
-                    pixel_size: result.pixel_size,
-                    settings_revision: result.settings_revision,
-                    presentation_icon: result.presentation_icon,
-                    custom_image_path: result.custom_image_path,
-                    icon: icon.clone(),
-                },
-            );
-            if self.retained_icons.len() > MAX_RETAINED_SWITCHER_ICONS {
-                let _discarded = self.retained_icons.pop_first();
-            }
-            if result.generation == self.icon_generation
-                && let Some(scene) = &mut self.scene
-                && sampled_icon_size(scene.dpi()) == result.pixel_size
-            {
-                changed |= scene.set_icon(result.window, Some(DockIcon::Raster(icon)));
-            }
-        }
+        let changed = self.assets.drain(results, &mut self.scene);
         if changed {
             self.invalidate();
         }
         changed
     }
-
-    pub(super) fn ensure_surface(
-        &mut self,
-        graphics: &mut DeviceState,
-    ) -> Result<(), AppError> {
-        let scene = self.scene.as_ref().ok_or(AppError::InvalidSwitcherScene)?;
-        let size = scene.desired_size();
-        if let Some(surface) = &mut self.surface {
-            surface.value_mut().resize(size)?;
-            return Ok(());
-        }
-        let device = graphics.ready().ok_or(AppError::GraphicsUnavailable)?;
-        self.surface = Some(ScheduledSurface::new(
-            SwitcherCompositionSurfaceState::create(device, self.window.handle(), size)?,
-        ));
-        Ok(())
-    }
-
-    pub(super) fn invalidate(&mut self) {
-        if let Some(surface) = &mut self.surface {
-            surface.invalidate();
-        }
-    }
-
-    pub(super) fn recover_surface(
-        &mut self,
-        device: &GraphicsDevice,
-    ) -> Result<(), AppError> {
-        self.presentation_ready = false;
-        if let Some(surface) = &mut self.surface {
-            surface.value_mut().recover(device)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn render_frame(
-        &mut self,
-        pass: &mut FramePass,
-        graphics: &mut DeviceState,
-    ) -> Result<(), AppError> {
-        if self.session.is_none() {
-            let Some(surface) = &mut self.surface else {
-                return Ok(());
-            };
-            if self.presentation_ready && !surface.is_dirty() {
-                surface.stop_animation();
-                return Ok(());
-            }
-
-            let presentation = Presentation::new(self.theme.canvas.with_alpha(0.0));
-            let result = pass.render(surface, |surface| {
-                frame_outcome(graphics, surface.render_scene(&presentation))
-            });
-            self.presentation_ready =
-                result.is_ok() && graphics.ready().is_some() && !surface.is_dirty();
-            return result;
-        }
-        let scene = self.scene.as_ref().ok_or(AppError::InvalidSwitcherScene)?;
-        let surface = self
-            .surface
-            .as_mut()
-            .ok_or(AppError::InvalidSwitcherScene)?;
-        let presentation = scene.presentation(EmbeddedIcon::FluentDismiss);
-        let result = pass.render(surface, |surface| {
-            frame_outcome(graphics, surface.render_scene(&presentation))
-        });
-        self.presentation_ready =
-            result.is_ok() && graphics.ready().is_some() && !surface.is_dirty();
-        result
-    }
 }
 
 impl SwitcherRuntime {
     fn request_visible_icons(&mut self) {
-        let (Some(session), Some(scene)) = (&self.session, &self.scene) else {
-            self.icon_hydrator.request_switcher(Vec::new());
-            return;
-        };
-        let pixel_size = sampled_icon_size(scene.dpi());
-        let requests = scene
-            .visible_range_with_margin(2)
-            .filter_map(|index| {
-                let window = session.items().get(index)?;
-                let (presentation_icon, custom_image_path) =
-                    switcher_icon_sources(window, &self.icon_settings, &self.applications);
-                if self.retained_icons.get(&window.key()).is_some_and(|icon| {
-                    icon.matches(
-                        pixel_size,
-                        self.icon_settings_revision,
-                        presentation_icon.as_ref(),
-                        custom_image_path.as_ref(),
-                    )
-                }) {
-                    return None;
-                }
-                Some(SwitcherIconRequest {
-                    generation: self.icon_generation,
-                    window: window.key(),
-                    executable_path: window.executable_path.clone(),
-                    presentation_icon,
-                    custom_image_path,
-                    pixel_size,
-                    settings_revision: self.icon_settings_revision,
-                })
-            })
-            .collect();
-        self.icon_hydrator.request_switcher(requests);
-    }
-}
-
-impl RetainedSwitcherIcon {
-    fn matches(
-        &self,
-        pixel_size: u32,
-        settings_revision: u64,
-        presentation_icon: Option<&ApplicationPresentationIcon>,
-        custom_image_path: Option<&PathBuf>,
-    ) -> bool {
-        self.pixel_size == pixel_size
-            && self.settings_revision == settings_revision
-            && self.presentation_icon.as_ref() == presentation_icon
-            && self.custom_image_path.as_ref() == custom_image_path
+        self.assets.request_visible(
+            self.session.as_ref(),
+            self.scene.as_ref(),
+            &self.applications,
+        );
     }
 }
 
