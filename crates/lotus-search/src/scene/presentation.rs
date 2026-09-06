@@ -37,7 +37,7 @@ impl<Asset: Clone> LauncherScene<Asset> {
         self.present_row_states(&mut presentation, &layout);
         self.present_results(&mut presentation, &layout);
         self.present_footer(&mut presentation, &layout);
-        presentation
+        presentation.with_interface_font(theme.interface_font)
     }
 
     fn present_search_mode(

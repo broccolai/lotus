@@ -70,6 +70,13 @@ pub struct CornerRadii {
     pub compact: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InterfaceFont {
+    #[default]
+    Segoe,
+    Fraunces,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theme {
     pub canvas: Color,
@@ -90,6 +97,7 @@ pub struct Theme {
     pub accent_soft: Color,
     pub accent_subtle: Color,
     pub on_accent: Color,
+    pub interface_font: InterfaceFont,
     pub radii: CornerRadii,
 }
 
@@ -132,6 +140,7 @@ impl Theme {
             } else {
                 Color::rgb(0xFF, 0xFF, 0xFF)
             },
+            interface_font: InterfaceFont::Segoe,
             radii: CornerRadii {
                 window,
                 panel: window.clamp(8.0, 12.0),
@@ -148,6 +157,12 @@ impl Theme {
             .canvas
             .blend(white, 0.035)
             .with_alpha(opacity.clamp(0.08, 0.95));
+        self
+    }
+
+    #[must_use]
+    pub const fn with_interface_font(mut self, interface_font: InterfaceFont) -> Self {
+        self.interface_font = interface_font;
         self
     }
 }

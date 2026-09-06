@@ -19,6 +19,7 @@ pub(super) fn render_frame(
         &SettingsAssets {
             lotus: EmbeddedIcon::LotusPixel,
             search: EmbeddedIcon::FluentSearch,
+            dismiss: EmbeddedIcon::FluentDismiss,
         },
         lotus_windows::backdrop::settings_uses_translucent_material(runtime.scene.draft()),
     );

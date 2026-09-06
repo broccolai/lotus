@@ -303,6 +303,7 @@ impl SettingsScene {
                 SettingsControl::SurfacePreset,
                 SettingsControl::AccentPreset,
                 SettingsControl::ForegroundPreset,
+                SettingsControl::InterfaceFont,
                 SettingsControl::Toggle(SettingsToggle::UseAcrylic),
                 SettingsControl::Slider(SettingsSlider::BackgroundOpacity),
                 SettingsControl::Slider(SettingsSlider::CornerRadius),

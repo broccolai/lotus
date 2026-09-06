@@ -1,5 +1,5 @@
 use crate::icon::Icon;
-use crate::theme::Color;
+use crate::theme::{Color, InterfaceFont};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PresentationRect {
@@ -136,9 +136,33 @@ impl<Asset> Presentation<Asset> {
             primitive.translate_y(offset);
         }
     }
+
+    #[must_use]
+    pub fn with_interface_font(mut self, interface_font: InterfaceFont) -> Self {
+        if interface_font == InterfaceFont::Fraunces {
+            for primitive in &mut self.primitives {
+                primitive.apply_interface_font();
+            }
+        }
+        self
+    }
 }
 
 impl<Asset> PresentationPrimitive<Asset> {
+    fn apply_interface_font(&mut self) {
+        let style = match self {
+            Self::Text { style, .. } | Self::TextCaret { style, .. } => style,
+            Self::PushClip { .. }
+            | Self::PopClip
+            | Self::FillRoundedRect { .. }
+            | Self::StrokeRoundedRect { .. }
+            | Self::Icon { .. } => return,
+        };
+        if style.family == FontFamily::Interface {
+            style.family = FontFamily::Brand;
+        }
+    }
+
     fn translate_y(&mut self, offset: f32) {
         let bounds = match self {
             Self::PushClip { .. } | Self::PopClip => return,

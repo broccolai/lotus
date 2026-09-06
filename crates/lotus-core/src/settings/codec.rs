@@ -376,6 +376,7 @@ const PROPERTY_NAMES: &[&str] = &[
     "backgroundColor",
     "accentColor",
     "foregroundColor",
+    "interfaceFont",
     "mascotImagePath",
     "showAppDock",
     "showUnpinnedRunningApps",

@@ -227,7 +227,7 @@ impl<Asset: Clone> SwitcherScene<Icon<Asset>> {
         for item in self.layout().items {
             self.present_item(&mut presentation, &item, dismiss.clone());
         }
-        presentation
+        presentation.with_interface_font(theme.interface_font)
     }
 
     fn present_item(

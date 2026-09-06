@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use lotus_core::settings::{
     ApplicationIconOverride, CURRENT_ONBOARDING_VERSION, DockSettings, DockZone,
-    NotificationBadgeStyle, UpdateChannel,
+    InterfaceFont, NotificationBadgeStyle, UpdateChannel,
 };
 use lotus_ui::icon::RasterIcon;
 use lotus_ui::theme::Theme;
@@ -218,6 +218,7 @@ pub enum SettingsControl {
     SurfacePreset,
     AccentPreset,
     ForegroundPreset,
+    InterfaceFont,
     NotificationBadgeStyle,
     UpdateChannel,
     DockZone,
@@ -867,6 +868,7 @@ impl SettingsScene {
             SettingsControl::SurfacePreset
                 | SettingsControl::AccentPreset
                 | SettingsControl::ForegroundPreset
+                | SettingsControl::InterfaceFont
                 | SettingsControl::NotificationBadgeStyle
                 | SettingsControl::UpdateChannel
                 | SettingsControl::DockZone
@@ -917,6 +919,7 @@ impl SettingsScene {
             | SettingsControl::SurfacePreset
             | SettingsControl::AccentPreset
             | SettingsControl::ForegroundPreset
+            | SettingsControl::InterfaceFont
             | SettingsControl::NotificationBadgeStyle
             | SettingsControl::UpdateChannel
             | SettingsControl::DockZone
@@ -1026,6 +1029,12 @@ impl SettingsScene {
             }
             (SettingsKey::Right, SettingsControl::ForegroundPreset) => {
                 self.cycle_foreground_preset(false)
+            }
+            (SettingsKey::Left, SettingsControl::InterfaceFont) => {
+                self.cycle_interface_font(true)
+            }
+            (SettingsKey::Right, SettingsControl::InterfaceFont) => {
+                self.cycle_interface_font(false)
             }
             (SettingsKey::Left, SettingsControl::NotificationBadgeStyle) => {
                 self.cycle_notification_badge_style(true)
@@ -1152,6 +1161,7 @@ fn is_page_content(control: SettingsControl) -> bool {
         SettingsControl::SurfacePreset
             | SettingsControl::AccentPreset
             | SettingsControl::ForegroundPreset
+            | SettingsControl::InterfaceFont
             | SettingsControl::NotificationBadgeStyle
             | SettingsControl::UpdateChannel
             | SettingsControl::DockZone

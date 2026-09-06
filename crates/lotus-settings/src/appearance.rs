@@ -1,5 +1,5 @@
 use lotus_core::settings::DockSettings;
-use lotus_ui::theme::Theme;
+use lotus_ui::theme::{InterfaceFont, Theme};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SurfacePreset {
@@ -120,5 +120,10 @@ pub fn theme_for(settings: &DockSettings) -> Theme {
     } else {
         1.0
     };
-    theme.with_material_opacity(opacity)
+    theme.with_material_opacity(opacity).with_interface_font(
+        match settings.interface_font {
+            lotus_core::settings::InterfaceFont::Segoe => InterfaceFont::Segoe,
+            lotus_core::settings::InterfaceFont::Fraunces => InterfaceFont::Fraunces,
+        },
+    )
 }

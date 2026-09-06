@@ -2,9 +2,9 @@ use lotus_core::settings::ApplicationIconOverride;
 
 use super::{
     AccentPreset, CURRENT_ONBOARDING_VERSION, DockSettings, DockZone, ForegroundPreset,
-    NotificationBadgeStyle, OnboardingModule, SettingsAction, SettingsControl,
-    SettingsRect, SettingsScene, SettingsSlider, SettingsToggle, SettingsUpdateActivity,
-    SurfacePreset, UpdateChannel, cycle_index,
+    InterfaceFont, NotificationBadgeStyle, OnboardingModule, SettingsAction,
+    SettingsControl, SettingsRect, SettingsScene, SettingsSlider, SettingsToggle,
+    SettingsUpdateActivity, SurfacePreset, UpdateChannel, cycle_index,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -212,6 +212,13 @@ impl SettingsDraft {
                 Some(preset) => preset.color().clone_into(&mut self.draft.foreground_color),
                 None => return SettingsAction::ChooseForegroundColor,
             },
+            SettingsControl::InterfaceFont => {
+                let Some(font) = [InterfaceFont::Segoe, InterfaceFont::Fraunces].get(index)
+                else {
+                    return SettingsAction::None;
+                };
+                self.draft.interface_font = *font;
+            }
             SettingsControl::NotificationBadgeStyle => {
                 let styles = [
                     NotificationBadgeStyle::Off,
@@ -274,6 +281,15 @@ impl SettingsDraft {
         ForegroundPreset::ALL[cycle_index(current, ForegroundPreset::ALL.len(), reverse)]
             .color()
             .clone_into(&mut self.draft.foreground_color);
+    }
+
+    pub(super) fn cycle_interface_font(&mut self, reverse: bool) {
+        let fonts = [InterfaceFont::Segoe, InterfaceFont::Fraunces];
+        let current = fonts
+            .iter()
+            .position(|font| *font == self.draft.interface_font)
+            .unwrap_or_default();
+        self.draft.interface_font = fonts[cycle_index(current, fonts.len(), reverse)];
     }
 
     pub(super) fn cycle_notification_badge_style(&mut self, reverse: bool) {
@@ -466,7 +482,8 @@ impl SettingsScene {
             SettingsControl::SurfacePreset => SettingsAction::ChooseBackgroundColor,
             SettingsControl::AccentPreset => SettingsAction::ChooseAccentColor,
             SettingsControl::ForegroundPreset => SettingsAction::ChooseForegroundColor,
-            SettingsControl::NotificationBadgeStyle
+            SettingsControl::InterfaceFont
+            | SettingsControl::NotificationBadgeStyle
             | SettingsControl::UpdateChannel
             | SettingsControl::DockZone
             | SettingsControl::SystemStatusZone
@@ -494,7 +511,7 @@ impl SettingsScene {
         let count = match control {
             SettingsControl::SurfacePreset => 4,
             SettingsControl::AccentPreset => 6,
-            SettingsControl::UpdateChannel => 2,
+            SettingsControl::UpdateChannel | SettingsControl::InterfaceFont => 2,
             SettingsControl::ForegroundPreset
             | SettingsControl::NotificationBadgeStyle
             | SettingsControl::DockZone
@@ -517,6 +534,10 @@ impl SettingsScene {
     }
     pub(super) fn cycle_foreground_preset(&mut self, reverse: bool) -> SettingsAction {
         self.draft.cycle_foreground_preset(reverse);
+        SettingsAction::Changed
+    }
+    pub(super) fn cycle_interface_font(&mut self, reverse: bool) -> SettingsAction {
+        self.draft.cycle_interface_font(reverse);
         SettingsAction::Changed
     }
 

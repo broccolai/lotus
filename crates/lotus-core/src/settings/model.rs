@@ -50,6 +50,27 @@ impl DockZone {
     pub const ALL: [Self; 3] = [Self::Left, Self::Center, Self::Right];
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InterfaceFont {
+    #[default]
+    Segoe,
+    Fraunces,
+}
+
+impl<'de> Deserialize<'de> for InterfaceFont {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            Some(value) if value.eq_ignore_ascii_case("fraunces") => Self::Fraunces,
+            _ => Self::Segoe,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(
@@ -72,6 +93,7 @@ pub struct DockSettings {
     pub background_color: String,
     pub accent_color: String,
     pub foreground_color: String,
+    pub interface_font: InterfaceFont,
     pub mascot_image_path: Option<String>,
     pub show_app_dock: bool,
     pub show_unpinned_running_apps: bool,
@@ -130,6 +152,7 @@ impl Default for DockSettings {
             background_color: "#11141A".into(),
             accent_color: "#F5A5A5".into(),
             foreground_color: "#F7F8FB".into(),
+            interface_font: InterfaceFont::Segoe,
             mascot_image_path: None,
             show_app_dock: true,
             show_unpinned_running_apps: true,

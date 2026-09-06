@@ -4,7 +4,7 @@ use lotus_ui::presentation::{
 };
 
 use super::{
-    DockPopup, Icon, PhysicalRect, PopupEntry, PopupIcon, PopupSymbol, Theme, physical_rect,
+    DockPopup, Icon, PhysicalRect, PopupEntry, PopupIcon, PopupSymbol, physical_rect,
 };
 
 impl<Asset: Clone> DockPopup<Asset> {
@@ -14,7 +14,7 @@ impl<Asset: Clone> DockPopup<Asset> {
     ) -> Presentation<Asset> {
         let theme = self.theme();
         let size = self.desired_size();
-        let mut presentation = Presentation::new(Theme::default().canvas.with_alpha(0.0));
+        let mut presentation = Presentation::new(theme.canvas.with_alpha(0.0));
         presentation.push(PresentationPrimitive::FillRoundedRect {
             bounds: PresentationRect::new(
                 0.5,
@@ -38,7 +38,7 @@ impl<Asset: Clone> DockPopup<Asset> {
             );
         }
         self.present_picker_navigation(&mut presentation, icon_size, &asset_for);
-        presentation
+        presentation.with_interface_font(theme.interface_font)
     }
 
     fn present_entry(

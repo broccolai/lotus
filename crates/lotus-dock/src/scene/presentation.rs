@@ -93,7 +93,7 @@ impl DockPresenter {
         }
 
         (
-            output,
+            output.with_interface_font(scene.theme().interface_font),
             interaction_animating
                 || reorder_animating
                 || chrome_animating

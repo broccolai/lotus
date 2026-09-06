@@ -1,4 +1,6 @@
-use lotus_core::settings::{DockZone, NotificationBadgeStyle, UpdateChannel};
+use lotus_core::settings::{
+    DockZone, InterfaceFont, NotificationBadgeStyle, UpdateChannel,
+};
 use lotus_ui::icon::Icon;
 use lotus_ui::presentation::{
     FontFamily, FontWeight, HorizontalAlignment, ImageSampling, Presentation,
@@ -18,6 +20,7 @@ use crate::appearance::{AccentPreset, ForegroundPreset, SurfacePreset};
 pub struct SettingsAssets<Asset> {
     pub lotus: Asset,
     pub search: Asset,
+    pub dismiss: Asset,
 }
 
 impl SettingsScene {
@@ -51,7 +54,7 @@ impl SettingsScene {
         if self.update_prompt().is_some() {
             self.present_update_prompt(&mut output, &layout);
         }
-        output
+        output.with_interface_font(theme.interface_font)
     }
 
     fn present_update_prompt<Asset>(
@@ -374,6 +377,22 @@ impl SettingsScene {
                     ("Alpha", self.draft().update_channel == UpdateChannel::Alpha),
                 ],
             ),
+            SettingsControl::InterfaceFont => self.present_segments(
+                output,
+                bounds,
+                control,
+                "Interface font",
+                vec![
+                    (
+                        "Segoe UI",
+                        self.draft().interface_font == InterfaceFont::Segoe,
+                    ),
+                    (
+                        "Fraunces",
+                        self.draft().interface_font == InterfaceFont::Fraunces,
+                    ),
+                ],
+            ),
             SettingsControl::SurfacePreset => self.present_surface_picker(output, bounds),
             SettingsControl::AccentPreset => self.present_accent_picker(output, bounds),
             SettingsControl::ForegroundPreset => {
@@ -481,12 +500,9 @@ impl SettingsScene {
                     true,
                 );
             }
-            SettingsControl::Close => output.push(text(
-                "×",
-                settings_rect(bounds),
-                title(self, true),
-                self.theme().text_muted,
-            )),
+            SettingsControl::Close => {
+                self.present_close_icon(output, bounds, &assets.dismiss);
+            }
             SettingsControl::Navigate(_)
             | SettingsControl::CancelUpdate
             | SettingsControl::AcceptUpdate
@@ -1216,15 +1232,32 @@ impl SettingsScene {
                     true,
                     true,
                 ),
-                SettingsControl::Close => output.push(text(
-                    "×",
-                    settings_rect(entry.bounds),
-                    title(self, true),
-                    self.theme().text_muted,
-                )),
+                SettingsControl::Close => {
+                    self.present_close_icon(output, entry.bounds, &assets.dismiss);
+                }
                 _ => {}
             }
         }
+    }
+
+    fn present_close_icon<Asset: Clone>(
+        &self,
+        output: &mut Presentation<Asset>,
+        bounds: SettingsRect,
+        dismiss: &Asset,
+    ) {
+        let bounds = settings_rect(bounds);
+        let size = as_f32(scale(self, 14));
+        let left = bounds.left + (bounds.width() - size) / 2.0;
+        let top = bounds.top + (bounds.height() - size) / 2.0;
+        output.push(PresentationPrimitive::Icon {
+            icon: Icon::Embedded(dismiss.clone()),
+            bounds: PresentationRect::new(left, top, left + size, top + size),
+            tint: self.theme().text_muted,
+            opacity: 1.0,
+            sampling: ImageSampling::Smooth,
+            radius: 0.0,
+        });
     }
 
     fn present_onboarding_module<Asset>(
@@ -1373,6 +1406,7 @@ fn grouped_control(control: SettingsControl) -> bool {
         SettingsControl::SurfacePreset
             | SettingsControl::AccentPreset
             | SettingsControl::ForegroundPreset
+            | SettingsControl::InterfaceFont
             | SettingsControl::NotificationBadgeStyle
             | SettingsControl::UpdateChannel
             | SettingsControl::DockZone
