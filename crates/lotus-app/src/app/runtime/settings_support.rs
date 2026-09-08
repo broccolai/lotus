@@ -59,25 +59,26 @@ pub(super) fn export_settings(context: &mut SettingsEventContext<'_>) {
 
 pub(super) fn export_diagnostics(context: &mut SettingsEventContext<'_>) {
     let owner = context.auxiliary.settings_owner();
-    let destination =
-        match lotus_windows::settings_file::choose_diagnostics_export_path(owner) {
-            Ok(Some(destination)) => destination,
-            Ok(None) => return,
-            Err(error) => {
-                lotus_windows::diagnostics::record_error(
-                    "diagnostics.export_dialog_failed",
-                    &error,
-                );
-                show_error(
-                    owner,
-                    "Lotus diagnostics",
-                    &format!(
-                        "Lotus could not open the diagnostics export dialog.\n\n{error}"
-                    ),
-                );
-                return;
-            }
-        };
+    let report = super::debug_snapshot::capture(context);
+    let destination = match lotus_windows::settings_file::choose_diagnostics_export_path(
+        owner,
+        report.suggested_file_name(),
+    ) {
+        Ok(Some(destination)) => destination,
+        Ok(None) => return,
+        Err(error) => {
+            lotus_windows::diagnostics::record_error(
+                "diagnostics.export_dialog_failed",
+                &error,
+            );
+            show_error(
+                owner,
+                "Lotus diagnostics",
+                &format!("Lotus could not open the diagnostics export dialog.\n\n{error}"),
+            );
+            return;
+        }
+    };
 
     if let Err(error) = context
         .settings_persistence
@@ -91,18 +92,18 @@ pub(super) fn export_diagnostics(context: &mut SettingsEventContext<'_>) {
         );
         return;
     }
-    let integration = context
-        .integration
-        .diagnostic_snapshot(context.graphics, context.auxiliary);
-    match lotus_windows::diagnostics::export_support_report(
-        &destination,
-        context.dock_model.settings(),
-        &integration,
-    ) {
-        Ok(()) => lotus_windows::diagnostics::record_diagnostic(
-            "diagnostics.exported",
-            "support report exported",
-        ),
+    match report.write_to(&destination) {
+        Ok(()) => {
+            lotus_windows::diagnostics::record_diagnostic(
+                "diagnostics.exported",
+                "debug snapshot exported",
+            );
+            show_information(
+                owner,
+                "Lotus debug snapshot",
+                &format!("Debug snapshot saved.\n\n{}", destination.display()),
+            );
+        }
         Err(error) => {
             lotus_windows::diagnostics::record_error("diagnostics.export_failed", &error);
             show_error(

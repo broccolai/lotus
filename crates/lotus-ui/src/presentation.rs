@@ -94,6 +94,12 @@ pub enum PresentationPrimitive<Asset> {
         style: TextStyle,
         color: Color,
     },
+    WrappedText {
+        value: String,
+        bounds: PresentationRect,
+        style: TextStyle,
+        color: Color,
+    },
     TextCaret {
         before: String,
         bounds: PresentationRect,
@@ -151,7 +157,9 @@ impl<Asset> Presentation<Asset> {
 impl<Asset> PresentationPrimitive<Asset> {
     fn apply_interface_font(&mut self) {
         let style = match self {
-            Self::Text { style, .. } | Self::TextCaret { style, .. } => style,
+            Self::Text { style, .. }
+            | Self::WrappedText { style, .. }
+            | Self::TextCaret { style, .. } => style,
             Self::PushClip { .. }
             | Self::PopClip
             | Self::FillRoundedRect { .. }
@@ -169,6 +177,7 @@ impl<Asset> PresentationPrimitive<Asset> {
             Self::FillRoundedRect { bounds, .. }
             | Self::StrokeRoundedRect { bounds, .. }
             | Self::Text { bounds, .. }
+            | Self::WrappedText { bounds, .. }
             | Self::TextCaret { bounds, .. }
             | Self::Icon { bounds, .. } => bounds,
         };

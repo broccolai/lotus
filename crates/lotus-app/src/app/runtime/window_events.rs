@@ -1,7 +1,6 @@
 use std::time::Instant;
 
 use lotus_windows::graphics::{DeviceState, GraphicsDeviceHealth};
-use lotus_windows::interaction::NativeMessage;
 use lotus_windows::responsiveness::{METRICS, TrackerUiPhase};
 use lotus_windows::window::DockEvent;
 use lotus_windows::window_tracker::{WindowTracker, WindowTrackerEvent};
@@ -145,20 +144,12 @@ pub(super) struct TrackerMessageOutcome {
     pub(super) frame: bool,
 }
 
-pub(super) fn handle_tracker_message(
-    message: &NativeMessage,
+pub(super) fn drain_tracker_snapshot(
     context: &mut TrackerEventContext<'_>,
 ) -> Result<TrackerMessageOutcome, AppError> {
-    if !WindowTracker::is_refresh_message(message.is_thread_message(), message.id()) {
-        return Ok(TrackerMessageOutcome::default());
-    }
     let Some(event) =
         measure_tracker_ui_phase(TrackerUiPhase::PublishedSnapshotObservation, || {
-            context.window_tracker.handle_message(
-                message.is_thread_message(),
-                message.id(),
-                message.parameter(),
-            )
+            context.window_tracker.drain_published_snapshot()
         })?
     else {
         return Ok(TrackerMessageOutcome::default());

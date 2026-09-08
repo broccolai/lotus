@@ -182,6 +182,10 @@ impl ModuleHost {
         self.settings.take_update_offer()
     }
 
+    pub(in crate::app) fn pending_update_page_url(&self) -> Option<&str> {
+        self.settings.pending_update_page_url()
+    }
+
     pub(in crate::app) fn cancel_update_offer(&mut self) {
         self.settings.cancel_update_offer();
     }

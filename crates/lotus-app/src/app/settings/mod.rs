@@ -207,9 +207,11 @@ impl SettingsRuntime {
         if !self.is_visible() {
             return false;
         }
-        let changed = self
-            .scene
-            .show_update_prompt(release.version.clone(), installed);
+        let changed = self.scene.show_update_prompt(
+            release.version.clone(),
+            &release.notes,
+            installed,
+        );
         self.updates.offer(release);
         if changed {
             self.invalidate();
@@ -222,6 +224,12 @@ impl SettingsRuntime {
         let _ = self.scene.dismiss_update_prompt();
         self.invalidate();
         Some(offer)
+    }
+
+    pub(in crate::app) fn pending_update_page_url(&self) -> Option<&str> {
+        self.updates
+            .pending_offer()
+            .map(|release| release.page_url.as_str())
     }
 
     pub(in crate::app) fn cancel_update_offer(&mut self) {

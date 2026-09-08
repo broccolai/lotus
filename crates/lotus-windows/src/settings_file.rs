@@ -39,34 +39,33 @@ pub fn choose_export_path(
 
 pub fn choose_diagnostics_export_path(
     owner: WindowHandle,
+    file_name: &str,
 ) -> Result<Option<PathBuf>, SettingsFileError> {
-    choose_path(owner, ExportKind::Diagnostics)
+    choose_path(owner, ExportKind::Diagnostics(file_name))
 }
 
 #[derive(Clone, Copy)]
-enum ExportKind {
+enum ExportKind<'a> {
     Settings,
-    Diagnostics,
+    Diagnostics(&'a str),
 }
 
 fn choose_path(
     owner: WindowHandle,
-    kind: ExportKind,
+    kind: ExportKind<'_>,
 ) -> Result<Option<PathBuf>, SettingsFileError> {
     let (filter_name, filter_spec, file_name, extension) = match kind {
         ExportKind::Settings => (
             w!("JSON settings"),
             w!("*.json"),
-            w!("lotus-settings.json"),
+            "lotus-settings.json",
             w!("json"),
         ),
-        ExportKind::Diagnostics => (
-            w!("Text diagnostics"),
-            w!("*.txt"),
-            w!("lotus-diagnostics.txt"),
-            w!("txt"),
-        ),
+        ExportKind::Diagnostics(file_name) => {
+            (w!("Text diagnostics"), w!("*.txt"), file_name, w!("txt"))
+        }
     };
+    let file_name = windows::core::HSTRING::from(file_name);
     let _apartment = ComApartment::enter().ok_or(SettingsFileError::ComUnavailable)?;
     let dialog: IFileSaveDialog =
         unsafe { CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER) }?;
@@ -82,7 +81,7 @@ fn choose_path(
     ];
     unsafe {
         dialog.SetFileTypes(&filters)?;
-        dialog.SetFileName(file_name)?;
+        dialog.SetFileName(&file_name)?;
         dialog.SetDefaultExtension(extension)?;
         dialog.SetOptions(FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_OVERWRITEPROMPT)?;
     }

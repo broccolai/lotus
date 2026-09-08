@@ -445,6 +445,7 @@ impl SettingsScene {
             }
             SettingsControl::CancelUpdate => SettingsAction::CancelUpdate,
             SettingsControl::AcceptUpdate => SettingsAction::AcceptUpdate,
+            SettingsControl::ViewUpdateNotes => SettingsAction::ViewUpdateNotes,
             SettingsControl::RestartIntegration => SettingsAction::RestartIntegration,
             SettingsControl::ReplaySetup => SettingsAction::ReplaySetup,
             SettingsControl::ExportSettings => SettingsAction::ExportSettings,

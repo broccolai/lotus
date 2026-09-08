@@ -90,7 +90,7 @@ fn focus_application_with(
     let Some(first) = first else {
         return no_live_application_outcome(item, launch);
     };
-    retry_or_launch(item, &keys, first, operation, launch)
+    focus_recorded_windows(&keys, first, operation)
 }
 
 pub(super) fn request_close(
@@ -109,7 +109,7 @@ fn activate_exact_with(
         NativeOutcome::Disappeared => {
             record_stale_target(
                 "activation.stale_target",
-                "window disappeared before activation",
+                "recorded window target is no longer current",
             );
             Ok(ActivationOutcome::TargetDisappeared)
         }
@@ -137,26 +137,24 @@ fn activate_application_with(
                 NativeOutcome::Disappeared => {
                     record_stale_target(
                         "activation.stale_target",
-                        "foreground window disappeared before minimization",
+                        "recorded foreground target is no longer current",
                     );
-                    retry_or_launch(item, &keys, key, &mut operation, &mut launch)
+                    focus_recorded_windows(&keys, key, &mut operation)
                 }
             }
         }
         ActivationDecision::Focus(first) => {
-            retry_or_launch(item, &keys, first, &mut operation, &mut launch)
+            focus_recorded_windows(&keys, first, &mut operation)
         }
     }
 }
 
-fn retry_or_launch(
-    item: &DockItem,
+fn focus_recorded_windows(
     keys: &[TrackedWindowKey],
     first: TrackedWindowKey,
     operation: &mut impl FnMut(
         ActivationDecision<TrackedWindowKey>,
     ) -> Result<NativeOutcome, ActivationError>,
-    launch: &mut impl FnMut() -> Result<NativeOutcome, ActivationError>,
 ) -> Result<ActivationOutcome, ActivationError> {
     for key in
         std::iter::once(first).chain(keys.iter().copied().filter(|key| *key != first))
@@ -173,14 +171,17 @@ fn retry_or_launch(
             }
             NativeOutcome::Disappeared => record_stale_target(
                 "activation.stale_target",
-                "application target disappeared before activation",
+                "recorded application target is no longer current",
             ),
             NativeOutcome::ForegroundDenied => {
                 return Ok(ActivationOutcome::ForegroundDenied);
             }
         }
     }
-    no_live_application_outcome(item, launch)
+
+    // A stale snapshot is not evidence that the app needs launching. Native rejection
+    // requests a tracker refresh; only a snapshot with no windows may launch a pin.
+    Ok(ActivationOutcome::TargetDisappeared)
 }
 
 fn no_live_application_outcome(
@@ -257,18 +258,9 @@ fn native_close(
 fn classify_native_error(error: ActivationError) -> Result<NativeOutcome, ActivationError> {
     match error {
         ActivationError::MissingWindow(_) => Ok(NativeOutcome::Disappeared),
-        ActivationError::IdentityMismatch { .. } => {
-            record_stale_target(
-                "activation.identity_mismatch",
-                "HWND was recycled by another process",
-            );
-            Ok(NativeOutcome::Disappeared)
-        }
-        ActivationError::RetiredWindow(_) => {
-            record_stale_target(
-                "activation.identity_mismatch",
-                "HWND no longer has the tracker-published incarnation",
-            );
+        error @ (ActivationError::IdentityMismatch { .. }
+        | ActivationError::RetiredWindow(_)) => {
+            record_stale_target("activation.identity_mismatch", &error.to_string());
             Ok(NativeOutcome::Disappeared)
         }
         ActivationError::ForegroundDenied(_) => Ok(NativeOutcome::ForegroundDenied),

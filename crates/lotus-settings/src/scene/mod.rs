@@ -43,7 +43,10 @@ const REVERT_WIDTH_DIP: u32 = 92;
 const FOOTER_HEIGHT_DIP: u32 = 72;
 const CLOSE_SIZE_DIP: u32 = 40;
 const UPDATE_PROMPT_WIDTH_DIP: u32 = 372;
-const UPDATE_PROMPT_HEIGHT_DIP: u32 = 236;
+const UPDATE_PROMPT_EMPTY_HEIGHT_DIP: u32 = 284;
+const UPDATE_PROMPT_NOTES_TOP_DIP: u32 = 142;
+const UPDATE_PROMPT_NOTES_ROW_HEIGHT_DIP: u32 = 60;
+const UPDATE_PROMPT_MAX_HEIGHT_DIP: u32 = 520;
 const UPDATE_PROMPT_BUTTON_HEIGHT_DIP: u32 = 44;
 const UPDATE_PROMPT_BUTTON_WIDTH_DIP: u32 = 152;
 const UPDATE_PROMPT_BUTTON_GAP_DIP: u32 = 12;
@@ -235,6 +238,7 @@ pub enum SettingsControl {
     CheckForUpdates,
     CancelUpdate,
     AcceptUpdate,
+    ViewUpdateNotes,
     RestartIntegration,
     ReplaySetup,
     ExportSettings,
@@ -266,6 +270,7 @@ pub enum SettingsAction {
     CheckForUpdates,
     CancelUpdate,
     AcceptUpdate,
+    ViewUpdateNotes,
     RestartIntegration,
     ReplaySetup,
     ExportSettings,
@@ -288,6 +293,7 @@ pub enum SettingsUpdateActivity {
 pub struct SettingsUpdatePrompt {
     version: String,
     installed: bool,
+    notes: UpdateNotesPreview,
 }
 
 impl SettingsUpdatePrompt {
@@ -297,6 +303,56 @@ impl SettingsUpdatePrompt {
 
     pub const fn is_installed(&self) -> bool {
         self.installed
+    }
+
+    fn notes(&self) -> &UpdateNotesPreview {
+        &self.notes
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct UpdateNotesPreview {
+    bullets: Vec<String>,
+    has_notes: bool,
+}
+
+impl UpdateNotesPreview {
+    fn from_markdown(markdown: &str) -> Self {
+        const MAX_BULLETS: usize = 3;
+        const MAX_BULLET_CHARS: usize = 180;
+
+        let has_notes = !markdown.trim().is_empty();
+        let mut bullets = Vec::new();
+        for line in markdown.lines() {
+            let line = line.trim_start();
+            let Some(bullet) = line
+                .strip_prefix("- ")
+                .or_else(|| line.strip_prefix("* "))
+                .map(str::trim)
+                .filter(|bullet| !bullet.is_empty())
+            else {
+                continue;
+            };
+            if bullets.len() == MAX_BULLETS {
+                break;
+            }
+            let mut shortened = bullet.chars().take(MAX_BULLET_CHARS).collect::<String>();
+            if shortened.len() < bullet.len() {
+                shortened.push('…');
+            }
+            bullets.push(shortened);
+        }
+        Self { bullets, has_notes }
+    }
+
+    fn unavailable(&self) -> bool {
+        !self.has_notes || self.bullets.is_empty()
+    }
+
+    fn height_dip(&self) -> u32 {
+        u32::try_from(self.bullets.len())
+            .unwrap_or(u32::MAX)
+            .saturating_mul(UPDATE_PROMPT_NOTES_ROW_HEIGHT_DIP)
     }
 }
 
@@ -562,8 +618,30 @@ impl SettingsScene {
         self.update_prompt.as_ref()
     }
 
-    pub fn show_update_prompt(&mut self, version: String, installed: bool) -> bool {
-        let prompt = SettingsUpdatePrompt { version, installed };
+    fn update_prompt_height_dip(&self) -> u32 {
+        self.update_prompt
+            .as_ref()
+            .map_or(UPDATE_PROMPT_EMPTY_HEIGHT_DIP, |prompt| {
+                if prompt.notes().unavailable() {
+                    UPDATE_PROMPT_EMPTY_HEIGHT_DIP
+                } else {
+                    (UPDATE_PROMPT_NOTES_TOP_DIP + 132 + prompt.notes().height_dip())
+                        .min(UPDATE_PROMPT_MAX_HEIGHT_DIP)
+                }
+            })
+    }
+
+    pub fn show_update_prompt(
+        &mut self,
+        version: String,
+        notes: &str,
+        installed: bool,
+    ) -> bool {
+        let prompt = SettingsUpdatePrompt {
+            version,
+            installed,
+            notes: UpdateNotesPreview::from_markdown(notes),
+        };
         if self.update_prompt.as_ref() == Some(&prompt) {
             return false;
         }
@@ -849,7 +927,9 @@ impl SettingsScene {
         if self.update_prompt.is_some()
             && !matches!(
                 control,
-                SettingsControl::CancelUpdate | SettingsControl::AcceptUpdate
+                SettingsControl::CancelUpdate
+                    | SettingsControl::AcceptUpdate
+                    | SettingsControl::ViewUpdateNotes
             )
         {
             return None;
@@ -935,6 +1015,7 @@ impl SettingsScene {
             | SettingsControl::CheckForUpdates
             | SettingsControl::CancelUpdate
             | SettingsControl::AcceptUpdate
+            | SettingsControl::ViewUpdateNotes
             | SettingsControl::RestartIntegration
             | SettingsControl::ReplaySetup
             | SettingsControl::ExportSettings
@@ -1084,15 +1165,32 @@ impl SettingsScene {
             | SettingsKey::Right
             | SettingsKey::Up
             | SettingsKey::Down => {
-                self.focused =
-                    Some(if self.focused == Some(SettingsControl::AcceptUpdate) {
-                        SettingsControl::CancelUpdate
-                    } else {
-                        SettingsControl::AcceptUpdate
-                    });
+                self.focused = Some(self.next_update_prompt_focus(key));
                 SettingsAction::RefreshPresentation
             }
         }
+    }
+
+    fn next_update_prompt_focus(&self, key: SettingsKey) -> SettingsControl {
+        let controls = [
+            SettingsControl::AcceptUpdate,
+            SettingsControl::CancelUpdate,
+            SettingsControl::ViewUpdateNotes,
+        ];
+        let current = self
+            .focused
+            .and_then(|focused| controls.iter().position(|control| *control == focused))
+            .unwrap_or(0);
+        let reverse = matches!(
+            key,
+            SettingsKey::ReverseTab | SettingsKey::Left | SettingsKey::Up
+        );
+        let next = if reverse {
+            (current + controls.len() - 1) % controls.len()
+        } else {
+            (current + 1) % controls.len()
+        };
+        controls[next]
     }
 
     pub fn mark_applied(&mut self, applied: DockSettings) {

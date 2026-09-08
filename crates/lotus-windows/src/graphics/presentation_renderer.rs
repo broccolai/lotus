@@ -25,8 +25,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_FAR,
     DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteFactory6,
-    IDWriteFontCollection1, IDWriteTextFormat,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory,
+    IDWriteFactory, IDWriteFactory6, IDWriteFontCollection1, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::{IDXGISurface, IDXGISwapChain1};
 use windows::core::{Error as WindowsError, Interface, w};
@@ -238,6 +238,12 @@ impl PresentationRenderer {
                 style,
                 color,
             } => self.draw_text(value, *bounds, *style, *color)?,
+            PresentationPrimitive::WrappedText {
+                value,
+                bounds,
+                style,
+                color,
+            } => self.draw_wrapped_text(value, *bounds, *style, *color)?,
             PresentationPrimitive::TextCaret {
                 before,
                 bounds,
@@ -313,6 +319,40 @@ impl PresentationRenderer {
                 &brush,
                 D2D1_DRAW_TEXT_OPTIONS_CLIP,
                 DWRITE_MEASURING_MODE_NATURAL,
+            );
+        }
+        Ok(())
+    }
+
+    fn draw_wrapped_text(
+        &mut self,
+        value: &str,
+        bounds: PresentationRect,
+        style: TextStyle,
+        color: Color,
+    ) -> Result<(), WindowsError> {
+        let format = self.text_format(style)?;
+        let text = value.encode_utf16().collect::<Vec<_>>();
+        let layout = unsafe {
+            self.write_factory.CreateTextLayout(
+                &text,
+                &format,
+                bounds.width(),
+                bounds.height(),
+            )?
+        };
+        unsafe { layout.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)? };
+
+        let brush = self.brush(color)?;
+        unsafe {
+            self.context.DrawTextLayout(
+                windows_numerics::Vector2 {
+                    X: bounds.left,
+                    Y: bounds.top,
+                },
+                &layout,
+                &brush,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP,
             );
         }
         Ok(())

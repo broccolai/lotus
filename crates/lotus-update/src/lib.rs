@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod release_notes;
+
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, Write as _};
@@ -22,6 +24,7 @@ const STAGING_MARKER_NAME: &str = "lotus-update.staged";
 pub struct Release {
     pub version: String,
     pub page_url: String,
+    pub notes: String,
     installer_url: String,
     checksum_url: String,
 }
@@ -172,6 +175,7 @@ fn fetch_release(channel: UpdateChannel) -> Result<Release, UpdateError> {
     Ok(Release {
         version: version.to_owned(),
         page_url: release.html_url,
+        notes: release_notes::fetch(version, release.body.as_deref().unwrap_or_default()),
         installer_url,
         checksum_url,
     })
@@ -236,6 +240,8 @@ struct GitHubRelease {
     prerelease: bool,
     html_url: String,
     assets: Vec<GitHubAsset>,
+    #[serde(default)]
+    body: Option<String>,
 }
 
 #[derive(Deserialize)]

@@ -22,6 +22,10 @@ impl SettingsUpdates {
         self.pending.take()
     }
 
+    pub(super) fn pending_offer(&self) -> Option<&Release> {
+        self.pending.as_ref()
+    }
+
     pub(super) fn start_check(
         &mut self,
         channel: UpdateChannel,

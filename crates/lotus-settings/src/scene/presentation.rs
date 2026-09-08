@@ -11,8 +11,8 @@ use lotus_ui::theme::Color;
 use super::{
     OnboardingModule, OnboardingStep, SettingsControl, SettingsLayout, SettingsPage,
     SettingsRect, SettingsScene, SettingsSlider, SettingsToggle, SettingsUpdateActivity,
-    UPDATE_PROMPT_HEIGHT_DIP, UPDATE_PROMPT_INSET_DIP, UPDATE_PROMPT_WIDTH_DIP,
-    is_page_content, update_prompt_left_dip,
+    UPDATE_PROMPT_INSET_DIP, UPDATE_PROMPT_WIDTH_DIP, is_page_content,
+    update_prompt_left_dip,
 };
 use crate::appearance::{AccentPreset, ForegroundPreset, SurfacePreset};
 
@@ -67,9 +67,10 @@ impl SettingsScene {
         };
         let theme = self.theme();
         let card_left = scale(self, update_prompt_left_dip());
-        let card_top = scale(self, (super::HEIGHT_DIP - UPDATE_PROMPT_HEIGHT_DIP) / 2);
+        let card_height_dip = self.update_prompt_height_dip();
+        let card_top = scale(self, (super::HEIGHT_DIP - card_height_dip) / 2);
         let card_width = scale(self, UPDATE_PROMPT_WIDTH_DIP);
-        let card_height = scale(self, UPDATE_PROMPT_HEIGHT_DIP);
+        let card_height = scale(self, card_height_dip);
         let inset = scale(self, UPDATE_PROMPT_INSET_DIP);
 
         output.push(fill(
@@ -125,6 +126,10 @@ impl SettingsScene {
             small(self, false),
             theme.text_muted,
         ));
+        self.present_update_notes(output, prompt, card_left, card_top, card_width, inset);
+        if let Some(bounds) = layout.bounds(SettingsControl::ViewUpdateNotes) {
+            self.present_update_notes_link(output, bounds);
+        }
         if let Some(bounds) = layout.bounds(SettingsControl::CancelUpdate) {
             self.present_button(
                 output,
@@ -149,6 +154,71 @@ impl SettingsScene {
                 true,
             );
         }
+    }
+
+    fn present_update_notes<Asset>(
+        &self,
+        output: &mut Presentation<Asset>,
+        prompt: &super::SettingsUpdatePrompt,
+        card_left: u32,
+        card_top: u32,
+        card_width: u32,
+        inset: u32,
+    ) {
+        let notes = prompt.notes();
+        let theme = self.theme();
+        let top = card_top + scale(self, super::UPDATE_PROMPT_NOTES_TOP_DIP);
+        let width = card_width - inset * 2;
+        if notes.unavailable() {
+            output.push(text(
+                "Release notes aren't available here yet.",
+                rect(card_left + inset, top, width, scale(self, 24)),
+                small(self, false),
+                theme.text_muted,
+            ));
+            return;
+        }
+        output.push(text(
+            "what's new",
+            rect(card_left + inset, top, width, scale(self, 22)),
+            small(self, false),
+            theme.text,
+        ));
+        let bullets = notes
+            .bullets
+            .iter()
+            .map(|bullet| format!("• {bullet}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        output.push(PresentationPrimitive::WrappedText {
+            value: bullets,
+            bounds: rect(
+                card_left + inset,
+                top + scale(self, 24),
+                width,
+                scale(self, notes.height_dip()),
+            ),
+            style: TextStyle {
+                vertical: VerticalAlignment::Top,
+                ..small(self, false)
+            },
+            color: theme.text_muted,
+        });
+    }
+
+    fn present_update_notes_link<Asset>(
+        &self,
+        output: &mut Presentation<Asset>,
+        bounds: SettingsRect,
+    ) {
+        let theme = self.theme();
+        output.push(text(
+            "View full notes",
+            settings_rect(bounds),
+            small(self, false),
+            theme.accent,
+        ));
+        self.present_focus(output, SettingsControl::ViewUpdateNotes, bounds);
     }
 
     fn present_navigation<Asset>(
@@ -470,7 +540,7 @@ impl SettingsScene {
                 output,
                 bounds,
                 control,
-                "Export diagnostics",
+                "Export debug snapshot",
                 true,
                 false,
             ),
@@ -506,6 +576,7 @@ impl SettingsScene {
             SettingsControl::Navigate(_)
             | SettingsControl::CancelUpdate
             | SettingsControl::AcceptUpdate
+            | SettingsControl::ViewUpdateNotes
             | SettingsControl::OnboardingModule(_)
             | SettingsControl::OnboardingZone(_)
             | SettingsControl::OnboardingBack
@@ -1000,6 +1071,17 @@ impl SettingsScene {
             ),
             body(self, false),
             self.theme().accent,
+        ));
+        output.push(text(
+            "Debug snapshots omit window titles, URLs, and personal paths.",
+            rect(
+                scale(self, 260),
+                scale(self, 202),
+                scale(self, 600),
+                scale(self, 32),
+            ),
+            small(self, false),
+            self.theme().text_muted,
         ));
     }
 

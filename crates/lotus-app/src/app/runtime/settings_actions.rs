@@ -1,4 +1,6 @@
 use lotus_settings::scene::SettingsAction;
+use lotus_windows::activation::launch_target;
+use lotus_windows::dialog::show_error;
 
 use super::settings_commit::{
     SettingsApplyMode, apply_changed_settings, apply_color_outcome,
@@ -76,6 +78,10 @@ pub(super) fn execute_settings_action(
             execute_update_action(&action, context.auxiliary, context.startup_mode);
             Ok(())
         }
+        SettingsAction::ViewUpdateNotes => {
+            open_update_notes(context.auxiliary);
+            Ok(())
+        }
         SettingsAction::RestartIntegration => {
             context.integration.recover(
                 IntegrationRecoverySource::Settings,
@@ -128,6 +134,20 @@ pub(super) fn execute_settings_action(
             }
             Ok(())
         }
+    }
+}
+
+fn open_update_notes(auxiliary: &ModuleHost) {
+    let Some(url) = auxiliary.pending_update_page_url() else {
+        return;
+    };
+    if let Err(error) = launch_target(url, None) {
+        lotus_windows::diagnostics::record_error("update.release_notes_open", &error);
+        show_error(
+            auxiliary.settings_owner(),
+            "Lotus Update",
+            &format!("Lotus could not open the release notes.\n\n{error}"),
+        );
     }
 }
 

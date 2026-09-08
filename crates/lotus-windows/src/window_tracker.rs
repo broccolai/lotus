@@ -1,3 +1,4 @@
+mod diagnostics;
 mod enumeration;
 mod events;
 mod foreground;
@@ -29,6 +30,7 @@ use crate::responsiveness::METRICS;
 use crate::{NativeError, WindowHandle};
 
 const MAX_RECONCILE_INTERVAL_MS: u32 = 30_000;
+const UI_WAKE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const STALE_TARGET_TOMBSTONE_LIFETIME: Duration = Duration::from_secs(2);
 const IDENTITY_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_millis(50),
@@ -209,7 +211,7 @@ struct SharedState {
     latest: Mutex<PublishedSnapshot>,
     ui_thread: u32,
     worker_thread: std::sync::atomic::AtomicU32,
-    ui_wake_queued: AtomicBool,
+    snapshot_pending: AtomicBool,
     running: AtomicBool,
 }
 
@@ -243,6 +245,7 @@ struct WorkerState {
     debounce_timer: Option<usize>,
     identity_timer: Option<usize>,
     reconcile_timer: usize,
+    last_ui_wake_attempt: Option<Instant>,
     process_cache: enumeration::ProcessMetadataCache,
     application_facts: HashMap<TrackedWindowKey, WindowApplicationFacts>,
     identity_stabilization: HashMap<TrackedWindowKey, IdentityStabilization>,
@@ -281,7 +284,7 @@ impl WindowTracker {
             latest: Mutex::new(PublishedSnapshot::default()),
             ui_thread,
             worker_thread: std::sync::atomic::AtomicU32::new(0),
-            ui_wake_queued: AtomicBool::new(false),
+            snapshot_pending: AtomicBool::new(false),
             running: AtomicBool::new(true),
         });
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
@@ -315,7 +318,9 @@ impl WindowTracker {
             let latest = shared.latest.lock().map_err(|_| {
                 Error::new(E_FAIL, "Lotus window tracker state is unavailable")
             })?;
-            shared.ui_wake_queued.store(false, AtomicOrdering::Release);
+            shared
+                .snapshot_pending
+                .store(false, AtomicOrdering::Release);
             latest.clone()
         };
 
@@ -370,18 +375,20 @@ impl WindowTracker {
         self.presentation_revision
     }
 
-    pub fn handle_message(
+    pub(crate) fn append_diagnostics(
+        &self,
+        output: &mut String,
+        pseudonymizer: &crate::diagnostics::Pseudonymizer,
+    ) {
+        diagnostics::append_tracker_report(output, pseudonymizer, self);
+    }
+
+    pub fn drain_published_snapshot(
         &mut self,
-        is_thread_message: bool,
-        message_id: u32,
-        _parameter: usize,
     ) -> Result<Option<WindowTrackerEvent>, NativeError> {
-        if !Self::is_refresh_message(is_thread_message, message_id) {
-            return Ok(None);
-        }
         if !self
             .shared
-            .ui_wake_queued
+            .snapshot_pending
             .swap(false, AtomicOrdering::AcqRel)
         {
             return Ok(None);
@@ -405,10 +412,6 @@ impl WindowTracker {
         }
 
         Ok(event)
-    }
-
-    pub const fn is_refresh_message(is_thread_message: bool, message_id: u32) -> bool {
-        is_thread_message && message_id == events::REFRESH_MESSAGE
     }
 
     pub fn refresh_fullscreen(&mut self) {
@@ -478,6 +481,7 @@ fn run_worker(
         debounce_timer: None,
         identity_timer: None,
         reconcile_timer,
+        last_ui_wake_attempt: None,
         process_cache: enumeration::ProcessMetadataCache::default(),
         application_facts: HashMap::new(),
         identity_stabilization: HashMap::new(),
@@ -527,6 +531,7 @@ fn worker_message_loop(state: &mut WorkerState) {
                 DispatchMessageW(&raw const message);
             },
         }
+        state.retry_pending_ui_wake();
     }
 }
 
@@ -711,16 +716,20 @@ impl WorkerState {
         *latest = snapshot;
         drop(latest);
         drop(stale);
-
-        if !self.shared.running.load(AtomicOrdering::Acquire) {
-            return;
-        }
         if self
             .shared
-            .ui_wake_queued
+            .snapshot_pending
             .swap(true, AtomicOrdering::AcqRel)
         {
             METRICS.record_tracker_ui_wake_coalesced();
+        } else {
+            self.post_ui_wake();
+        }
+    }
+
+    fn post_ui_wake(&mut self) {
+        self.last_ui_wake_attempt = Some(Instant::now());
+        if !self.shared.running.load(AtomicOrdering::Acquire) {
             return;
         }
         if unsafe {
@@ -733,13 +742,25 @@ impl WorkerState {
         }
         .is_err()
         {
-            self.shared
-                .ui_wake_queued
-                .store(false, AtomicOrdering::Release);
             METRICS.record_tracker_ui_wake_post_failure();
         } else {
             METRICS.record_tracker_ui_wake_posted();
         }
+    }
+
+    fn retry_pending_ui_wake(&mut self) {
+        if !self.shared.snapshot_pending.load(AtomicOrdering::Acquire)
+            || !self.shared.running.load(AtomicOrdering::Acquire)
+        {
+            return;
+        }
+        if self
+            .last_ui_wake_attempt
+            .is_some_and(|last| last.elapsed() < UI_WAKE_RETRY_INTERVAL)
+        {
+            return;
+        }
+        self.post_ui_wake();
     }
 
     fn restart_debounce_timer(&mut self) {

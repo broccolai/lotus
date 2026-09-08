@@ -1,3 +1,4 @@
+mod debug_snapshot;
 mod dock_events;
 mod message_loop;
 mod popup_events;

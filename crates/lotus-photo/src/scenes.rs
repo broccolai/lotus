@@ -154,7 +154,8 @@ fn scale_capture(presentation: &mut Presentation<EmbeddedIcon>, scale: f32) {
                 *width *= scale;
                 bounds
             }
-            PresentationPrimitive::Text { bounds, style, .. } => {
+            PresentationPrimitive::Text { bounds, style, .. }
+            | PresentationPrimitive::WrappedText { bounds, style, .. } => {
                 style.size *= scale;
                 bounds
             }

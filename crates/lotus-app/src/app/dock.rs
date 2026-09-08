@@ -306,6 +306,10 @@ impl DockRuntime {
         self.model.items()
     }
 
+    pub(super) fn application_view(&self) -> &ApplicationView {
+        &self.applications
+    }
+
     pub(in crate::app) fn prepare_reorder(
         &mut self,
         request: &DockReorderRequest,

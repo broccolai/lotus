@@ -45,6 +45,8 @@ pub(crate) fn run_message_loop(
         last_monitor_key: None,
         graphics_recovery: GraphicsRecoveryScheduler::new(),
         continuation_queued: false,
+        pending_tracker_monitor_sync: false,
+        pending_tracker_frame: false,
     }
     .run()
 }
@@ -70,6 +72,8 @@ struct MessageLoop<'a, 'runtime> {
     last_monitor_key: Option<presentation::MonitorPresentationKey>,
     graphics_recovery: GraphicsRecoveryScheduler,
     continuation_queued: bool,
+    pending_tracker_monitor_sync: bool,
+    pending_tracker_frame: bool,
 }
 
 impl MessageLoop<'_, '_> {
@@ -162,8 +166,13 @@ impl MessageLoop<'_, '_> {
         {
             self.continuation_queued = false;
         }
+        self.refresh_tracked_windows(timing)?;
+
         let recovery_started = std::time::Instant::now();
         if self.handle_graphics_recovery_wake(message)? {
+            if self.graphics.health() == GraphicsDeviceHealth::Healthy {
+                self.flush_pending_tracker_work(false, timing)?;
+            }
             timing.record(UiMessagePhase::GraphicsRecovery, recovery_started.elapsed());
             return Ok(());
         }
@@ -182,13 +191,9 @@ impl MessageLoop<'_, '_> {
             message.dispatch();
             timing.record(UiMessagePhase::Dispatch, started.elapsed());
             let started = std::time::Instant::now();
-            let frame = self.handle_input_wake();
+            let input_frame = self.handle_input_wake();
+            let frame = self.flush_pending_tracker_work(input_frame, timing)?;
             timing.record(UiMessagePhase::Wake, started.elapsed());
-            if frame {
-                let frame_started = std::time::Instant::now();
-                self.flush_frame(FrameTrigger::Changes)?;
-                timing.record(UiMessagePhase::Frame, frame_started.elapsed());
-            }
             METRICS.record_ui_work(false, false, frame);
             return Ok(());
         }
@@ -208,24 +213,12 @@ impl MessageLoop<'_, '_> {
                 });
         self.handle_shell_fullscreen(message, &mut work);
 
-        let started = std::time::Instant::now();
-        let tracker = window_events::handle_tracker_message(
-            message,
-            &mut window_events::TrackerEventContext {
-                primary_dock: self.primary_dock,
-                graphics: self.graphics,
-                window_tracker: self.window_tracker,
-                dock_model: self.dock_model,
-                auxiliary: self.auxiliary,
-            },
-        )?;
-        if tracker.monitor_sync {
+        if self.pending_tracker_monitor_sync {
             work.insert(RuntimeWork::MONITOR_SYNC);
         }
-        if tracker.frame {
+        if self.pending_tracker_frame {
             work.insert(RuntimeWork::FRAME);
         }
-        timing.record(UiMessagePhase::Tracker, started.elapsed());
 
         let wakes = WakeEvents::from_message(self.runtime, message.id());
         if wakes.any() {
@@ -257,6 +250,11 @@ impl MessageLoop<'_, '_> {
             self.recover_integration(source, &mut work, timing);
         }
         let monitor_sync = self.sync_monitor_presentation(work, timing)?;
+        if work.contains(RuntimeWork::MONITOR_SYNC)
+            && self.graphics.health() == GraphicsDeviceHealth::Healthy
+        {
+            self.pending_tracker_monitor_sync = false;
+        }
         if work.contains(RuntimeWork::FRAME) {
             let started = std::time::Instant::now();
             self.flush_frame(if work.contains(RuntimeWork::ANIMATION_TICK) {
@@ -265,6 +263,9 @@ impl MessageLoop<'_, '_> {
                 FrameTrigger::Changes
             })?;
             timing.record(UiMessagePhase::Frame, started.elapsed());
+            if self.graphics.health() == GraphicsDeviceHealth::Healthy {
+                self.pending_tracker_frame = false;
+            }
         }
         METRICS.record_ui_work(
             work.needs_event_drain(),
@@ -293,11 +294,7 @@ impl MessageLoop<'_, '_> {
             || integration_changed
             || self.apply_pending_persistence(timing)?;
         timing.record(UiMessagePhase::Wake, started.elapsed());
-        if frame {
-            let frame_started = std::time::Instant::now();
-            self.flush_frame(FrameTrigger::Changes)?;
-            timing.record(UiMessagePhase::Frame, frame_started.elapsed());
-        }
+        let frame = self.flush_pending_tracker_work(frame, timing)?;
         self.runtime.integration.report_ui_progress(
             self.graphics.health() == GraphicsDeviceHealth::Healthy
                 && self.primary_dock.presentation_ready()
@@ -305,6 +302,51 @@ impl MessageLoop<'_, '_> {
         );
         METRICS.record_ui_work(false, false, frame);
         Ok(())
+    }
+
+    fn refresh_tracked_windows(
+        &mut self,
+        timing: &mut MessageTiming,
+    ) -> Result<(), AppError> {
+        let started = std::time::Instant::now();
+        let tracker = window_events::drain_tracker_snapshot(
+            &mut window_events::TrackerEventContext {
+                primary_dock: self.primary_dock,
+                graphics: self.graphics,
+                window_tracker: self.window_tracker,
+                dock_model: self.dock_model,
+                auxiliary: self.auxiliary,
+            },
+        )?;
+
+        self.pending_tracker_monitor_sync |= tracker.monitor_sync;
+        self.pending_tracker_frame |= tracker.frame;
+        timing.record(UiMessagePhase::Tracker, started.elapsed());
+        Ok(())
+    }
+
+    fn flush_pending_tracker_work(
+        &mut self,
+        additional_frame: bool,
+        timing: &mut MessageTiming,
+    ) -> Result<bool, AppError> {
+        if self.pending_tracker_monitor_sync {
+            self.sync_monitor_presentation(RuntimeWork::MONITOR_SYNC, timing)?;
+            if self.graphics.health() == GraphicsDeviceHealth::Healthy {
+                self.pending_tracker_monitor_sync = false;
+            }
+        }
+
+        let frame = additional_frame || self.pending_tracker_frame;
+        if frame {
+            let started = std::time::Instant::now();
+            self.flush_frame(FrameTrigger::Changes)?;
+            timing.record(UiMessagePhase::Frame, started.elapsed());
+            if self.graphics.health() == GraphicsDeviceHealth::Healthy {
+                self.pending_tracker_frame = false;
+            }
+        }
+        Ok(frame)
     }
 
     fn include_pending_event_work(&self, work: &mut RuntimeWork) {
